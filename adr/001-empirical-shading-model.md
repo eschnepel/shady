@@ -50,47 +50,66 @@ seasons immediately, from however much history is available.
 
 ### 2 — Regression method: a pluggable, globally-selected strategy
 
-The regression target is always `ratio = actual_yield / baseline_forecast`
-over the predictor space `(azimuth, elevation)`, and every sample is always
+The regression target is always `ratio = actual_yield / baseline_forecast`,
+computed over the historical sample pool that §3a/§3b already define for a
+given slot (that slot's own samples, plus up to `smoothing_radius`
+neighboring slots, across the rolling window) — and every sample is always
 weighted by `magnitude_weight_i` (downweighting near-zero baseline
-samples, e.g. sunrise/sunset, for the same reason given below) — but *how*
-the weighted samples are turned into a factor at a query point `(az, el)`
-is a **pluggable strategy**, chosen once by the user for the whole
-integration (all strings share the same method; see §6), not auto-selected
-and not configurable per string. Four strategies are supported, behind a
-shared `regression/base.py` protocol (`fit(samples) -> FittedModel`,
-`predict(az, el) -> (factor, confidence)`):
+samples, e.g. sunrise/sunset, for the same reason given below) and by the
+time-proximity weight from §3b. *How* that already-local, already-weighted
+pool is turned into a factor is a **pluggable strategy**, chosen once by
+the user for the whole integration (all strings share the same method;
+see §6), not auto-selected and not configurable per string. Four
+strategies are supported, behind a shared `regression/base.py` protocol
+(`fit(samples) -> FittedModel`, `predict(az, el) -> (factor,
+confidence)`):
 
 | Method | Model | Character |
 |---|---|---|
-| `kernel` (default) | Nadaraya-Watson: `Σ w_i · ratio_i / Σ w_i`, `w_i = kernel(distance, bandwidth) · magnitude_weight_i` | Non-parametric, follows sharp/localized shading edges well, needs reasonable local sample density |
-| `linear` | Weighted least squares, degree 1: `factor ≈ β₀ + β₁·az + β₂·el` | Global plane fit; very robust with little data, cannot represent a spatially localized obstruction well |
-| `wls2` | Weighted least squares, degree 2: adds `az²`, `az·el`, `el²` | Global, gentler bumps/dips than linear, still limited by being a single global surface |
-| `wls3` | Weighted least squares, degree 3: adds cubic + cross terms | Global, most flexible of the three parametric options, but risks oscillation (Runge's phenomenon) away from densely-sampled regions |
+| `kernel` (default) | Weighted mean: `Σ w_i · ratio_i / Σ w_i`, `w_i = magnitude_weight_i · time_weight_i` (no azimuth/elevation term) | Simplest, fewest assumptions, most robust with very few samples; ignores any residual azimuth/elevation trend within the pool |
+| `linear` | Weighted least squares, degree 1 over the same pool: `factor ≈ β₀ + β₁·az + β₂·el` | Captures a residual linear seasonal-drift trend within the pool; needs a few more samples than `kernel` to estimate reliably |
+| `wls2` | Weighted least squares, degree 2: adds `az²`, `az·el`, `el²` | Captures gentle curvature in the residual trend; more parameters, more data-hungry |
+| `wls3` | Weighted least squares, degree 3: adds cubic + cross terms | Most flexible of the parametric options; with the pool sizes in play here (at most `window_days · (2·smoothing_radius + 1)`, typically well under 100), risks overfitting the small sample rather than capturing genuine structure |
 
-**Confidence is defined independently of the chosen method.** A global
-polynomial fit (`linear`/`wls2`/`wls3`) has no intrinsic notion of "how
-much local evidence supports this specific query point" — the fitted
-coefficients look equally confident everywhere. To avoid the false
-precision this would otherwise imply, confidence is **always** computed
-the same way, regardless of which strategy produced the point estimate:
-the normalized local kernel-weighted sample density around `(az, el)`
-(the same neighborhood-density calculation `kernel` uses for its own
-weights). This decouples "how good is the point estimate" from "how
-sure are we of this point estimate", and means switching methods never
-changes what the confidence attribute means.
+Note what changed from an earlier draft of this decision: azimuth/
+elevation are no longer used as a *distance metric* to define which
+historical samples are "close enough" to matter (there is no standalone
+azimuth/elevation kernel bandwidth). That job is already done structurally
+by the slot pool itself (§3a/§3b) — a slot's pool is, by construction,
+already every sample whose sun position was close to today's, because it
+is literally the same clock-time slot on other days within the window.
+Layering a second, independently-tuned azimuth/elevation bandwidth on top
+of that would repeat work the slot partitioning already does, and would
+add a parameter with no obvious default (see the discussion this
+resolved). Azimuth/elevation still matter, but strictly as **regressors**
+for the three WLS variants — capturing whatever small residual trend
+exists *within* an already-local pool (mostly season-driven drift over
+the rolling window) — never as a distance/locality mechanism.
 
-`kernel` was chosen as the default over the three WLS variants because
-shading from a real obstruction is a genuinely local, often sharp-edged
-phenomenon in `(azimuth, elevation)` space — a single global polynomial
-surface structurally cannot represent "unshaded everywhere except this one
-patch of sky" without either underfitting the shaded patch or introducing
-artifacts elsewhere (over- or undershooting) to accommodate it. The linear
-and polynomial options exist as a deliberately simpler fallback for users
-who prefer a more predictable, lower-variance model — e.g. while very
-little history has accumulated, or if a user finds the kernel model's
-locality produces noisier day-to-day output than they want — at the cost
-of not resolving localized shading precisely.
+**Confidence is defined independently of the chosen method**, and is now
+simply the normalized sum of sample weights in the slot's pool,
+`Σ (magnitude_weight_i · time_weight_i)` — no azimuth/elevation density
+calculation is needed, since the pool itself is already the "local
+neighborhood". A global polynomial fit (`linear`/`wls2`/`wls3`) has no
+intrinsic notion of "how much evidence supports this point" from its
+coefficients alone; using the same pool-weight-sum for every method,
+regardless of which one produced the point estimate, decouples "how good
+is the point estimate" from "how sure are we of it", and means switching
+methods never changes what the confidence attribute means.
+
+`kernel` was chosen as the default because it makes the fewest
+assumptions about the shape of the residual trend within a pool that is,
+by construction, already small and already local (§3a/§3b) — it is simply
+the weighted average shading ratio for "this time of day, recently". The
+WLS variants exist for users who want the model to also account for a
+residual seasonal drift *within* that pool (e.g. because the rolling
+window straddles a period of fast solar-position change, like near an
+equinox) at the cost of needing slightly more samples to fit reliably —
+not, as an earlier draft of this ADR argued, because of any difference in
+how well each method captures a "sharp edge" (that concern applied to a
+single global model spanning the whole day, before slot partitioning
+existed, and no longer applies once every method operates on the same
+narrow, pre-localized pool).
 
 Regardless of method, `magnitude_weight_i` downweights samples where
 `baseline_forecast_i` is near zero, because `ratio_i` is a division of two
@@ -153,11 +172,10 @@ not patched afterwards — see §3b.
 Rather than smoothing the finished curve of per-slot factors after all 288
 models are fit, each slot's **training data** is widened to also include
 a small number of neighboring slots' historical samples, weighted by
-time-of-day distance — the same kind of distance-based weighting `kernel`
-already applies in `(azimuth, elevation)` space (§2), just extended with a
-third, temporal dimension. A slot at `10:00` with a smoothing radius of 1
-is fit on samples from `09:55`, `10:00`, and `10:05` (weighted by
-closeness to `10:00`), not `10:00` alone.
+time-of-day distance (`time_weight_i`, folded into the sample weight used
+throughout §2 alongside `magnitude_weight_i`). A slot at `10:00` with a
+smoothing radius of 1 is fit on samples from `09:55`, `10:00`, and `10:05`
+(weighted by closeness to `10:00`), not `10:00` alone.
 
 This was chosen over output-side smoothing (e.g. a moving average over the
 288 finished factors) for two reasons:
@@ -166,10 +184,11 @@ This was chosen over output-side smoothing (e.g. a moving average over the
   it.** Because neighboring slots' sun positions are almost always very
   close (the sun moves continuously and monotonically through the day), a
   time-of-day-adjacent sample is, physically, nearly the same kind of
-  evidence as a spatially-adjacent one — the existing `(azimuth,
-  elevation)` kernel weighting already knows how to blend "similar sun
-  positions with different confidence" correctly. A fixed post-hoc
-  smoothing window has no such notion: it would blur a genuinely sharp,
+  evidence as the slot's own samples — folding `time_weight_i` into the
+  same weighted-pool mechanism §2 already uses for `magnitude_weight_i`
+  means "similar sun positions with different confidence" is blended
+  correctly, using the pool's own weights. A fixed post-hoc smoothing
+  window has no such notion: it would blur a genuinely sharp,
   well-supported shading edge exactly as much as it blurs pure noise
   between two low-confidence slots, since it cannot tell the two apart.
 - **It also directly helps the cold-start/small-`n` problem** noted in §4
@@ -289,20 +308,23 @@ Effy's `EffyOptionsFlow`.
 - **Pro:** The provider-discovery approach (§5) means Shady works with
   whatever PV-forecast or weather integration the user already has,
   without per-integration adapter code to maintain.
-- **Pro:** Kernel regression (§2, default) unifies interpolation,
-  cold-start behavior, and confidence reporting into a single mechanism
-  instead of three separate ones; the `linear`/`wls2`/`wls3` alternatives
-  give users a simpler, lower-variance fallback without a second
-  confidence mechanism, since confidence is computed the same way
-  regardless of method.
+- **Pro:** `kernel` (§2, default) makes the fewest assumptions and needs
+  the least data of the four strategies, since it is just the weighted
+  mean of an already-local pool (§3a/§3b) — a sensible default precisely
+  because that pool is small; the `linear`/`wls2`/`wls3` alternatives let
+  a user trade some of that robustness for capturing a residual seasonal
+  trend within the same pool, all four sharing one confidence definition
+  so switching methods never changes what the confidence attribute means.
 - **Pro:** Slot partitioning (§3a) means producing an adjusted forecast is
   always a direct per-slot model lookup, matching the recorder's own
   5-minute grid (Effy ADR-003) with no per-query neighbor search over the
   full historical point cloud, and keeps recalibration cost small and
   independent per slot; temporal smoothing (§3b) resolves the resulting
-  slot-boundary discontinuity risk at the training-data level, using the
-  same confidence-aware weighting as the existing spatial kernel, instead
-  of a separate blind post-hoc smoothing pass.
+  slot-boundary discontinuity risk directly in the training-data weights
+  (reusing the same weighted-pool mechanism as `magnitude_weight_i`),
+  instead of a separate blind post-hoc smoothing pass — and removes the
+  need for a second, hard-to-default azimuth/elevation bandwidth parameter
+  entirely (§2).
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough sun-position
@@ -328,11 +350,11 @@ Effy's `EffyOptionsFlow`.
   precisely because how sharp a "real" transition is expected to be varies
   by installation.
 - **Con:** The regression method (§2) is a single, global choice across all
-  configured strings. A system with genuinely different shading character
-  per string (e.g. one string with a sharp, localized tree shadow that
-  needs `kernel`, another with no shading at all where `linear` would do
-  fine) cannot mix methods; the user must pick the one method that serves
-  the whole installation. Revisit as a per-string option if this turns out
-  to matter in practice (see also the "pro String" decision in §3, which
-  already allows separate *models* — just not separate *methods* — per
-  string).
+  configured strings. A system with genuinely different characteristics
+  per string (e.g. one string whose pool has a strong residual seasonal
+  trend worth capturing with `wls2`, another where `kernel`'s plain
+  weighted mean is already sufficient) cannot mix methods; the user must
+  pick the one method that serves the whole installation. Revisit as a
+  per-string option if this turns out to matter in practice (see also the
+  "pro String" decision in §3, which already allows separate *models* —
+  just not separate *methods* — per string).

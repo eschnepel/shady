@@ -42,8 +42,7 @@ Kein manuell gepflegtes Horizontprofil. Shady lernt die Verschattung
 
 ## Offene Fragen für das weitere Brainstorming
 
-- Genaue Kernel-Bandbreite (räumlich + zeitlich) / Standard-
-  Trainingsfenster-Feintuning mit echten Daten.
+- Smoothing-Radius-Default (§3b) mit echten Daten validieren.
 - Diagnose-/Debug-Darstellung des gelernten Verschattungsfeldes (z.B. als
   Polardiagramm Azimut/Elevation) für den Nutzer.
 
