@@ -108,6 +108,47 @@ string is not). Each string is configured as a `(baseline_series,
 actual_yield_entity)` pair (see §5), and gets its own fitted model, its own
 confidence, and its own adjusted-forecast output sensor.
 
+### 3a — Slot partitioning: one model per 5-minute-of-day slot
+
+Within each string, Shady does not fit a single continuous model queried
+at an arbitrary timestamp. Instead it maintains **one independent model
+per 5-minute-of-day slot** — the same 288-slots-per-day grid Effy's
+ADR-003 established for recorder statistics (`00:00`, `00:05`, …,
+`23:55`). A slot's model is trained only on the historical samples that
+fell into that exact clock-time slot across the days in the rolling
+window (§4) — at most `window_days` samples, since each day contributes
+exactly one sample per slot. The predictor within a slot is still sun
+azimuth/elevation (§1), and the chosen regression method (§2) still
+applies — just fit over a much narrower, slot-local neighborhood instead
+of pooling every timestamp of the day into one model. Slots where the sun
+is below the horizon for the whole window (pure night) are simply never
+fitted/queried.
+
+This is chosen over one continuous per-string model for three reasons:
+
+- **It matches the shape of the problem.** Any baseline forecast is
+  already delivered as discrete per-slot values (§5), and the recorder
+  statistics Shady reads/writes are natively 5-minute-sliced (Effy
+  ADR-003). Slot-partitioned models mean producing an adjusted forecast is
+  always "look up this slot's model and evaluate it" — no per-query
+  neighbor search across the full historical point cloud.
+- **Cheap, independent fits.** Each slot's fit is over a small `n` (≤
+  `window_days`), fast enough to refit every slot on every recalibration
+  run (§4) without needing incremental/online update logic. A corrupted or
+  anomalous slot's data can never leak into neighboring slots' models.
+- **Simplicity of the confidence definition (§2).** "How much local
+  evidence supports this point" collapses to "how many, and how
+  consistent, are this slot's own samples" — no cross-slot weighting
+  scheme is needed.
+
+The trade-off is that slot models do not share data with their neighbors
+even when the true shading pattern is smooth across time — two adjacent
+slots (e.g. `10:00` and `10:05`) are fit completely independently, so
+their factors can differ more from one another than the physical
+situation actually would, especially with few samples. This is accepted
+for now (see Consequences); revisit with cross-slot smoothing only if it
+proves visible in practice.
+
 ### 4 — Rolling 28-day training window as the default
 
 The training window defaults to the **most recent 28 days** (configurable,
@@ -118,13 +159,15 @@ This is deliberate, not a data-volume compromise: a static obstruction's
 azimuth/elevation footprint is stable across the whole year, but a
 **deciduous tree's canopy density is not** — dense foliage in summer casts
 a materially different shadow than a bare tree in winter. A window spanning
-many months would blend "full canopy" and "bare branches" samples for the
-same sun-position cell, producing a shading factor that is wrong in both
-directions depending on season. A rolling 28-day window instead tracks
-*current* canopy state and re-adapts automatically as the season (and the
-tree) changes, at the cost of needing that many days of history before a
-given sun-position cell has any coverage at all — an acceptable trade-off
-given the cold-start behavior described in §2.
+many months would blend "full canopy" and "bare branches" samples within
+the same slot's model (§3a), producing a shading factor that is wrong in
+both directions depending on season. A rolling 28-day window instead
+tracks *current* canopy state and re-adapts automatically as the season
+(and the tree) changes, at the cost of every slot needing up to 28 days
+before it has any samples at all, and never having more than 28 to work
+with even at steady state — an acceptable trade-off given the cold-start
+behavior described in §2 and the small-`n` fitting cost already accepted
+in §3a.
 
 ### 5 — Baseline (unshaded forecast) sourcing: generic attribute discovery
 
@@ -214,6 +257,11 @@ Effy's `EffyOptionsFlow`.
   give users a simpler, lower-variance fallback without a second
   confidence mechanism, since confidence is computed the same way
   regardless of method.
+- **Pro:** Slot partitioning (§3a) means producing an adjusted forecast is
+  always a direct per-slot model lookup, matching the recorder's own
+  5-minute grid (Effy ADR-003) with no per-query neighbor search over the
+  full historical point cloud, and keeps recalibration cost small and
+  independent per slot.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough sun-position
@@ -224,12 +272,18 @@ Effy's `EffyOptionsFlow`.
   Mitigated by always requiring user confirmation and offering a manual
   fallback, but a future HA core or integration update could still change
   an attribute's shape without notice, same caveat as Effy's ADR-003.
-- **Con:** A 28-day rolling default (§4) means sun-position cells that only
-  occur briefly (e.g. a narrow azimuth range at sunrise in a specific
-  season) may have persistently low confidence even after long-term use,
-  since they don't recur often enough within any 28-day window. Acceptable
-  for now; may need a slower-decaying window specifically for rarely-visited
-  cells if this proves problematic in practice.
+- **Con:** A 28-day rolling default (§4) means slots (§3a) that only ever
+  see a narrow, drifting sun position across the window (e.g. near
+  sunrise/sunset in a specific season) may have persistently low
+  confidence even after long-term use, since a given slot's samples never
+  exceed `window_days`. Acceptable for now; may need a slower-decaying
+  window specifically for such slots if this proves problematic in
+  practice.
+- **Con:** Slot partitioning (§3a) fits every 5-minute slot fully
+  independently, so adjacent slots can disagree more than the physical
+  situation warrants, especially with few samples — there is no
+  cross-slot smoothing. Acceptable for now; revisit only if discontinuous
+  minute-to-minute output is visible in practice.
 - **Con:** The regression method (§2) is a single, global choice across all
   configured strings. A system with genuinely different shading character
   per string (e.g. one string with a sharp, localized tree shadow that

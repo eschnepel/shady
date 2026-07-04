@@ -78,10 +78,10 @@ providers/             (pure-ish: discovers + normalizes forecast/sunshine
   normalize.py            see ADR-001. Reads hass.states only — no writes,
   base.py                 no coordinator/internal API access.)
        ↑
-regression/             (pure logic: pluggable per-string regression strategy
-  base.py                 — kernel/linear/wls2/wls3 — fit + predict with a
-  kernel.py               shared confidence definition; see ADR-001/ADR-002)
-  linear.py
+regression/             (pure logic: pluggable per-string, per-5-minute-slot
+  base.py                 regression strategy — kernel/linear/wls2/wls3 —
+  kernel.py               fit + predict with a shared confidence definition;
+  linear.py               see ADR-001/ADR-002)
   wls2.py
   wls3.py
        ↑

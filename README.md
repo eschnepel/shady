@@ -25,10 +25,11 @@ Kein manuell gepflegtes Horizontprofil. Shady lernt die Verschattung
 2. Shady berechnet für jeden historischen 5-Minuten-Slot den **Sonnenstand**
    (Azimut + Elevation) anhand Standort und Zeit.
 3. Eine **kernel-gewichtete Regression** über (Azimut, Elevation) lernt pro
-   String einen Verschattungsfaktor – Sonnenstände, an denen der reale
-   Ertrag systematisch niedriger ausfällt als die Baseline, verraten die
-   Position der Obstruktion, ganz ohne dass sie geometrisch beschrieben
-   werden muss.
+   String **und pro 5-Minuten-Slot des Tages** (00:00, 00:05, …, 23:55 –
+   dasselbe Raster wie die HA-Recorder-Statistics) einen eigenen
+   Verschattungsfaktor – Sonnenstände, an denen der reale Ertrag
+   systematisch niedriger ausfällt als die Baseline, verraten die Position
+   der Obstruktion, ganz ohne dass sie geometrisch beschrieben werden muss.
 4. Ein rollierendes 28-Tage-Fenster (konfigurierbar) hält das Modell nah an
    der aktuellen Situation (z.B. Laubfall bei einem Baum).
 5. Ergebnis: ein angepasster Forecast-Sensor pro String, plus ein
