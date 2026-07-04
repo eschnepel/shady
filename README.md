@@ -12,33 +12,43 @@ Das Projekt übernimmt die Engineering-Konventionen von
 [Effy](https://github.com/eschnepel/effy) (siehe [`adr/000-coding-standards.md`](adr/000-coding-standards.md))
 als gemeinsame Basis für beide Integrationen.
 
-## Grundidee (zu verfeinern)
+## Grundidee (siehe ADR-001 für Details)
 
-1. Nutzer definiert ein **Horizontprofil** (z.B. Liste aus
-   Azimut/Elevation-Punkten, die den Baum/die Obstruktion beschreiben).
-2. Shady berechnet für jeden Forecast-Zeitpunkt den **Sonnenstand**
+Kein manuell gepflegtes Horizontprofil. Shady lernt die Verschattung
+**empirisch** aus der Differenz zwischen einem bestehenden PV-Forecast
+(oder einer Sonnenstunden-Prognose) und dem realen historischen Ertrag:
+
+1. Für jeden konfigurierten String wird eine **Baseline** (unverschatteter
+   Forecast) automatisch erkannt – entweder aus einer PV-Forecast-
+   Integration (z.B. Forecast.Solar, Solcast) oder, falls keine vorhanden
+   ist, aus der Sonnenstunden-Prognose einer Wetterintegration.
+2. Shady berechnet für jeden historischen 5-Minuten-Slot den **Sonnenstand**
    (Azimut + Elevation) anhand Standort und Zeit.
-3. Liegt die Sonne hinter der Obstruktion (Elevation < Horizontprofil an
-   diesem Azimut), wird ein **Verschattungsfaktor** ermittelt und auf den
-   rohen Forecast-Wert angewendet.
-4. Ergebnis: ein neuer, angepasster Forecast-Sensor.
+3. Eine **kernel-gewichtete Regression** über (Azimut, Elevation) lernt pro
+   String einen Verschattungsfaktor – Sonnenstände, an denen der reale
+   Ertrag systematisch niedriger ausfällt als die Baseline, verraten die
+   Position der Obstruktion, ganz ohne dass sie geometrisch beschrieben
+   werden muss.
+4. Ein rollierendes 28-Tage-Fenster (konfigurierbar) hält das Modell nah an
+   der aktuellen Situation (z.B. Laubfall bei einem Baum).
+5. Ergebnis: ein angepasster Forecast-Sensor pro String, plus ein
+   Konfidenz-Attribut.
 
-## Offene Fragen für das Brainstorming
+## Offene Fragen für das weitere Brainstorming
 
-- Wie bildet man einen Baum realistisch ab (harte Kante vs. diffuse
-  Teilverschattung durch Blätterdach)?
-- Wie pflegt der Nutzer das Horizontprofil (manuell, Kartentool, Foto-basiert)?
-- Soll Shady saisonale Veränderungen (Laubfall) berücksichtigen?
-- Welche Forecast-Quellen müssen unterstützt werden (Forecast.Solar,
-  Solcast, Open-Meteo, eigene Sensoren)?
-- Auflösung: 15-Minuten-Raster wie viele PV-Forecast-Integrationen, oder
-  konfigurierbar?
+- Genaue Kernel-Bandbreite / Standard-Trainingsfenster-Feintuning mit
+  echten Daten.
+- Coordinator-Rekalibrierungs-Zyklus (wie oft neu fitten?).
+- Umgang mit Wechselrichter-Clipping/Temperatur-Derating, das die Baseline
+  ebenfalls (nicht-verschattungsbedingt) drückt und die Regression stören
+  könnte.
+- Diagnose-/Debug-Darstellung des gelernten Verschattungsfeldes (z.B. als
+  Polardiagramm Azimut/Elevation) für den Nutzer.
 
 ## Struktur
 
 Siehe [`adr/000-coding-standards.md`](adr/000-coding-standards.md) für die
-vorgesehenen Modulgrenzen (`sun_geometry.py`, `horizon_profile.py`,
-`shading.py`, `forecast_adjust.py`, `coordinator.py`, `sensor.py`,
-`config_flow.py`).
+Modulgrenzen und [`adr/001-empirical-shading-model.md`](adr/001-empirical-shading-model.md)
+für das Regressionsmodell, die Provider-Erkennung und den Config-Flow.
 
-Weitere ADRs (001 ff.) werden im Laufe des Brainstormings ergänzt.
+Weitere ADRs (002 ff.) werden im Laufe des Brainstormings ergänzt.

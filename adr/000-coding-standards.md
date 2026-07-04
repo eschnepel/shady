@@ -63,33 +63,47 @@ ignore[misc]`), and `untyped-decorator` errors are attached to the
 `@callback` line itself, not the `def` line below it — mypy's reported line
 number is authoritative and should never be guessed at.
 
-`shading.py` and `sun_geometry.py` have zero Home Assistant imports and are
-held to the full, unsuppressed strict standard — they are pure,
-framework-independent Python and are tested as such (see §6).
+`sun_geometry.py`, `shading_regression.py`, and `forecast_adjust.py` have
+zero Home Assistant imports and are held to the full, unsuppressed strict
+standard — they are pure, framework-independent Python and are tested as
+such (see §6).
 
 ### 3 — Module boundaries and dependency direction
 
 ```
-sun_geometry.py  (pure math: sun azimuth/elevation for a given lat/lon/time)
-horizon_profile.py (pure data: user-defined obstruction profile, e.g. tree)
-       ↑                    ↑
-shading.py       (pure logic: combines sun position + horizon → shading factor)
+sun_geometry.py        (pure math: sun azimuth/elevation for a given lat/lon/time)
        ↑
-forecast_adjust.py (pure logic: applies shading factor to a raw PV forecast series)
+providers/             (pure-ish: discovers + normalizes forecast/sunshine
+  discovery.py           baseline series from whatever HA entity exposes them;
+  normalize.py            see ADR-001. Reads hass.states only — no writes,
+  base.py                 no coordinator/internal API access.)
        ↑
-coordinator.py   (orchestrates: fetches forecast source + schedules recalculation)
+shading_regression.py  (pure logic: per-string kernel regression over
+                         (azimuth, elevation) → shading factor + confidence;
+                         see ADR-001)
+       ↑
+forecast_adjust.py     (pure logic: applies a string's shading factor to its
+                         raw baseline series)
+       ↑
+coordinator.py          (orchestrates: pulls recorder history + provider data,
+                         re-fits the regression on a rolling window, schedules
+                         recalculation)
        ↑
 sensor.py / config_flow.py  (HA entity glue)
        ↑
-__init__.py      (wires platforms + coordinator into hass.data)
+__init__.py             (wires platforms + coordinator into hass.data)
 ```
 
-Dependencies point upward only. `sun_geometry.py`, `horizon_profile.py`,
-`shading.py`, and `forecast_adjust.py` never import from any HA-facing
-module, and never import `homeassistant.*` directly. This separation is
-what allows the entire shading/forecast math to be unit-tested in complete
-isolation from Home Assistant (see §6), independent of which upstream PV
-forecast integration (e.g. Forecast.Solar, Solcast) is being adjusted.
+Dependencies point upward only. `sun_geometry.py`, `shading_regression.py`,
+and `forecast_adjust.py` never import from any HA-facing module, and never
+import `homeassistant.*` directly. `providers/` is the one exception: it
+necessarily reads `hass.states`/`hass.config_entries` to discover and read
+other integrations' entities, but is still isolated from `coordinator.py`'s
+orchestration concerns and never touches the recorder or writes state. This
+separation is what allows the shading/forecast math itself to be
+unit-tested in complete isolation from Home Assistant (see §6), independent
+of which upstream PV forecast or weather integration is supplying the
+baseline.
 
 ### 4 — Type-hinting conventions
 
@@ -115,17 +129,17 @@ forecast integration (e.g. Forecast.Solar, Solcast) is being adjusted.
 - Module-level constants are `UPPER_SNAKE_CASE` and live in `const.py`
   (cross-module) or at the top of the module that owns them (single-use,
   e.g. `DEFAULT_POLL_INTERVAL` in `coordinator.py`).
-- Private helpers are prefixed with a single underscore (`_interpolate_horizon`,
+- Private helpers are prefixed with a single underscore (`_kernel_weight`,
   `_azimuth_to_bearing`) and are not exported.
 - HA-facing entities (`ShadySensor`, `ShadyCoordinator`, `ShadyConfigFlow`,
   `ShadyOptionsFlow`) are all prefixed `Shady` for discoverability when
   grepping or reading stack traces.
 - One concept per module: `sun_geometry.py` only computes sun position,
-  `horizon_profile.py` only models the obstruction outline, `shading.py`
-  only turns the two into a shading factor, `forecast_adjust.py` only
-  applies that factor to a forecast series, `coordinator.py` only
-  orchestrates. A module that starts doing two unrelated things is a signal
-  to split it.
+  `providers/` only discovers and normalizes third-party baseline data,
+  `shading_regression.py` only fits/queries the per-string kernel model,
+  `forecast_adjust.py` only applies a factor to a forecast series,
+  `coordinator.py` only orchestrates. A module that starts doing two
+  unrelated things is a signal to split it.
 
 ### 6 — Testing philosophy
 
