@@ -78,6 +78,10 @@ providers/             (pure-ish: discovers + normalizes forecast/sunshine
   normalize.py            see ADR-001. Reads hass.states only — no writes,
   base.py                 no coordinator/internal API access.)
        ↑
+yield_correction.py     (pure logic: optional per-string clipping exclusion
+                         + temperature derating correction, no-op if not
+                         configured; see ADR-003)
+       ↑
 regression/             (pure logic: pluggable per-string, per-5-minute-slot
   base.py                 regression strategy — kernel/linear/wls2/wls3 —
   kernel.py               fit + predict with a shared confidence definition;
@@ -97,9 +101,9 @@ sensor.py / config_flow.py  (HA entity glue)
 __init__.py             (wires platforms + coordinator into hass.data)
 ```
 
-Dependencies point upward only. `sun_geometry.py`, `regression/`, and
-`forecast_adjust.py` never import from any HA-facing module, and never
-import `homeassistant.*` directly. `providers/` is the one exception: it
+Dependencies point upward only. `sun_geometry.py`, `yield_correction.py`,
+`regression/`, and `forecast_adjust.py` never import from any HA-facing
+module, and never import `homeassistant.*` directly. `providers/` is the one exception: it
 necessarily reads `hass.states`/`hass.config_entries` to discover and read
 other integrations' entities, but is still isolated from `coordinator.py`'s
 orchestration concerns and never touches the recorder or writes state. This

@@ -141,13 +141,49 @@ This is chosen over one continuous per-string model for three reasons:
   consistent, are this slot's own samples" — no cross-slot weighting
   scheme is needed.
 
-The trade-off is that slot models do not share data with their neighbors
-even when the true shading pattern is smooth across time — two adjacent
-slots (e.g. `10:00` and `10:05`) are fit completely independently, so
-their factors can differ more from one another than the physical
-situation actually would, especially with few samples. This is accepted
-for now (see Consequences); revisit with cross-slot smoothing only if it
-proves visible in practice.
+The trade-off is that slot models, fit in complete isolation, do not share
+data with their neighbors even when the true shading pattern is smooth
+across time — two adjacent slots (e.g. `10:00` and `10:05`) could
+otherwise disagree more than the physical situation warrants, especially
+with few samples. This is resolved directly at the training-data level,
+not patched afterwards — see §3b.
+
+### 3b — Smoothing: widen each slot's training data, not the output
+
+Rather than smoothing the finished curve of per-slot factors after all 288
+models are fit, each slot's **training data** is widened to also include
+a small number of neighboring slots' historical samples, weighted by
+time-of-day distance — the same kind of distance-based weighting `kernel`
+already applies in `(azimuth, elevation)` space (§2), just extended with a
+third, temporal dimension. A slot at `10:00` with a smoothing radius of 1
+is fit on samples from `09:55`, `10:00`, and `10:05` (weighted by
+closeness to `10:00`), not `10:00` alone.
+
+This was chosen over output-side smoothing (e.g. a moving average over the
+288 finished factors) for two reasons:
+
+- **It uses the confidence signal that already exists, instead of ignoring
+  it.** Because neighboring slots' sun positions are almost always very
+  close (the sun moves continuously and monotonically through the day), a
+  time-of-day-adjacent sample is, physically, nearly the same kind of
+  evidence as a spatially-adjacent one — the existing `(azimuth,
+  elevation)` kernel weighting already knows how to blend "similar sun
+  positions with different confidence" correctly. A fixed post-hoc
+  smoothing window has no such notion: it would blur a genuinely sharp,
+  well-supported shading edge exactly as much as it blurs pure noise
+  between two low-confidence slots, since it cannot tell the two apart.
+- **It also directly helps the cold-start/small-`n` problem** noted in §4
+  — each slot's fit now draws on `window_days × (2·radius + 1)` samples
+  instead of just `window_days`, without abandoning the "cheap,
+  independent per-slot fit" property from §3a (the radius is a small
+  constant, not a full search over the whole point cloud).
+
+The temporal smoothing radius is a **global** setting (like the regression
+method in §2 — one value for the whole integration, not per string or per
+slot), exposed in the config flow (§6) as "smoothing radius in slots",
+defaulting to `1` (±5 minutes). A radius of `0` disables temporal
+smoothing entirely, reproducing the strictly-independent-slots behavior
+originally described in §3a.
 
 ### 4 — Rolling 28-day training window as the default
 
@@ -234,6 +270,8 @@ Step "location_and_window" (final):
   - Regression method: `kernel` (default) / `linear` / `wls2` / `wls3`
     (global — applies to every configured string, see §2; chosen manually,
     no auto-selection based on data volume)
+  - Smoothing radius in slots (default 1, global; see §3b — `0` disables
+    temporal smoothing)
 ```
 
 The options flow mirrors this to allow adding/editing strings and changing
@@ -261,7 +299,10 @@ Effy's `EffyOptionsFlow`.
   always a direct per-slot model lookup, matching the recorder's own
   5-minute grid (Effy ADR-003) with no per-query neighbor search over the
   full historical point cloud, and keeps recalibration cost small and
-  independent per slot.
+  independent per slot; temporal smoothing (§3b) resolves the resulting
+  slot-boundary discontinuity risk at the training-data level, using the
+  same confidence-aware weighting as the existing spatial kernel, instead
+  of a separate blind post-hoc smoothing pass.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough sun-position
@@ -279,11 +320,13 @@ Effy's `EffyOptionsFlow`.
   exceed `window_days`. Acceptable for now; may need a slower-decaying
   window specifically for such slots if this proves problematic in
   practice.
-- **Con:** Slot partitioning (§3a) fits every 5-minute slot fully
-  independently, so adjacent slots can disagree more than the physical
-  situation warrants, especially with few samples — there is no
-  cross-slot smoothing. Acceptable for now; revisit only if discontinuous
-  minute-to-minute output is visible in practice.
+- **Con:** Temporal smoothing (§3b) trades a small amount of temporal
+  resolution for stability — with the default radius of 1, a genuinely
+  very sharp shading transition that occurs within a single 5-minute slot
+  will be very slightly softened across its two immediate neighbors. This
+  is deliberately tunable (down to `0`, disabling it) rather than fixed,
+  precisely because how sharp a "real" transition is expected to be varies
+  by installation.
 - **Con:** The regression method (§2) is a single, global choice across all
   configured strings. A system with genuinely different shading character
   per string (e.g. one string with a sharp, localized tree shadow that

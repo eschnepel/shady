@@ -30,26 +30,31 @@ Kein manuell gepflegtes Horizontprofil. Shady lernt die Verschattung
    Verschattungsfaktor – Sonnenstände, an denen der reale Ertrag
    systematisch niedriger ausfällt als die Baseline, verraten die Position
    der Obstruktion, ganz ohne dass sie geometrisch beschrieben werden muss.
+   Ein globaler Smoothing-Radius (Default: 1 Nachbar-Slot) verhindert harte
+   Sprünge zwischen benachbarten Slots.
 4. Ein rollierendes 28-Tage-Fenster (konfigurierbar) hält das Modell nah an
-   der aktuellen Situation (z.B. Laubfall bei einem Baum).
-5. Ergebnis: ein angepasster Forecast-Sensor pro String, plus ein
-   Konfidenz-Attribut.
+   der aktuellen Situation (z.B. Laubfall bei einem Baum). Optional, pro
+   String: Wechselrichter-Clipping-Samples werden aus dem Training
+   ausgeschlossen, Temperatur-Derating wird vor der Regression herausgerechnet
+   – beides deaktiviert Shady standardmäßig, bis explizit konfiguriert.
+5. Ergebnis: ein angepasster Forecast-Sensor pro String (heute + morgen),
+   plus ein Konfidenz-Attribut.
 
 ## Offene Fragen für das weitere Brainstorming
 
-- Genaue Kernel-Bandbreite / Standard-Trainingsfenster-Feintuning mit
-  echten Daten.
-- Coordinator-Rekalibrierungs-Zyklus (wie oft neu fitten?).
-- Umgang mit Wechselrichter-Clipping/Temperatur-Derating, das die Baseline
-  ebenfalls (nicht-verschattungsbedingt) drückt und die Regression stören
-  könnte.
+- Genaue Kernel-Bandbreite (räumlich + zeitlich) / Standard-
+  Trainingsfenster-Feintuning mit echten Daten.
 - Diagnose-/Debug-Darstellung des gelernten Verschattungsfeldes (z.B. als
   Polardiagramm Azimut/Elevation) für den Nutzer.
 
 ## Struktur
 
 Siehe [`adr/000-coding-standards.md`](adr/000-coding-standards.md) für die
-Modulgrenzen und [`adr/001-empirical-shading-model.md`](adr/001-empirical-shading-model.md)
-für das Regressionsmodell, die Provider-Erkennung und den Config-Flow.
+Modulgrenzen, [`adr/001-empirical-shading-model.md`](adr/001-empirical-shading-model.md)
+für das Regressionsmodell, die Provider-Erkennung und den Config-Flow,
+[`adr/002-coordinator-update-strategy.md`](adr/002-coordinator-update-strategy.md)
+für Rekalibrierungs- und Forecast-Update-Trigger, und
+[`adr/003-yield-corrections-clipping-derating.md`](adr/003-yield-corrections-clipping-derating.md)
+für die optionalen Clipping-/Derating-Korrekturen.
 
-Weitere ADRs (002 ff.) werden im Laufe des Brainstormings ergänzt.
+Weitere ADRs (004 ff.) werden im Laufe des Brainstormings ergänzt.
