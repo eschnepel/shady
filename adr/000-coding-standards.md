@@ -63,10 +63,10 @@ ignore[misc]`), and `untyped-decorator` errors are attached to the
 `@callback` line itself, not the `def` line below it — mypy's reported line
 number is authoritative and should never be guessed at.
 
-`sun_geometry.py`, `shading_regression.py`, and `forecast_adjust.py` have
-zero Home Assistant imports and are held to the full, unsuppressed strict
-standard — they are pure, framework-independent Python and are tested as
-such (see §6).
+`sun_geometry.py`, every module in `regression/`, and `forecast_adjust.py`
+have zero Home Assistant imports and are held to the full, unsuppressed
+strict standard — they are pure, framework-independent Python and are
+tested as such (see §6).
 
 ### 3 — Module boundaries and dependency direction
 
@@ -78,9 +78,12 @@ providers/             (pure-ish: discovers + normalizes forecast/sunshine
   normalize.py            see ADR-001. Reads hass.states only — no writes,
   base.py                 no coordinator/internal API access.)
        ↑
-shading_regression.py  (pure logic: per-string kernel regression over
-                         (azimuth, elevation) → shading factor + confidence;
-                         see ADR-001)
+regression/             (pure logic: pluggable per-string regression strategy
+  base.py                 — kernel/linear/wls2/wls3 — fit + predict with a
+  kernel.py               shared confidence definition; see ADR-001/ADR-002)
+  linear.py
+  wls2.py
+  wls3.py
        ↑
 forecast_adjust.py     (pure logic: applies a string's shading factor to its
                          raw baseline series)
@@ -94,8 +97,8 @@ sensor.py / config_flow.py  (HA entity glue)
 __init__.py             (wires platforms + coordinator into hass.data)
 ```
 
-Dependencies point upward only. `sun_geometry.py`, `shading_regression.py`,
-and `forecast_adjust.py` never import from any HA-facing module, and never
+Dependencies point upward only. `sun_geometry.py`, `regression/`, and
+`forecast_adjust.py` never import from any HA-facing module, and never
 import `homeassistant.*` directly. `providers/` is the one exception: it
 necessarily reads `hass.states`/`hass.config_entries` to discover and read
 other integrations' entities, but is still isolated from `coordinator.py`'s
@@ -115,12 +118,12 @@ baseline.
 - `X | None` is used instead of `Optional[X]`.
 - Every function and method has a complete signature: parameter types and
   a return type, including `-> None`. This applies to private helpers
-  (e.g. `_interpolate_horizon`, `_clamp_elevation`) and test code exactly as
+  (e.g. `_kernel_weight`, `_clamp_elevation`) and test code exactly as
   it does to public HA-facing methods — `mypy --strict` does not
   distinguish, and a single unannotated parameter triggers `no-untyped-def`
   just as an entirely bare signature does.
 - `@dataclass` is used for plain data containers (`SunPosition`,
-  `HorizonPoint`, `ShadingFactor`) instead of dicts or named tuples — gives
+  `WeightedSample`, `FittedModel`) instead of dicts or named tuples — gives
   attribute access, auto-generated `__init__`/`__repr__`/`__eq__`, and a
   single place to add validation later if needed.
 
@@ -136,20 +139,22 @@ baseline.
   grepping or reading stack traces.
 - One concept per module: `sun_geometry.py` only computes sun position,
   `providers/` only discovers and normalizes third-party baseline data,
-  `shading_regression.py` only fits/queries the per-string kernel model,
-  `forecast_adjust.py` only applies a factor to a forecast series,
-  `coordinator.py` only orchestrates. A module that starts doing two
-  unrelated things is a signal to split it.
+  each module in `regression/` implements exactly one fitting strategy
+  behind the shared `base.py` protocol, `forecast_adjust.py` only applies
+  a factor to a forecast series, `coordinator.py` only orchestrates. A
+  module that starts doing two unrelated things is a signal to split it.
 
 ### 6 — Testing philosophy
 
-- `sun_geometry.py`, `horizon_profile.py`, `shading.py`, and
-  `forecast_adjust.py` are unit-tested with **zero mocking** — no
+- `sun_geometry.py`, every module in `regression/`, `providers/normalize.py`,
+  and `forecast_adjust.py` are unit-tested with **zero mocking** — no
   `unittest.mock`, no fake `hass` object. Because they have no Home
   Assistant dependency, tests call the real functions with real dataclass
   instances and assert on real return values. This is only possible
   *because* of the module boundary in §3; it is the practical payoff of
-  that design choice.
+  that design choice. `providers/discovery.py` is the one exception — it
+  reads `hass.states` by design (ADR-001 §5) and is tested against a real
+  `hass` fixture instead.
 - Tests are loaded via direct file-path import
   (`importlib.util.spec_from_file_location`) rather than package import,
   specifically to avoid pulling in `custom_components/shady/__init__.py`
@@ -157,58 +162,60 @@ baseline.
   This keeps the test environment lightweight (`pytest` only — no
   `pytest-homeassistant-custom-component` needed).
 - Because file-path loading yields plain `ModuleType` objects, mypy cannot
-  see the real classes on attributes such as `_shading_mod.ShadingFactor` —
+  see the real classes on attributes such as `_kernel_mod.FittedModel` —
   it only sees `Any`. Test files still get full static typing for these
   names via a `TYPE_CHECKING`-only static import that mirrors the runtime
-  path (`if TYPE_CHECKING: from shady.shading import ShadingFactor as
-  ShadingFactor`). This import is never executed (it runs only under
+  path (`if TYPE_CHECKING: from shady.regression.kernel import FittedModel
+  as FittedModel`). This import is never executed (it runs only under
   static analysis), so it does not reintroduce the `homeassistant`
   dependency the file-path loading was designed to avoid; the runtime
-  assignment (`ShadingFactor = _shading_mod.ShadingFactor`) is
-  correspondingly guarded with `if not TYPE_CHECKING:` so the two bindings
-  never conflict. This is mandatory for any test module that binds a
-  dynamically-loaded class to a name used later as a type annotation —
-  leaving it untyped cascades into dozens of unrelated
-  `attr-defined`/`valid-type` mypy errors on every usage of that name,
-  rather than a single fixable root cause.
+  assignment (`FittedModel = _kernel_mod.FittedModel`) is correspondingly
+  guarded with `if not TYPE_CHECKING:` so the two bindings never conflict.
+  This is mandatory for any test module that binds a dynamically-loaded
+  class to a name used later as a type annotation — leaving it untyped
+  cascades into dozens of unrelated `attr-defined`/`valid-type` mypy
+  errors on every usage of that name, rather than a single fixable root
+  cause.
 - Every test class documents the scenario it covers in a docstring or
   comment referencing the worked example in the README where applicable
-  (e.g. a test mirroring "tree shades the array between 08:00 and 10:30 in
-  winter" from the README's worked example).
+  (e.g. a test mirroring "tree shades the east string between 08:00 and
+  10:30 in winter" from the README's worked example).
 - Invariant checks (e.g. `0.0 <= shading_factor <= 1.0` for every sample,
-  or "adjusted forecast never exceeds the raw forecast at the same
+  or "adjusted forecast never exceeds the raw baseline at the same
   timestamp") are asserted explicitly in tests, not just spot-checked
   values — these are the most important correctness guarantees of the
   whole system and are tested as first-class assertions in every scenario
-  class.
+  class. Each of the four `regression/` strategies is tested against the
+  same shared scenario fixtures (see ADR-001 §2), so their outputs are
+  comparable rather than each having its own bespoke test data.
 
 ### 7 — Documentation: ADRs over inline essays
 
 Design rationale lives in `adr/`, not in large module docstrings or inline
 comment blocks. Module docstrings stay short (what the module does, 1–3
 sentences); the *why* behind non-obvious decisions is captured once in an
-ADR and referenced by number from the code (e.g. `# Interpolate linearly
-between horizon points (ADR-002)`). This avoids rationale drifting out of
+ADR and referenced by number from the code (e.g. `# Downweight near-zero
+baseline samples (ADR-001 §2)`). This avoids rationale drifting out of
 sync with the code, since an ADR is versioned independently and can be
 marked `Superseded` if a decision changes, without having to hunt down
 every comment that explained it.
 
 ### 8 — Error handling
 
-- User-facing errors (config flow validation, e.g. an invalid horizon
-  profile or an unreachable forecast entity) return error keys resolved
-  via `translations/*.json`, never raw exception text — keeps the UI
-  translatable and avoids leaking internals.
-- Background failures (forecast refresh, coordinator update) are logged via
-  `_LOGGER.exception`/`_LOGGER.warning` and swallowed rather than raised,
-  since these run outside a request/response cycle where there is no caller
-  to propagate the exception to.
-- The pure calculation modules (`sun_geometry.py`, `shading.py`,
-  `forecast_adjust.py`) raise no exceptions in their normal operating
-  range; they use `min`/`max` clamps (e.g. shading factor clamped to
-  `[0.0, 1.0]`) instead of validation errors, because the inputs are
-  derived from live sensor/forecast data and configuration that is expected
-  to occasionally be noisy rather than invalid.
+- User-facing errors (config flow validation, e.g. an unresolvable
+  baseline candidate or an unreachable actual-yield entity) return error
+  keys resolved via `translations/*.json`, never raw exception text — keeps
+  the UI translatable and avoids leaking internals.
+- Background failures (baseline refresh, coordinator recalibration) are
+  logged via `_LOGGER.exception`/`_LOGGER.warning` and swallowed rather
+  than raised, since these run outside a request/response cycle where
+  there is no caller to propagate the exception to.
+- The pure calculation modules (`sun_geometry.py`, every module in
+  `regression/`, `forecast_adjust.py`) raise no exceptions in their normal
+  operating range; they use `min`/`max` clamps (e.g. shading factor
+  clamped to `[0.0, 1.0]`) instead of validation errors, because the
+  inputs are derived from live sensor/forecast data and configuration that
+  is expected to occasionally be noisy rather than invalid.
 
 ---
 

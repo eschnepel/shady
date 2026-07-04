@@ -48,39 +48,55 @@ path, and would need far more historical data to disentangle the two.
 Using sun position as the predictor means the model generalizes across
 seasons immediately, from however much history is available.
 
-### 2 — Regression method: forecast-magnitude-weighted kernel regression
+### 2 — Regression method: a pluggable, globally-selected strategy
 
-For a query point `(az, el)`, the shading factor is a **Nadaraya-Watson
-kernel-weighted average** over all historical samples `i`:
+The regression target is always `ratio = actual_yield / baseline_forecast`
+over the predictor space `(azimuth, elevation)`, and every sample is always
+weighted by `magnitude_weight_i` (downweighting near-zero baseline
+samples, e.g. sunrise/sunset, for the same reason given below) — but *how*
+the weighted samples are turned into a factor at a query point `(az, el)`
+is a **pluggable strategy**, chosen once by the user for the whole
+integration (all strings share the same method; see §6), not auto-selected
+and not configurable per string. Four strategies are supported, behind a
+shared `regression/base.py` protocol (`fit(samples) -> FittedModel`,
+`predict(az, el) -> (factor, confidence)`):
 
-```
-factor(az, el) = Σ w_i · ratio_i / Σ w_i
-w_i = kernel(distance((az, el), (az_i, el_i)), bandwidth) · magnitude_weight_i
-```
+| Method | Model | Character |
+|---|---|---|
+| `kernel` (default) | Nadaraya-Watson: `Σ w_i · ratio_i / Σ w_i`, `w_i = kernel(distance, bandwidth) · magnitude_weight_i` | Non-parametric, follows sharp/localized shading edges well, needs reasonable local sample density |
+| `linear` | Weighted least squares, degree 1: `factor ≈ β₀ + β₁·az + β₂·el` | Global plane fit; very robust with little data, cannot represent a spatially localized obstruction well |
+| `wls2` | Weighted least squares, degree 2: adds `az²`, `az·el`, `el²` | Global, gentler bumps/dips than linear, still limited by being a single global surface |
+| `wls3` | Weighted least squares, degree 3: adds cubic + cross terms | Global, most flexible of the three parametric options, but risks oscillation (Runge's phenomenon) away from densely-sampled regions |
 
-- `kernel(...)` is a standard distance kernel (e.g. Gaussian) over the
-  (azimuth, elevation) plane with a configurable bandwidth (default on the
-  order of a few degrees — exact default to be tuned empirically once real
-  data is available).
-- `magnitude_weight_i` downweights samples where `baseline_forecast_i` is
-  near zero (sunrise/sunset), because `ratio_i` is a division of two small,
-  noisy numbers there and would otherwise dominate the average with
-  spurious extreme values. This mirrors the defensive-clamping philosophy
-  in Effy's ADR-005 (never let a degenerate input propagate raw).
+**Confidence is defined independently of the chosen method.** A global
+polynomial fit (`linear`/`wls2`/`wls3`) has no intrinsic notion of "how
+much local evidence supports this specific query point" — the fitted
+coefficients look equally confident everywhere. To avoid the false
+precision this would otherwise imply, confidence is **always** computed
+the same way, regardless of which strategy produced the point estimate:
+the normalized local kernel-weighted sample density around `(az, el)`
+(the same neighborhood-density calculation `kernel` uses for its own
+weights). This decouples "how good is the point estimate" from "how
+sure are we of this point estimate", and means switching methods never
+changes what the confidence attribute means.
 
-This approach was chosen over a fixed azimuth/elevation grid with a
-separate nearest-neighbor interpolation step for sparse cells, because the
-kernel formulation makes sparse-region interpolation and cold-start
-behavior **fall out of the same formula** rather than requiring a second
-mechanism:
+`kernel` was chosen as the default over the three WLS variants because
+shading from a real obstruction is a genuinely local, often sharp-edged
+phenomenon in `(azimuth, elevation)` space — a single global polynomial
+surface structurally cannot represent "unshaded everywhere except this one
+patch of sky" without either underfitting the shaded patch or introducing
+artifacts elsewhere (over- or undershooting) to accommodate it. The linear
+and polynomial options exist as a deliberately simpler fallback for users
+who prefer a more predictable, lower-variance model — e.g. while very
+little history has accumulated, or if a user finds the kernel model's
+locality produces noisier day-to-day output than they want — at the cost
+of not resolving localized shading precisely.
 
-- Sparse regions naturally borrow strength from nearby, better-sampled sun
-  positions (no separate interpolation pass).
-- With very little history, `Σ w_i` is small everywhere and the estimate
-  naturally stays close to unweighted/uncertain rather than requiring an
-  explicit "not enough data" branch.
-- `Σ w_i` (normalized) is itself a natural **confidence value**, exposed as
-  a diagnostic sensor attribute, without any additional bookkeeping.
+Regardless of method, `magnitude_weight_i` downweights samples where
+`baseline_forecast_i` is near zero, because `ratio_i` is a division of two
+small, noisy numbers there and would otherwise dominate the fit with
+spurious extreme values. This mirrors the defensive-clamping philosophy in
+Effy's ADR-005 (never let a degenerate input propagate raw).
 
 ### 3 — Granularity: one model per configured string
 
@@ -137,7 +153,7 @@ signal:
 key-name aliases (timestamp keys: `datetime`, `start`, `period_start`,
 `time`; value keys: `wh`, `pv_estimate`, `power`, `value`, `energy`,
 `sunshine_duration`), onto one canonical `list[tuple[datetime, float]]`
-series that `shading_regression.py` and `forecast_adjust.py` consume
+series that any strategy in `regression/` and `forecast_adjust.py` consume
 without caring which integration or domain it came from.
 
 Candidates are **scored, not auto-selected**: an attribute name containing
@@ -172,6 +188,9 @@ Step "add_another":
 Step "location_and_window" (final):
   - Latitude/longitude/elevation (default from hass.config, overridable)
   - Training window in days (default 28)
+  - Regression method: `kernel` (default) / `linear` / `wls2` / `wls3`
+    (global — applies to every configured string, see §2; chosen manually,
+    no auto-selection based on data volume)
 ```
 
 The options flow mirrors this to allow adding/editing strings and changing
@@ -189,9 +208,12 @@ Effy's `EffyOptionsFlow`.
 - **Pro:** The provider-discovery approach (§5) means Shady works with
   whatever PV-forecast or weather integration the user already has,
   without per-integration adapter code to maintain.
-- **Pro:** Kernel regression (§2) unifies interpolation, cold-start
-  behavior, and confidence reporting into a single mechanism instead of
-  three separate ones.
+- **Pro:** Kernel regression (§2, default) unifies interpolation,
+  cold-start behavior, and confidence reporting into a single mechanism
+  instead of three separate ones; the `linear`/`wls2`/`wls3` alternatives
+  give users a simpler, lower-variance fallback without a second
+  confidence mechanism, since confidence is computed the same way
+  regardless of method.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough sun-position
@@ -208,3 +230,12 @@ Effy's `EffyOptionsFlow`.
   since they don't recur often enough within any 28-day window. Acceptable
   for now; may need a slower-decaying window specifically for rarely-visited
   cells if this proves problematic in practice.
+- **Con:** The regression method (§2) is a single, global choice across all
+  configured strings. A system with genuinely different shading character
+  per string (e.g. one string with a sharp, localized tree shadow that
+  needs `kernel`, another with no shading at all where `linear` would do
+  fine) cannot mix methods; the user must pick the one method that serves
+  the whole installation. Revisit as a per-string option if this turns out
+  to matter in practice (see also the "pro String" decision in §3, which
+  already allows separate *models* — just not separate *methods* — per
+  string).
