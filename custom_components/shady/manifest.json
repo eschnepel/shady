@@ -1,0 +1,14 @@
+{
+  "domain": "shady",
+  "name": "Shady – Shading-Adjusted PV Forecast",
+  "version": "0.1.0",
+  "documentation": "https://github.com/eschnepel/shady",
+  "issue_tracker": "https://github.com/eschnepel/shady/issues",
+  "codeowners": ["@eschnepel"],
+  "requirements": [],
+  "dependencies": [],
+  "after_dependencies": ["recorder"],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "quality_scale": "internal"
+}

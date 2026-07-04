@@ -1,0 +1,9 @@
+{
+  "name": "Shady",
+  "description": "Shading-Adjusted PV Forecast - Passt einen bestehenden PV-Ertragsforecast anhand lokaler Verschattungseinflüsse (z.B. Bäume, Gebäude) an, basierend auf Sonnenstand und einem konfigurierbaren Horizontprofil.",
+  "render_readme": true,
+  "homeassistant": "2024.1.0",
+  "domains": ["sensor"],
+  "zip_release": true,
+  "filename": "shady.zip"
+}
