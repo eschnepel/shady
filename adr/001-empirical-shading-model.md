@@ -89,9 +89,9 @@ supported, behind a shared `regression/base.py` protocol (`fit(samples)
 
 | Method | Model | Character |
 |---|---|---|
-| `linear` (default) | Weighted least squares, degree 1: `PV ≈ β₀ + β₁·FC` | **Validated by the original proof-of-concept.** Captures both a multiplicative scaling effect and a constant offset (e.g. inverter standby draw); robust with the sample sizes in play here |
+| `linear` | Weighted least squares, degree 1: `PV ≈ β₀ + β₁·FC` | Validated by the original proof-of-concept. Captures both a multiplicative scaling effect and a constant offset (e.g. inverter standby draw); robust with the sample sizes in play here |
 | `kernel` | Locally weighted average: `Σ w_i · PV_i / Σ w_i`, `w_i` additionally weighted by closeness of `FC_i` to the query `FC` | Non-parametric; can follow a saturating/clipping curve without assuming a functional shape, at the cost of needing reasonable sample density across the forecast-value range actually seen |
-| `wls2` | Weighted least squares, degree 2: adds `FC²` | Captures gentle curvature (e.g. a soft approach to an inverter limit) |
+| `wls2` (default) | Weighted least squares, degree 2: adds `FC²` | Captures gentle curvature — both a soft approach to an inverter limit, and the diffuse/direct-light bending shading itself plausibly produces (see below) |
 | `wls3` | Weighted least squares, degree 3: adds `FC³` | Most flexible of the parametric options; risks overfitting with the pool sizes in play here (at most `window_days · (2·smoothing_radius + 1)`, typically well under 100) |
 
 **Confidence is defined independently of the chosen method**, as the
@@ -105,16 +105,23 @@ regardless of which one produced the point estimate, decouples "how good
 is the point estimate" from "how sure are we of it", and means switching
 methods never changes what the confidence attribute means.
 
-`linear` was chosen as the default because it is the method that has
-actually been validated in practice, and because a slot's pool — already
-narrowed to one specific 5-minute time-of-day window (§3a) — mostly needs
-to capture a fairly simple relationship between "what was forecast" and
-"what was actually produced" (a scale factor, plus optionally a small
-constant offset), not a highly flexible curve. `kernel` and the `wls2`/
-`wls3` polynomial variants remain available for installations where a
-non-trivial curvature genuinely exists across the forecast-value range —
-most plausibly where inverter clipping (ADR-003 §1) produces a real
-saturating shape that a straight line underfits.
+`wls2` was chosen as the default, not `linear`, despite `linear` being
+the method the original proof-of-concept validated — because pure
+shading itself has a plausible physical reason to be non-linear in `FC`,
+not just clipping. A shaded panel still receives most *diffuse* skylight;
+what shading actually blocks is the *direct* (beam) component. On a
+heavily overcast, low-`FC` day, irradiance is almost entirely diffuse, so
+a shaded and an unshaded panel behave similarly — the curve should sit
+close to `PV ≈ FC` there. On a clear, high-`FC` day, the direct component
+dominates and shading matters much more — the curve should bend
+increasingly below `PV ≈ FC` as `FC` rises. A single straight line has to
+compromise between these two ends, systematically over- or
+under-correcting depending on how cloudy today happens to be; `wls2`'s
+one extra degree of freedom (`FC²`) can bend to fit this without the
+extrapolation instability `wls3` showed. `kernel` and `linear` remain
+available for installations where this curvature doesn't hold, or where
+maximum robustness against a small sample is preferred over capturing it;
+`wls3` remains available too, but see the warning below.
 
 **`wls3` is deliberately not the default, and this was checked, not just
 assumed.** A worked example with a realistic clipping ceiling (28 days,
@@ -132,14 +139,20 @@ comparison table above and with an earlier pure-noise example where
 `wls3` extrapolated to a negative, non-physical value. The lesson
 generalizes: more polynomial degrees of freedom help fit the training
 window better but do not constrain what happens just outside it, and
-Shady's queries are structurally almost always just outside it.
+Shady's queries are structurally almost always just outside it. This is
+exactly why `wls2` — one extra degree of freedom, not two — is the
+chosen compromise: enough flexibility for the diffuse/direct argument
+above, without `wls3`'s demonstrated extrapolation risk.
 
 The predicted output is clamped to `[0, FC]` before being used (never
 negative, never more than the slot's own raw forecast value) — this
 mirrors the defensive-clamping philosophy in Effy's ADR-005 (never let a
 degenerate input propagate raw) and replaces the earlier `[0, 1]`
 factor-clamp now that the model predicts an absolute value rather than a
-multiplicative factor.
+multiplicative factor. If a string has an inverter AC power limit
+configured (ADR-003 §1), that limit is a *second*, tighter upper clamp
+applied to this same output — see ADR-003 §1's amendment for why this
+must apply to the corrected output too, not just to training.
 
 Regardless of method, `magnitude_weight_i` downweights samples where
 `FC_i` is near zero, because a near-zero forecast slot (sunrise/sunset,
@@ -147,6 +160,27 @@ or a slot the source provider considers negligible) carries very little
 information and is disproportionately sensitive to small absolute
 measurement noise. This mirrors the same defensive-clamping philosophy
 just mentioned.
+
+### 2a — What "good" means here: daily total, not individual slots
+
+An individual slot's confidence (§2 above) is not, by itself, very
+meaningful to a person looking at Shady's output — nobody consumes one
+isolated 5-minute prediction. What actually matters is whether **today's
+and tomorrow's total energy forecast** — the sum across all of a day's
+slots — tracks reality well. A slot with a mediocre individual fit
+contributes only a small, bounded error to that sum, and errors in
+different slots are not correlated the way a single bad global model's
+error would be; some slots will run a little high, others a little low,
+and a lot of that cancels out over a full day. This has a concrete
+consequence for the main adjusted-forecast sensor (ADR-002 §3's today/
+tomorrow horizon): its exposed confidence is the `FC_i`-weighted average
+of its constituent slots' confidences (weighting by each slot's forecast
+magnitude, so a low-confidence dawn/dusk slot that contributes little
+energy doesn't drag down the number as much as a low-confidence midday
+slot would), not a simple mean and not any single slot's value in
+isolation. Per-slot confidence remains available as a diagnostic detail
+(ADR-004) for anyone who wants to look under the hood, but it is not the
+number Shady leads with.
 
 ### 3 — Granularity: one model per configured string
 
@@ -332,7 +366,7 @@ Step "add_another":
   - "Add another string?" (boolean) → back to "add_string" or continue
 Step "settings" (final):
   - Training window in days (default 28)
-  - Regression method: `linear` (default) / `kernel` / `wls2` / `wls3`
+  - Regression method: `wls2` (default) / `linear` / `kernel` / `wls3`
     (global — applies to every configured string, see §2; chosen manually,
     no auto-selection based on data volume)
   - Smoothing radius in slots (default 1, global; see §3b — `0` disables
@@ -359,13 +393,13 @@ Effy's `EffyOptionsFlow`.
 - **Pro:** The provider-discovery approach (§5) means Shady works with
   whatever PV-forecast or weather integration the user already has,
   without per-integration adapter code to maintain.
-- **Pro:** `linear` (§2, default) is the method that was actually validated
-  by the original proof-of-concept, not a theoretical choice — a
-  meaningfully robust default for that reason alone; `kernel`/`wls2`/
-  `wls3` remain available for installations with a genuine non-linear
-  relationship (e.g. clipping) and enough data density to fit one
-  reliably, all four sharing one confidence definition so switching
-  methods never changes what the confidence attribute means.
+- **Pro:** `wls2` (§2, default) has a plausible physical justification
+  (diffuse vs. direct light) for capturing shading's own curvature, not
+  just clipping's — `linear` (the method the original proof-of-concept
+  validated), `kernel`, and `wls3` remain available for installations
+  where that curvature doesn't hold or where a different robustness
+  trade-off is preferred, all four sharing one confidence definition so
+  switching methods never changes what the confidence attribute means.
 - **Pro:** Slot partitioning (§3a) means producing an adjusted forecast is
   always a direct per-slot model lookup, matching the recorder's own
   5-minute grid (Effy ADR-003) with no per-query neighbor search over the

@@ -30,26 +30,30 @@ PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
    23:55 – dasselbe Raster wie die HA-Recorder-Statistics) wird ein
    eigenes Regressionsmodell trainiert: `PV ≈ f(FC)` – der Ist-Ertrag als
    Funktion des rohen Forecast-Werts, über die letzten 28 Tage desselben
-   Slots. Default-Methode ist `linear` (so im POC validiert); `kernel`,
-   `wls2`, `wls3` stehen als Optionen zur Verfügung, sind aber – wie
-   Beispielrechnungen zeigen – bei Extrapolation über den historischen
-   Wertebereich hinaus (der Normalfall bei einer Vorhersage) tendenziell
-   instabiler.
+   Slots. Default-Methode ist `wls2` (fängt die physikalisch plausible
+   Krümmung durch Diffus-/Direktlicht-Anteil bei Verschattung ein, ohne
+   das Extrapolations-Risiko von `wls3`); `linear` (im POC validiert),
+   `kernel`, `wls3` stehen als Optionen zur Verfügung.
 3. Ein globaler Smoothing-Radius (Default: 1 Nachbar-Slot) verhindert harte
    Sprünge zwischen benachbarten Slots.
 4. Ein rollierendes 28-Tage-Fenster (konfigurierbar) hält das Modell nah an
    der aktuellen Situation (z.B. Laubfall bei einem Baum). Optional, pro
    String: Wechselrichter-Clipping-Samples werden aus dem Training
-   ausgeschlossen, Temperatur-Derating wird vor der Regression herausgerechnet
-   – beides deaktiviert Shady standardmäßig, bis explizit konfiguriert.
+   ausgeschlossen *und* die korrigierte Ausgabe wird zusätzlich auf das
+   Inverter-Limit gedeckelt; Temperatur-Derating wird vor der Regression
+   herausgerechnet – beides deaktiviert Shady standardmäßig, bis explizit
+   konfiguriert.
 5. Ergebnis: ein angepasster Forecast-Sensor pro String (heute + morgen),
-   plus ein Konfidenz-Attribut.
+   mit einer auf Tagessumme aggregierten Konfidenz (`FC`-gewichtet über
+   alle Slots des Tages – die Konfidenz eines einzelnen Slots ist für sich
+   genommen wenig aussagekräftig).
+6. Optional (Diagnose-Switch, Default aus): ein Streudiagramm-Sensor pro
+   String mit allen vier Regressionsmethoden im direkten Vergleich auf den
+   eigenen historischen Daten, fertig aufbereitet für ApexCharts.
 
 ## Offene Fragen für das weitere Brainstorming
 
 - Smoothing-Radius-Default (§3b) mit echten Daten validieren.
-- Diagnose-/Debug-Darstellung der gelernten Slot-Modelle (z.B. als
-  FC-vs-PV-Streudiagramm mit Regressionskurve je Slot) für den Nutzer.
 
 ## Struktur
 
@@ -57,8 +61,10 @@ Siehe [`adr/000-coding-standards.md`](adr/000-coding-standards.md) für die
 Modulgrenzen, [`adr/001-empirical-shading-model.md`](adr/001-empirical-shading-model.md)
 für das Regressionsmodell, die Provider-Erkennung und den Config-Flow,
 [`adr/002-coordinator-update-strategy.md`](adr/002-coordinator-update-strategy.md)
-für Rekalibrierungs- und Forecast-Update-Trigger, und
+für Rekalibrierungs- und Forecast-Update-Trigger,
 [`adr/003-yield-corrections-clipping-derating.md`](adr/003-yield-corrections-clipping-derating.md)
-für die optionalen Clipping-/Derating-Korrekturen.
+für die optionalen Clipping-/Derating-Korrekturen, und
+[`adr/004-diagnostics-switch-and-scatter-sensor.md`](adr/004-diagnostics-switch-and-scatter-sensor.md)
+für den optionalen Diagnose-Switch und den ApexCharts-Streudiagramm-Sensor.
 
-Weitere ADRs (004 ff.) werden im Laufe des Brainstormings ergänzt.
+Weitere ADRs (005 ff.) werden im Laufe des Brainstormings ergänzt.

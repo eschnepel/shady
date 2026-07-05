@@ -64,6 +64,22 @@ fit slightly toward "no shading here", which is not something the data
 actually supports; excluding it is the correct treatment of censored
 data, not a stricter version of the same downweighting mechanism.
 
+**Amendment — the same limit also bounds the corrected output, not only
+the training data.** Excluding clipped samples from training (above)
+keeps the *fit itself* honest, but says nothing about what happens at
+*prediction* time: a fitted model — especially `wls2`/`wls3` with their
+curvature — can still predict a corrected forecast above the inverter's
+physical ceiling for an unusually high `FC` value, the same extrapolation
+failure mode ADR-001 §2 already demonstrates numerically. So when an
+inverter AC power limit is configured for a string, it is applied as a
+**second, tighter upper clamp** on top of ADR-001 §2's `[0, FC]` clamp —
+the corrected output is clamped to `[0, min(FC, inverter_limit)]`. This
+costs nothing extra to implement (it is the same clamp mechanism,
+just with a second bound) and closes a gap that the training-time
+exclusion alone does not: excluding clipped samples stops the model from
+*learning* the wrong shape, but only the output clamp stops it from
+*predicting* past a limit it never saw violated in training either.
+
 ### 2 — Derating: correct before the ratio is formed, not inside the model
 
 If a temperature source is configured (see §2a) and a **temperature
@@ -209,6 +225,11 @@ established in ADR-001 §6.
 - **Pro:** Keeping corrections in a dedicated pre-processing module means
   `regression/` (ADR-001 §2) and its four strategies stay exactly as
   specified, with no special-casing for corrected vs. uncorrected samples.
+- **Pro:** The output-clamp amendment to §1 closes a gap that
+  training-time exclusion alone cannot: it protects the corrected forecast
+  itself from exceeding a known physical ceiling even when the fitted
+  model — through ordinary extrapolation, not a bug — would otherwise
+  predict past it.
 - **Pro:** The temperature-source hierarchy (§2a) means derating
   correction is available even without a dedicated module sensor — the
   common case — using a global ambient or weather-provider reading plus

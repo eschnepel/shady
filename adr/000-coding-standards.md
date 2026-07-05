@@ -96,7 +96,7 @@ coordinator.py          (orchestrates: pulls recorder history + provider data,
                          re-fits the regression on a rolling window, schedules
                          recalculation)
        ↑
-sensor.py / config_flow.py  (HA entity glue)
+sensor.py / config_flow.py / switch.py  (HA entity glue)
        ↑
 __init__.py             (wires platforms + coordinator into hass.data)
 ```
