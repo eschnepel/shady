@@ -121,10 +121,25 @@ This mirrors the today/tomorrow shape most PV-forecast integrations
 already expose (e.g. `energy_production_today` /
 `energy_production_tomorrow`-style sensors), so Shady's output slots
 naturally into dashboards built around that convention. Slots already in
-the past (earlier today) are not recomputed or exposed — Shady adjusts a
+the past (earlier today) are not *recomputed* — Shady adjusts a
 forward-looking forecast, not a historical record, and does not write
 recorder statistics the way Effy does (out of scope for this integration;
 see the open question in the README).
+
+**Amendment (ADR-005):** "not recomputed" does not mean "not retained".
+The whole-day aggregate sensor introduced in ADR-005 §1 needs every
+slot's corrected value for the *entire* current day, including ones
+already past by the time anyone looks at the sensor — and a baseline
+provider's own live attributes typically stop covering an hour once it
+has elapsed, so that data cannot be reconstructed later from the source.
+The coordinator therefore **snapshots** each slot's corrected value into
+a per-day cache array at the moment it is first computed (i.e. while it
+was still a future slot, per the normal §2 recompute trigger), and never
+touches that array entry again once the slot's time has passed. This is
+a passive cache, not a second recomputation path — it changes nothing
+about which slots actively get *new* predictions (still only "remainder
+of today + tomorrow", as above), only about not discarding a value Shady
+already computed.
 
 If the baseline provider has not yet published tomorrow's data at the
 time of a recompute (e.g. some providers only publish the next day's

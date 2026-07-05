@@ -50,6 +50,11 @@ PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
 6. Optional (Diagnose-Switch, Default aus): ein Streudiagramm-Sensor pro
    String mit allen vier Regressionsmethoden im direkten Vergleich auf den
    eigenen historischen Daten, fertig aufbereitet für ApexCharts.
+7. Zusätzlich, über alle Strings summiert: Ist-Ertrag jetzt, korrigierter
+   Forecast jetzt, korrigierter Forecast für den ganzen Tag (288-Werte-
+   Array), Rest-Tages-Prognose, sowie zwei Integralsensoren (Ist-Energie
+   und korrigierte-Forecast-Energie, beide mit Reset um Mitternacht) für
+   den direkten Ist-vs-Forecast-Vergleich in kWh über den Tagesverlauf.
 
 ## Offene Fragen für das weitere Brainstorming
 
@@ -63,8 +68,10 @@ für das Regressionsmodell, die Provider-Erkennung und den Config-Flow,
 [`adr/002-coordinator-update-strategy.md`](adr/002-coordinator-update-strategy.md)
 für Rekalibrierungs- und Forecast-Update-Trigger,
 [`adr/003-yield-corrections-clipping-derating.md`](adr/003-yield-corrections-clipping-derating.md)
-für die optionalen Clipping-/Derating-Korrekturen, und
+für die optionalen Clipping-/Derating-Korrekturen,
 [`adr/004-diagnostics-switch-and-scatter-sensor.md`](adr/004-diagnostics-switch-and-scatter-sensor.md)
-für den optionalen Diagnose-Switch und den ApexCharts-Streudiagramm-Sensor.
+für den optionalen Diagnose-Switch und den ApexCharts-Streudiagramm-Sensor, und
+[`adr/005-aggregate-sum-and-integral-sensors.md`](adr/005-aggregate-sum-and-integral-sensors.md)
+für die Summen- und Integralsensoren über alle Strings.
 
-Weitere ADRs (005 ff.) werden im Laufe des Brainstormings ergänzt.
+Weitere ADRs (006 ff.) werden im Laufe des Brainstormings ergänzt.

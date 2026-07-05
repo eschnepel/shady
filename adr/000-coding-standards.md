@@ -92,6 +92,10 @@ regression/             (pure logic: pluggable per-string, per-5-minute-slot
 forecast_adjust.py     (pure logic: applies a string's fitted per-slot model
                          to its raw baseline series)
        ↑
+aggregation.py          (pure logic: cross-string sums, whole-day arrays,
+                         trapezoidal energy-increment calculation; see
+                         ADR-005)
+       ↑
 coordinator.py          (orchestrates: pulls recorder history + provider data,
                          re-fits the regression on a rolling window, schedules
                          recalculation)
