@@ -28,94 +28,125 @@ history, and defines the supporting architecture: how the baseline
 (unshaded) forecast is sourced, how the regression works, and what the
 config flow needs to collect as a result.
 
+**Amendment note:** an earlier draft of this ADR specified sun
+azimuth/elevation as the regression predictor, reasoning that a static
+obstruction's effect should generalize across seasons via sun position
+rather than calendar time. That reasoning was superseded once a prior
+proof-of-concept became known: linear fitting with the *raw forecast
+value* as predictor, one model per 5-minute slot, had already been built
+and validated in practice. §1 and §2 below reflect that corrected,
+POC-grounded design; azimuth/elevation and `sun_geometry.py` no longer
+appear anywhere in the architecture.
+
 ---
 
 ## Decision
 
-### 1 — Predictor space: sun azimuth/elevation, not calendar time
+### 1 — Predictor space: the raw forecast value, not sun position
 
-The regression target is `ratio = actual_yield / baseline_forecast` for a
-given string, and the predictor is the **sun's azimuth and elevation** at
-that timestamp (computed by `sun_geometry.py` from the configured
-lat/lon/elevation), never the timestamp itself.
+**This decision was validated by a working proof-of-concept** before this
+ADR was written: linear fitting with the raw forecast value as the
+predictor, one model per 5-minute slot, was implemented and worked well
+in practice. This ADR documents and generalizes that proven approach — an
+earlier draft of this ADR predicted sun azimuth/elevation as the input
+variable instead; that turned out to be unnecessary and is corrected here
+(see the Context section's amendment note).
 
-A static obstruction (a tree, a chimney, a neighboring roofline) blocks the
-sun at the same azimuth/elevation combination every time the sun passes
-through it, independent of which calendar day that happens to be. Binning
-or regressing on time-of-day/day-of-year directly would conflate the
-obstruction's true (fixed) geometry with the seasonal drift of the sun's
-path, and would need far more historical data to disentangle the two.
-Using sun position as the predictor means the model generalizes across
-seasons immediately, from however much history is available.
+The regression predictor `x` is the **raw baseline forecast value itself**
+(`FC_i`, e.g. in Watts) for the timestamp in question, and the target `y`
+is the **actual historical yield** (`PV_i`) for that same timestamp —
+fit directly, `PV_i ≈ f(FC_i)`, not as a ratio against some third
+variable. This works *because* slot partitioning (§3a) already isolates
+"which specific 5-minute time-of-day window" a sample belongs to — that is
+what carries the "is this moment typically shaded" information. Once a
+slot's pool is already restricted to one specific clock-time window, the
+one remaining variable that is (a) genuinely informative about the
+*magnitude* of expected output and (b) actually known in advance for any
+future prediction is the raw forecast value itself — not a geometric
+quantity that would need computing from scratch via `sun_geometry.py`.
+
+This also means Shady needs **no astronomical calculation at all**:
+`sun_geometry.py` is removed from the architecture (see the updated module
+diagram in ADR-000 §3) — there is no remaining place in the design that
+depends on sun azimuth/elevation. Latitude/longitude/elevation are
+likewise no longer needed as regression inputs (they may still be useful
+for other purposes, e.g. determining sunrise/sunset for UI purposes, but
+are not required by the model itself).
 
 ### 2 — Regression method: a pluggable, globally-selected strategy
 
-The regression target is always `ratio = actual_yield / baseline_forecast`,
-computed over the historical sample pool that §3a/§3b already define for a
-given slot (that slot's own samples, plus up to `smoothing_radius`
-neighboring slots, across the rolling window) — and every sample is always
-weighted by `magnitude_weight_i` (downweighting near-zero baseline
-samples, e.g. sunrise/sunset, for the same reason given below) and by the
-time-proximity weight from §3b. *How* that already-local, already-weighted
-pool is turned into a factor is a **pluggable strategy**, chosen once by
-the user for the whole integration (all strings share the same method;
-see §6), not auto-selected and not configurable per string. Four
-strategies are supported, behind a shared `regression/base.py` protocol
-(`fit(samples) -> FittedModel`, `predict(az, el) -> (factor,
-confidence)`):
+Every regression strategy fits `PV_i ≈ f(FC_i)` over the historical
+sample pool that §3a/§3b already define for a given slot (that slot's own
+samples, plus up to `smoothing_radius` neighboring slots, across the
+rolling window), with every sample weighted by `magnitude_weight_i`
+(downweighting near-zero-forecast samples, e.g. sunrise/sunset, for the
+reason given below) and by the time-proximity weight from §3b. *How*
+`f` is fit is a **pluggable strategy**, chosen once by the user for the
+whole integration (all strings share the same method; see §6), not
+auto-selected and not configurable per string. Four strategies are
+supported, behind a shared `regression/base.py` protocol (`fit(samples)
+-> FittedModel`, `predict(fc) -> (adjusted_forecast, confidence)`):
 
 | Method | Model | Character |
 |---|---|---|
-| `kernel` (default) | Weighted mean: `Σ w_i · ratio_i / Σ w_i`, `w_i = magnitude_weight_i · time_weight_i` (no azimuth/elevation term) | Simplest, fewest assumptions, most robust with very few samples; ignores any residual azimuth/elevation trend within the pool |
-| `linear` | Weighted least squares, degree 1 over the same pool: `factor ≈ β₀ + β₁·az + β₂·el` | Captures a residual linear seasonal-drift trend within the pool; needs a few more samples than `kernel` to estimate reliably |
-| `wls2` | Weighted least squares, degree 2: adds `az²`, `az·el`, `el²` | Captures gentle curvature in the residual trend; more parameters, more data-hungry |
-| `wls3` | Weighted least squares, degree 3: adds cubic + cross terms | Most flexible of the parametric options; with the pool sizes in play here (at most `window_days · (2·smoothing_radius + 1)`, typically well under 100), risks overfitting the small sample rather than capturing genuine structure |
+| `linear` (default) | Weighted least squares, degree 1: `PV ≈ β₀ + β₁·FC` | **Validated by the original proof-of-concept.** Captures both a multiplicative scaling effect and a constant offset (e.g. inverter standby draw); robust with the sample sizes in play here |
+| `kernel` | Locally weighted average: `Σ w_i · PV_i / Σ w_i`, `w_i` additionally weighted by closeness of `FC_i` to the query `FC` | Non-parametric; can follow a saturating/clipping curve without assuming a functional shape, at the cost of needing reasonable sample density across the forecast-value range actually seen |
+| `wls2` | Weighted least squares, degree 2: adds `FC²` | Captures gentle curvature (e.g. a soft approach to an inverter limit) |
+| `wls3` | Weighted least squares, degree 3: adds `FC³` | Most flexible of the parametric options; risks overfitting with the pool sizes in play here (at most `window_days · (2·smoothing_radius + 1)`, typically well under 100) |
 
-Note what changed from an earlier draft of this decision: azimuth/
-elevation are no longer used as a *distance metric* to define which
-historical samples are "close enough" to matter (there is no standalone
-azimuth/elevation kernel bandwidth). That job is already done structurally
-by the slot pool itself (§3a/§3b) — a slot's pool is, by construction,
-already every sample whose sun position was close to today's, because it
-is literally the same clock-time slot on other days within the window.
-Layering a second, independently-tuned azimuth/elevation bandwidth on top
-of that would repeat work the slot partitioning already does, and would
-add a parameter with no obvious default (see the discussion this
-resolved). Azimuth/elevation still matter, but strictly as **regressors**
-for the three WLS variants — capturing whatever small residual trend
-exists *within* an already-local pool (mostly season-driven drift over
-the rolling window) — never as a distance/locality mechanism.
-
-**Confidence is defined independently of the chosen method**, and is now
-simply the normalized sum of sample weights in the slot's pool,
-`Σ (magnitude_weight_i · time_weight_i)` — no azimuth/elevation density
-calculation is needed, since the pool itself is already the "local
-neighborhood". A global polynomial fit (`linear`/`wls2`/`wls3`) has no
+**Confidence is defined independently of the chosen method**, as the
+normalized sum of sample weights in the slot's pool, `Σ (magnitude_weight_i
+· time_weight_i)` — no distance calculation in forecast-value space is
+needed for this (that would only matter for `kernel`'s own point estimate,
+not for confidence). A polynomial fit (`linear`/`wls2`/`wls3`) has no
 intrinsic notion of "how much evidence supports this point" from its
 coefficients alone; using the same pool-weight-sum for every method,
 regardless of which one produced the point estimate, decouples "how good
 is the point estimate" from "how sure are we of it", and means switching
 methods never changes what the confidence attribute means.
 
-`kernel` was chosen as the default because it makes the fewest
-assumptions about the shape of the residual trend within a pool that is,
-by construction, already small and already local (§3a/§3b) — it is simply
-the weighted average shading ratio for "this time of day, recently". The
-WLS variants exist for users who want the model to also account for a
-residual seasonal drift *within* that pool (e.g. because the rolling
-window straddles a period of fast solar-position change, like near an
-equinox) at the cost of needing slightly more samples to fit reliably —
-not, as an earlier draft of this ADR argued, because of any difference in
-how well each method captures a "sharp edge" (that concern applied to a
-single global model spanning the whole day, before slot partitioning
-existed, and no longer applies once every method operates on the same
-narrow, pre-localized pool).
+`linear` was chosen as the default because it is the method that has
+actually been validated in practice, and because a slot's pool — already
+narrowed to one specific 5-minute time-of-day window (§3a) — mostly needs
+to capture a fairly simple relationship between "what was forecast" and
+"what was actually produced" (a scale factor, plus optionally a small
+constant offset), not a highly flexible curve. `kernel` and the `wls2`/
+`wls3` polynomial variants remain available for installations where a
+non-trivial curvature genuinely exists across the forecast-value range —
+most plausibly where inverter clipping (ADR-003 §1) produces a real
+saturating shape that a straight line underfits.
+
+**`wls3` is deliberately not the default, and this was checked, not just
+assumed.** A worked example with a realistic clipping ceiling (28 days,
+weather-driven forecast values, a saturating true relationship) showed all
+three parametric methods tracking the training data reasonably well
+in-sample, but diverging sharply exactly where Shady's predictions always
+have to operate — a query forecast value *higher* than anything seen in
+the rolling window (an unusually clear day compared to recent weather,
+which is a normal occurrence, not an edge case). At such an extrapolation
+point, `wls2` (closest to the true clipped value), `linear`, and `wls3`
+(furthest from it, overshooting the most) ranked in exactly that order —
+`wls3`'s extra flexibility made its extrapolation *worse*, not better,
+consistent with the same overshoot/oscillation risk noted in the
+comparison table above and with an earlier pure-noise example where
+`wls3` extrapolated to a negative, non-physical value. The lesson
+generalizes: more polynomial degrees of freedom help fit the training
+window better but do not constrain what happens just outside it, and
+Shady's queries are structurally almost always just outside it.
+
+The predicted output is clamped to `[0, FC]` before being used (never
+negative, never more than the slot's own raw forecast value) — this
+mirrors the defensive-clamping philosophy in Effy's ADR-005 (never let a
+degenerate input propagate raw) and replaces the earlier `[0, 1]`
+factor-clamp now that the model predicts an absolute value rather than a
+multiplicative factor.
 
 Regardless of method, `magnitude_weight_i` downweights samples where
-`baseline_forecast_i` is near zero, because `ratio_i` is a division of two
-small, noisy numbers there and would otherwise dominate the fit with
-spurious extreme values. This mirrors the defensive-clamping philosophy in
-Effy's ADR-005 (never let a degenerate input propagate raw).
+`FC_i` is near zero, because a near-zero forecast slot (sunrise/sunset,
+or a slot the source provider considers negligible) carries very little
+information and is disproportionately sensitive to small absolute
+measurement noise. This mirrors the same defensive-clamping philosophy
+just mentioned.
 
 ### 3 — Granularity: one model per configured string
 
@@ -136,12 +167,25 @@ ADR-003 established for recorder statistics (`00:00`, `00:05`, …,
 `23:55`). A slot's model is trained only on the historical samples that
 fell into that exact clock-time slot across the days in the rolling
 window (§4) — at most `window_days` samples, since each day contributes
-exactly one sample per slot. The predictor within a slot is still sun
-azimuth/elevation (§1), and the chosen regression method (§2) still
-applies — just fit over a much narrower, slot-local neighborhood instead
-of pooling every timestamp of the day into one model. Slots where the sun
-is below the horizon for the whole window (pure night) are simply never
-fitted/queried.
+exactly one sample per slot.
+
+**Forecast providers do not all publish at 5-minute resolution.** Some
+publish hourly values, others half-hourly; Shady's own slot grid is always
+5 minutes regardless. Whatever the source's native resolution, every
+5-minute slot within one source period uses that period's single
+published value as its `FC_i` — e.g. an hourly provider's `10:00` value is
+`FC_i` for the slots `10:00`, `10:05`, …, `10:55` alike; a half-hourly
+provider's value covers only `10:00`–`10:25` before the next published
+value takes over. This is a property of `providers/normalize.py` (ADR-001
+§5) — it broadcasts each published value across the 5-minute slots it
+covers — and is transparent to `regression/` and `forecast_adjust.py`,
+which only ever see one `FC_i` per slot regardless of the source's native
+granularity. Slots that are consistently near-zero in both `FC` and `PV`
+throughout the window (night) are inferred directly from that data — via
+the same `magnitude_weight_i` mechanism (§2) that already downweights
+near-zero-forecast samples — rather than computed astronomically; they
+simply never accumulate a meaningfully weighted pool and are skipped as a
+natural consequence, with no separate "is it night" check needed.
 
 This is chosen over one continuous per-string model for three reasons:
 
@@ -181,16 +225,18 @@ This was chosen over output-side smoothing (e.g. a moving average over the
 288 finished factors) for two reasons:
 
 - **It uses the confidence signal that already exists, instead of ignoring
-  it.** Because neighboring slots' sun positions are almost always very
-  close (the sun moves continuously and monotonically through the day), a
-  time-of-day-adjacent sample is, physically, nearly the same kind of
-  evidence as the slot's own samples — folding `time_weight_i` into the
-  same weighted-pool mechanism §2 already uses for `magnitude_weight_i`
-  means "similar sun positions with different confidence" is blended
-  correctly, using the pool's own weights. A fixed post-hoc smoothing
-  window has no such notion: it would blur a genuinely sharp,
-  well-supported shading edge exactly as much as it blurs pure noise
-  between two low-confidence slots, since it cannot tell the two apart.
+  it.** Because a forecast provider's own published value usually changes
+  gradually from one 5-minute slot to the next (and, per §3a, is often
+  literally identical across several adjacent slots when the source
+  publishes at coarser-than-5-minute resolution), a time-of-day-adjacent
+  sample is, in practice, nearly the same kind of evidence as the slot's
+  own samples — folding `time_weight_i` into the same weighted-pool
+  mechanism §2 already uses for `magnitude_weight_i` means "similar
+  evidence with different confidence" is blended correctly, using the
+  pool's own weights. A fixed post-hoc smoothing window has no such
+  notion: it would blur a genuinely sharp, well-supported shading edge
+  exactly as much as it blurs pure noise between two low-confidence
+  slots, since it cannot tell the two apart.
 - **It also directly helps the cold-start/small-`n` problem** noted in §4
   — each slot's fit now draws on `window_days × (2·radius + 1)` samples
   instead of just `window_days`, without abandoning the "cheap,
@@ -211,18 +257,19 @@ matching the naming convention of Effy's `DEFAULT_MAX_HISTORY_DAYS`), used
 as a rolling window rather than an accumulate-forever or fixed-year window.
 
 This is deliberate, not a data-volume compromise: a static obstruction's
-azimuth/elevation footprint is stable across the whole year, but a
-**deciduous tree's canopy density is not** — dense foliage in summer casts
-a materially different shadow than a bare tree in winter. A window spanning
-many months would blend "full canopy" and "bare branches" samples within
-the same slot's model (§3a), producing a shading factor that is wrong in
-both directions depending on season. A rolling 28-day window instead
-tracks *current* canopy state and re-adapts automatically as the season
-(and the tree) changes, at the cost of every slot needing up to 28 days
-before it has any samples at all, and never having more than 28 to work
-with even at steady state — an acceptable trade-off given the cold-start
-behavior described in §2 and the small-`n` fitting cost already accepted
-in §3a.
+*position* is stable across the whole year, but a **deciduous tree's
+canopy density is not** — dense foliage in summer casts a materially
+different shadow than a bare tree in winter, even though the forecast
+value for a given slot on two such days could be similar. A window
+spanning many months would blend "full canopy" and "bare branches"
+samples within the same slot's model (§3a), producing a fitted
+relationship that is wrong in both directions depending on season. A
+rolling 28-day window instead tracks *current* canopy state and re-adapts
+automatically as the season (and the tree) changes, at the cost of every
+slot needing up to 28 days before it has any samples at all, and never
+having more than 28 to work with even at steady state — an acceptable
+trade-off given the cold-start behavior described in §2 and the small-`n`
+fitting cost already accepted in §3a.
 
 ### 5 — Baseline (unshaded forecast) sourcing: generic attribute discovery
 
@@ -283,15 +330,19 @@ Step "add_string":
     power or energy device_class)
 Step "add_another":
   - "Add another string?" (boolean) → back to "add_string" or continue
-Step "location_and_window" (final):
-  - Latitude/longitude/elevation (default from hass.config, overridable)
+Step "settings" (final):
   - Training window in days (default 28)
-  - Regression method: `kernel` (default) / `linear` / `wls2` / `wls3`
+  - Regression method: `linear` (default) / `kernel` / `wls2` / `wls3`
     (global — applies to every configured string, see §2; chosen manually,
     no auto-selection based on data volume)
   - Smoothing radius in slots (default 1, global; see §3b — `0` disables
     temporal smoothing)
 ```
+
+Note there is no latitude/longitude/elevation field: the earlier draft of
+this ADR needed site location to compute sun position; since §1's
+correction removed that dependency entirely, location is no longer
+collected anywhere in Shady's config flow.
 
 The options flow mirrors this to allow adding/editing strings and changing
 the training window after initial setup, following the same pattern as
@@ -308,13 +359,13 @@ Effy's `EffyOptionsFlow`.
 - **Pro:** The provider-discovery approach (§5) means Shady works with
   whatever PV-forecast or weather integration the user already has,
   without per-integration adapter code to maintain.
-- **Pro:** `kernel` (§2, default) makes the fewest assumptions and needs
-  the least data of the four strategies, since it is just the weighted
-  mean of an already-local pool (§3a/§3b) — a sensible default precisely
-  because that pool is small; the `linear`/`wls2`/`wls3` alternatives let
-  a user trade some of that robustness for capturing a residual seasonal
-  trend within the same pool, all four sharing one confidence definition
-  so switching methods never changes what the confidence attribute means.
+- **Pro:** `linear` (§2, default) is the method that was actually validated
+  by the original proof-of-concept, not a theoretical choice — a
+  meaningfully robust default for that reason alone; `kernel`/`wls2`/
+  `wls3` remain available for installations with a genuine non-linear
+  relationship (e.g. clipping) and enough data density to fit one
+  reliably, all four sharing one confidence definition so switching
+  methods never changes what the confidence attribute means.
 - **Pro:** Slot partitioning (§3a) means producing an adjusted forecast is
   always a direct per-slot model lookup, matching the recorder's own
   5-minute grid (Effy ADR-003) with no per-query neighbor search over the
@@ -322,26 +373,23 @@ Effy's `EffyOptionsFlow`.
   independent per slot; temporal smoothing (§3b) resolves the resulting
   slot-boundary discontinuity risk directly in the training-data weights
   (reusing the same weighted-pool mechanism as `magnitude_weight_i`),
-  instead of a separate blind post-hoc smoothing pass — and removes the
-  need for a second, hard-to-default azimuth/elevation bandwidth parameter
-  entirely (§2).
+  instead of a separate blind post-hoc smoothing pass.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
-  unmodified (low confidence everywhere) until enough sun-position
-  coverage accumulates — expected to take days to a few weeks depending on
-  latitude and time of year.
+  unmodified (low confidence everywhere) until enough per-slot samples
+  accumulate — expected to take days to a few weeks.
 - **Con:** Attribute-shape discovery (§5) is inherently heuristic and reads
   data across an unversioned surface (other integrations' attributes).
   Mitigated by always requiring user confirmation and offering a manual
   fallback, but a future HA core or integration update could still change
   an attribute's shape without notice, same caveat as Effy's ADR-003.
 - **Con:** A 28-day rolling default (§4) means slots (§3a) that only ever
-  see a narrow, drifting sun position across the window (e.g. near
-  sunrise/sunset in a specific season) may have persistently low
-  confidence even after long-term use, since a given slot's samples never
-  exceed `window_days`. Acceptable for now; may need a slower-decaying
-  window specifically for such slots if this proves problematic in
-  practice.
+  see a narrow range of forecast values across the window (e.g. a slot
+  that's rarely anything but heavily overcast in a given season) may have
+  persistently low confidence even after long-term use, since a given
+  slot's samples never exceed `window_days`. Acceptable for now; may need
+  a slower-decaying window specifically for such slots if this proves
+  problematic in practice.
 - **Con:** Temporal smoothing (§3b) trades a small amount of temporal
   resolution for stability — with the default radius of 1, a genuinely
   very sharp shading transition that occurs within a single 5-minute slot
@@ -358,3 +406,9 @@ Effy's `EffyOptionsFlow`.
   per-string option if this turns out to matter in practice (see also the
   "pro String" decision in §3, which already allows separate *models* —
   just not separate *methods* — per string).
+- **Con:** `wls2`/`wls3` are more prone to overshoot exactly at the
+  extrapolation points Shady structurally has to predict at (a forecast
+  value higher than anything in the recent rolling window) than `linear`
+  is — demonstrated numerically in §2, not just asserted. A user who
+  switches to `wls3` expecting a strictly better fit may get a worse
+  real-world forecast on unusually clear days specifically.

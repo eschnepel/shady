@@ -63,7 +63,7 @@ ignore[misc]`), and `untyped-decorator` errors are attached to the
 `@callback` line itself, not the `def` line below it — mypy's reported line
 number is authoritative and should never be guessed at.
 
-`sun_geometry.py`, every module in `regression/`, and `forecast_adjust.py`
+Every module in `regression/`, and `forecast_adjust.py`
 have zero Home Assistant imports and are held to the full, unsuppressed
 strict standard — they are pure, framework-independent Python and are
 tested as such (see §6).
@@ -71,26 +71,26 @@ tested as such (see §6).
 ### 3 — Module boundaries and dependency direction
 
 ```
-sun_geometry.py        (pure math: sun azimuth/elevation for a given lat/lon/time)
-       ↑
 providers/             (pure-ish: discovers + normalizes forecast/sunshine
   discovery.py           baseline series from whatever HA entity exposes them;
   normalize.py            see ADR-001. Reads hass.states only — no writes,
-  base.py                 no coordinator/internal API access.)
+  base.py                 no coordinator/internal API access. Also broadcasts
+                          a source's native resolution (hourly/half-hourly/
+                          5-minute) across the 5-minute slot grid.)
        ↑
 yield_correction.py     (pure logic: optional per-string clipping exclusion
                          + temperature derating correction, no-op if not
                          configured; see ADR-003)
        ↑
 regression/             (pure logic: pluggable per-string, per-5-minute-slot
-  base.py                 regression strategy — kernel/linear/wls2/wls3 —
-  kernel.py               fit + predict with a shared confidence definition;
-  linear.py               see ADR-001/ADR-002)
-  wls2.py
+  base.py                 regression strategy — linear/kernel/wls2/wls3,
+  kernel.py               fitting actual yield as a function of the raw
+  linear.py               forecast value — fit + predict with a shared
+  wls2.py                 confidence definition; see ADR-001/ADR-002)
   wls3.py
        ↑
-forecast_adjust.py     (pure logic: applies a string's shading factor to its
-                         raw baseline series)
+forecast_adjust.py     (pure logic: applies a string's fitted per-slot model
+                         to its raw baseline series)
        ↑
 coordinator.py          (orchestrates: pulls recorder history + provider data,
                          re-fits the regression on a rolling window, schedules
@@ -101,7 +101,14 @@ sensor.py / config_flow.py  (HA entity glue)
 __init__.py             (wires platforms + coordinator into hass.data)
 ```
 
-Dependencies point upward only. `sun_geometry.py`, `yield_correction.py`,
+There is deliberately no `sun_geometry.py` — an earlier draft of ADR-001
+used sun azimuth/elevation as a regression input, which would have lived
+here; that was superseded once a validated proof-of-concept showed the raw
+forecast value alone (fit per 5-minute slot) works, and no module in the
+current architecture needs astronomical calculations at all (see ADR-001
+§1's amendment note).
+
+Dependencies point upward only. `yield_correction.py`,
 `regression/`, and `forecast_adjust.py` never import from any HA-facing
 module, and never import `homeassistant.*` directly. `providers/` is the one exception: it
 necessarily reads `hass.states`/`hass.config_entries` to discover and read
@@ -122,7 +129,7 @@ baseline.
 - `X | None` is used instead of `Optional[X]`.
 - Every function and method has a complete signature: parameter types and
   a return type, including `-> None`. This applies to private helpers
-  (e.g. `_kernel_weight`, `_clamp_elevation`) and test code exactly as
+  (e.g. `_kernel_weight`, `_clamp_output`) and test code exactly as
   it does to public HA-facing methods — `mypy --strict` does not
   distinguish, and a single unannotated parameter triggers `no-untyped-def`
   just as an entirely bare signature does.
@@ -137,20 +144,20 @@ baseline.
   (cross-module) or at the top of the module that owns them (single-use,
   e.g. `DEFAULT_POLL_INTERVAL` in `coordinator.py`).
 - Private helpers are prefixed with a single underscore (`_kernel_weight`,
-  `_azimuth_to_bearing`) and are not exported.
+  `_slot_key_for_timestamp`) and are not exported.
 - HA-facing entities (`ShadySensor`, `ShadyCoordinator`, `ShadyConfigFlow`,
   `ShadyOptionsFlow`) are all prefixed `Shady` for discoverability when
   grepping or reading stack traces.
-- One concept per module: `sun_geometry.py` only computes sun position,
-  `providers/` only discovers and normalizes third-party baseline data,
-  each module in `regression/` implements exactly one fitting strategy
-  behind the shared `base.py` protocol, `forecast_adjust.py` only applies
-  a factor to a forecast series, `coordinator.py` only orchestrates. A
-  module that starts doing two unrelated things is a signal to split it.
+- One concept per module: `providers/` only discovers and normalizes
+  third-party baseline data, each module in `regression/` implements
+  exactly one fitting strategy behind the shared `base.py` protocol,
+  `forecast_adjust.py` only applies a fitted model to a forecast series,
+  `coordinator.py` only orchestrates. A module that starts doing two
+  unrelated things is a signal to split it.
 
 ### 6 — Testing philosophy
 
-- `sun_geometry.py`, every module in `regression/`, `providers/normalize.py`,
+- Every module in `regression/`, `providers/normalize.py`,
   and `forecast_adjust.py` are unit-tested with **zero mocking** — no
   `unittest.mock`, no fake `hass` object. Because they have no Home
   Assistant dependency, tests call the real functions with real dataclass
@@ -214,10 +221,10 @@ every comment that explained it.
   logged via `_LOGGER.exception`/`_LOGGER.warning` and swallowed rather
   than raised, since these run outside a request/response cycle where
   there is no caller to propagate the exception to.
-- The pure calculation modules (`sun_geometry.py`, every module in
-  `regression/`, `forecast_adjust.py`) raise no exceptions in their normal
-  operating range; they use `min`/`max` clamps (e.g. shading factor
-  clamped to `[0.0, 1.0]`) instead of validation errors, because the
+- The pure calculation modules (every module in `regression/`,
+  `forecast_adjust.py`) raise no exceptions in their normal operating
+  range; they use `min`/`max` clamps (e.g. predicted output clamped to
+  `[0, FC]`, per ADR-001 §2) instead of validation errors, because the
   inputs are derived from live sensor/forecast data and configuration that
   is expected to occasionally be noisy rather than invalid.
 

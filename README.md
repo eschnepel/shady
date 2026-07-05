@@ -14,23 +14,28 @@ als gemeinsame Basis für beide Integrationen.
 
 ## Grundidee (siehe ADR-001 für Details)
 
-Kein manuell gepflegtes Horizontprofil. Shady lernt die Verschattung
-**empirisch** aus der Differenz zwischen einem bestehenden PV-Forecast
-(oder einer Sonnenstunden-Prognose) und dem realen historischen Ertrag:
+Kein manuell gepflegtes Horizontprofil, keine Sonnenstands-Berechnung.
+**Validiert durch einen früheren Proof-of-Concept:** Shady lernt die
+Verschattung rein empirisch aus der Beziehung zwischen dem rohen
+PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
+über den Forecast-Wert, nicht über Zeit oder Sonnenstand:
 
 1. Für jeden konfigurierten String wird eine **Baseline** (unverschatteter
    Forecast) automatisch erkannt – entweder aus einer PV-Forecast-
    Integration (z.B. Forecast.Solar, Solcast) oder, falls keine vorhanden
-   ist, aus der Sonnenstunden-Prognose einer Wetterintegration.
-2. Shady berechnet für jeden historischen 5-Minuten-Slot den **Sonnenstand**
-   (Azimut + Elevation) anhand Standort und Zeit.
-3. Eine **kernel-gewichtete Regression** über (Azimut, Elevation) lernt pro
-   String **und pro 5-Minuten-Slot des Tages** (00:00, 00:05, …, 23:55 –
-   dasselbe Raster wie die HA-Recorder-Statistics) einen eigenen
-   Verschattungsfaktor – Sonnenstände, an denen der reale Ertrag
-   systematisch niedriger ausfällt als die Baseline, verraten die Position
-   der Obstruktion, ganz ohne dass sie geometrisch beschrieben werden muss.
-   Ein globaler Smoothing-Radius (Default: 1 Nachbar-Slot) verhindert harte
+   ist, aus der Sonnenstunden-Prognose einer Wetterintegration. Manche
+   Provider liefern nur stündliche oder halbstündliche Werte – Shady
+   verteilt diese auf die feineren 5-Minuten-Slots.
+2. Pro String **und** pro 5-Minuten-Slot des Tages (00:00, 00:05, …,
+   23:55 – dasselbe Raster wie die HA-Recorder-Statistics) wird ein
+   eigenes Regressionsmodell trainiert: `PV ≈ f(FC)` – der Ist-Ertrag als
+   Funktion des rohen Forecast-Werts, über die letzten 28 Tage desselben
+   Slots. Default-Methode ist `linear` (so im POC validiert); `kernel`,
+   `wls2`, `wls3` stehen als Optionen zur Verfügung, sind aber – wie
+   Beispielrechnungen zeigen – bei Extrapolation über den historischen
+   Wertebereich hinaus (der Normalfall bei einer Vorhersage) tendenziell
+   instabiler.
+3. Ein globaler Smoothing-Radius (Default: 1 Nachbar-Slot) verhindert harte
    Sprünge zwischen benachbarten Slots.
 4. Ein rollierendes 28-Tage-Fenster (konfigurierbar) hält das Modell nah an
    der aktuellen Situation (z.B. Laubfall bei einem Baum). Optional, pro
@@ -43,8 +48,8 @@ Kein manuell gepflegtes Horizontprofil. Shady lernt die Verschattung
 ## Offene Fragen für das weitere Brainstorming
 
 - Smoothing-Radius-Default (§3b) mit echten Daten validieren.
-- Diagnose-/Debug-Darstellung des gelernten Verschattungsfeldes (z.B. als
-  Polardiagramm Azimut/Elevation) für den Nutzer.
+- Diagnose-/Debug-Darstellung der gelernten Slot-Modelle (z.B. als
+  FC-vs-PV-Streudiagramm mit Regressionskurve je Slot) für den Nutzer.
 
 ## Struktur
 

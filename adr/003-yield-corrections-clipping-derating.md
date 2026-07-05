@@ -159,9 +159,9 @@ Extending ADR-001 §6's final step, one field is added there for the
 temperature source default (§2a):
 
 ```
-Step "location_and_window" (final, extended):
-  - ...(latitude/longitude/elevation, training window, regression method,
-    smoothing radius — unchanged from ADR-001 §6)...
+Step "settings" (final, extended):
+  - ...(training window, regression method, smoothing radius — unchanged
+    from ADR-001 §6)...
   - Default temperature source (optional; entity selector covering
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all strings)
