@@ -16,9 +16,11 @@ predicted — capturing same-day effects (an unmodeled event like snow
 cover, a sensor fault, an unusually persistent weather pattern) that the
 nightly model refit (ADR-002 §1) has no way to react to before tomorrow
 at the earliest. This ADR adds an optional mechanism that projects
-today's already-observed deviation onto `ShadyFcRemainingTodaySensor`
-(ADR-005 §4), so the remaining-day forecast can adapt within the same
-day, not just from one day to the next.
+today's already-observed deviation onto the future portion of ADR-005
+§3's per-slot forecast array, so the remaining-day picture — both the
+day-array's shape and `ShadyFcRemainingTodaySensor`'s aggregate, which
+simply sums that array — can adapt within the same day, not just from one
+day to the next.
 
 ---
 
@@ -57,23 +59,35 @@ toggle plus a magnitude field: one field with a meaningful zero is one
 fewer setting to explain, and `0` is the safest possible default for a
 feature that changes same-day forecast behavior.
 
-### 3 — Application
+### 3 — Application: per future slot, not as a single aggregate multiplier
 
 Once both gates (§1's sample-size minimum, and §2's cutoff being
-non-zero) are satisfied, `ShadyFcRemainingTodaySensor`'s state becomes:
+non-zero) are satisfied, the correction is applied to **each individual
+future slot** in ADR-005 §3's `slot_values` array — every entry where
+`slot_timestamps[i] >= now` is replaced by `slot_values[i] × clamp(ratio,
+1-cutoff, 1+cutoff)`. Already-past entries in that array (§3's snapshot
+cache) are never touched, matching ADR-002 §3's amendment that past slots
+are frozen once their time has passed.
 
-```
-corrected_remaining_today = raw_remaining_today × clamp(ratio, 1-cutoff, 1+cutoff)
-```
+`ShadyFcRemainingTodaySensor` (ADR-005 §4) does **not** gain any
+correction logic of its own — it continues to be exactly what it already
+was, a filter-and-sum over `slot_values` for `slot_timestamps[i] >= now`.
+Since those entries are now themselves corrected (when the feature is
+active), §4's aggregate reflects the correction automatically, without
+duplicating the ratio/clamp math at the aggregate level. This also means
+anyone charting `ShadyFcDaySumSensor`'s raw array (ADR-004/ADR-005) sees
+the same corrected shape for the remaining slots that the aggregate
+sensor is summing — one source of truth for "what does the rest of today
+look like", not two.
 
-`raw_remaining_today` is exactly ADR-005 §4's existing calculation,
-unmodified — this correction is a multiplier applied on top, not a
-replacement for it. The sensor gains three additional attributes for
-transparency (consistent with the diagnostic philosophy in ADR-004):
-`intraday_ratio` (the raw, unclamped §1 value), `intraday_correction_active`
-(boolean — were both gates satisfied this update), and `raw_remaining_today`
-(the pre-correction value, so a person can always see what the plain model
-said versus what today's specific performance adjusted it to).
+The sensor gains attributes for transparency (consistent with the
+diagnostic philosophy in ADR-004), attached to `ShadyFcDaySumSensor`
+rather than to the remaining-today aggregate, since that is where the
+correction actually happens: `intraday_ratio` (the raw, unclamped §1
+value), `intraday_correction_active` (boolean — were both gates satisfied
+this update), and `slot_values_raw` (the pre-correction array, so a
+person can always see what the plain per-slot models said versus what
+today's specific performance adjusted them to).
 
 ### 4 — Module placement
 
@@ -81,9 +95,14 @@ The ratio-and-clamp math (`intraday_correction_factor(pv_integral,
 fc_integral, active_slot_count, cutoff) -> float`) is a pure function
 added to `aggregation.py` (ADR-005) — no new module needed, this is the
 same kind of cross-string, cross-sensor arithmetic that module already
-owns. `sensor.py`'s `ShadyFcRemainingTodaySensor` calls it and applies the
-result; the config-flow field lives in the same "settings" step as the
-training window, regression method, and smoothing radius (ADR-001 §6).
+owns. A second small pure function applies that factor to the future
+portion of a `slot_values` array (`apply_intraday_correction(slot_values,
+slot_timestamps, now, factor) -> list[float]`), also in `aggregation.py`.
+`sensor.py`'s `ShadyFcDaySumSensor` calls both and stores the corrected
+array; `ShadyFcRemainingTodaySensor` is unchanged — it already only reads
+that array and sums, so it picks up the correction for free. The
+config-flow field lives in the same "settings" step as the training
+window, regression method, and smoothing radius (ADR-001 §6).
 
 ---
 
@@ -101,6 +120,11 @@ training window, regression method, and smoothing radius (ADR-001 §6).
   reusing a concept (`magnitude_weight_i`'s active/inactive distinction)
   the design already has, rather than introducing a second notion of
   "has enough of the day happened yet".
+- **Pro:** Applying the correction to the per-slot array (§3) rather than
+  as a second multiplier on the aggregate sensor means there is exactly
+  one place the correction happens — the day-array's shape and the
+  remaining-today total are automatically consistent with each other,
+  with no risk of the two drifting apart from duplicated logic.
 - **Con:** This assumes today's already-observed deviation is likely to
   continue into the rest of the day, which is not always true (e.g. a
   cloud front that clears by early afternoon would leave a lingering

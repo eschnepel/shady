@@ -59,7 +59,11 @@ sum of Watts (which is not itself a meaningful quantity), but `Σ (P_i ×
 in hours before summing. This is the one place in the design so far where
 a slot-power-to-slot-energy conversion is needed, and it happens only
 here (ADR-001's regression itself always operates on power values per
-slot; ADR-005 is where those get integrated into an energy total).
+slot; ADR-005 is where those get integrated into an energy total). The
+future portion of `slot_values` (entries not yet past) is where an
+optional intraday deviation correction is applied — see ADR-006, which
+amends this sensor's array directly rather than any sensor downstream of
+it.
 
 ### 4 — `ShadyFcRemainingTodaySensor` — expected remaining energy today
 
@@ -67,10 +71,10 @@ The same energy calculation as §3's state, but summing only the slots
 from `slot_timestamps` that are still in the future relative to "now" —
 i.e. `Σ (P_i × 5/60)` over `slot_values[i]` where `slot_timestamps[i] >=
 now`. Reuses §3's cached array rather than recomputing anything; this is
-pure post-processing of already-available data; State: expected remaining
-energy today (Wh). This value is optionally further adjusted by an
-intraday deviation correction — see ADR-006, which is layered on top of
-this sensor rather than changing this calculation itself.
+pure post-processing of already-available data, with no correction logic
+of its own — if §3's array carries an intraday correction (ADR-006), this
+sensor's total reflects it automatically, simply by summing whatever §3
+currently holds. State: expected remaining energy today (Wh).
 
 ### 5 — `ShadyPvEnergyIntegralSensor` — actual energy today, reset at midnight
 
