@@ -55,6 +55,10 @@ PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
    Array), Rest-Tages-Prognose, sowie zwei Integralsensoren (Ist-Energie
    und korrigierte-Forecast-Energie, beide mit Reset um Mitternacht) für
    den direkten Ist-vs-Forecast-Vergleich in kWh über den Tagesverlauf.
+8. Optional: die Rest-Tages-Prognose reagiert auf die heutige, bereits
+   beobachtete Abweichung zwischen Ist- und Forecast-Integral (ab
+   mindestens 12 aktiven Slots = 1h), begrenzt durch einen konfigurierbaren
+   Cut-off (Default 0 = deaktiviert).
 
 ## Offene Fragen für das weitere Brainstorming
 
@@ -72,6 +76,9 @@ für die optionalen Clipping-/Derating-Korrekturen,
 [`adr/004-diagnostics-switch-and-scatter-sensor.md`](adr/004-diagnostics-switch-and-scatter-sensor.md)
 für den optionalen Diagnose-Switch und den ApexCharts-Streudiagramm-Sensor, und
 [`adr/005-aggregate-sum-and-integral-sensors.md`](adr/005-aggregate-sum-and-integral-sensors.md)
-für die Summen- und Integralsensoren über alle Strings.
+für die Summen- und Integralsensoren über alle Strings, und
+[`adr/006-intraday-deviation-correction.md`](adr/006-intraday-deviation-correction.md)
+für die optionale Rest-Tages-Korrektur basierend auf der heutigen
+Ist-vs-Forecast-Abweichung.
 
-Weitere ADRs (006 ff.) werden im Laufe des Brainstormings ergänzt.
+Weitere ADRs (007 ff.) werden im Laufe des Brainstormings ergänzt.

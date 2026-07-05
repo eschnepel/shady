@@ -68,7 +68,9 @@ from `slot_timestamps` that are still in the future relative to "now" —
 i.e. `Σ (P_i × 5/60)` over `slot_values[i]` where `slot_timestamps[i] >=
 now`. Reuses §3's cached array rather than recomputing anything; this is
 pure post-processing of already-available data; State: expected remaining
-energy today (Wh).
+energy today (Wh). This value is optionally further adjusted by an
+intraday deviation correction — see ADR-006, which is layered on top of
+this sensor rather than changing this calculation itself.
 
 ### 5 — `ShadyPvEnergyIntegralSensor` — actual energy today, reset at midnight
 

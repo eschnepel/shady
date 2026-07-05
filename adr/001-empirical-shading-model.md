@@ -371,6 +371,7 @@ Step "settings" (final):
     no auto-selection based on data volume)
   - Smoothing radius in slots (default 1, global; see §3b — `0` disables
     temporal smoothing)
+  - Intraday-Korrektur Cut-off (default 0 = deaktiviert; siehe ADR-006)
 ```
 
 Note there is no latitude/longitude/elevation field: the earlier draft of
