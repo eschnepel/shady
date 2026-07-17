@@ -1,0 +1,59 @@
+flowchart TB
+  TEMPFLAG{Globales Flag:<br/>FC-Provider inkludiert<br/>Temperatur-Koeffizient<br/>bereits selbst?}
+
+  subgraph String["Pro String (je konfigurierter String)"]
+    TEMPBACK[Temperatur-Rückrechnung<br/>auf Ziel-Slot-Temperatur]
+    RAMP[Stufe 1: FC-Update-Rampe<br/>1h linear]
+    INTRA[Stufe 2: Intraday-Korrektur<br/>2h-Fenster aus Recorder]
+    CLAMP[Clamp 0..FC<br/>bzw. Inverter-Limit<br/>letzter Schritt]
+    PVSensor([Sensor: Ist-Ertrag<br/>pro String])
+    CLIP[Clipping-Ausschluss<br/>Training]
+    FCLive[roher FC-Wert für jeden Slot heute/morgen]
+    PV[Rohe PV-Historie]
+    FIT[Modell-Fit pro Slot<br/>linear / kernel / wls2 / wls3]
+    TEMP[25°C-Normalisierung<br/>Training]
+    PRED[Vorhersage bei 25°C]
+    FC[Rohe FC-Historie]
+    FCSensor([Sensor: korrigierter Forecast<br/>Slot-Array, pro String])
+
+  end
+
+  subgraph Agg["Aggregation (über alle Strings)"]
+    SUMFC([Sensor: Summe korr. FC<br/>aktuell])
+    DAYSUM([Sensor: Summe korr. FC<br/>Tagesarray, inkl. Snapshot vergangener Slots])
+    SUMPV([Sensor: Summe Ist-Ertrag<br/>aktuell])
+    INTFC([Sensor: Energie-Integral korr. FC<br/>Reset Mitternacht])
+    REST([Sensor: Rest-Tages-Summe])
+    INTPV([Sensor: Energie-Integral Ist<br/>Reset Mitternacht])
+
+  end
+
+  subgraph Diag["Diagnose (optional, per Switch)"]
+    SWITCH([Switch: Diagnose<br/>Default aus])
+    SCATTER([Sensor: Streudiagramm<br/>pro String, alle 4 Methoden + heutiger Ist-Wert])
+  end
+
+  TEMPFLAG -. steuert .-> TEMPBACK
+    PV --> CLIP
+    PV --> PVSensor
+  TEMPFLAG -. steuert .-> TEMP
+    CLIP --> TEMP
+    TEMP --> FIT
+    SWITCH --> SCATTER
+  FIT --> SCATTER
+    FC --> FIT
+    FIT --> PRED
+    FCLive --> PRED
+    PRED --> TEMPBACK --> RAMP --> INTRA
+    PVSensor --> INTRA
+    INTRA --> CLAMP --> FCSensor
+
+    RAMP ~~~~~~ SWITCH
+  FCSensor --> DAYSUM
+    DAYSUM --> REST
+    SUMPV --> INTPV
+    SUMFC --> INTFC
+  FCSensor --> SUMFC
+  PVSensor --> SUMPV
+  FCLive --> SCATTER
+  PVSensor --> SCATTER

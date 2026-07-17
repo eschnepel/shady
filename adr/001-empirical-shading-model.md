@@ -75,6 +75,24 @@ are not required by the model itself).
 
 ### 2 — Regression method: a pluggable, globally-selected strategy
 
+**Two distinct roles for `FC`, never conflated.** Fitting and predicting
+use `FC` values from two different points in time, sourced two different
+ways, and this ADR names them explicitly to avoid the two being confused
+in either the code or its diagrams (an earlier internal review of the
+architecture diagram briefly conflated them, which is exactly the
+mistake this note exists to prevent):
+
+- **Training-time `FC`** — the string's raw `FC` *history* (via
+  `providers/`, ADR-001 §5, and the recorder), read for every historical
+  sample in a slot's pool (§3a/§3b). Paired with that same sample's
+  (clipped-and-normalized, per ADR-003 §1/§2) actual yield, this is what
+  `fit(samples)` below trains on.
+- **Prediction-time `FC`** — the slot's *current/live* raw `FC` value for
+  today or tomorrow (the same value `providers/` exposes going forward,
+  ADR-002 §2's baseline-update trigger), used only to query the
+  already-fitted model: `predict(fc)`. This is never part of the training
+  pool itself.
+
 Every regression strategy fits `PV_i ≈ f(FC_i)` over the historical
 sample pool that §3a/§3b already define for a given slot (that slot's own
 samples, plus up to `smoothing_radius` neighboring slots, across the
@@ -153,6 +171,22 @@ multiplicative factor. If a string has an inverter AC power limit
 configured (ADR-003 §1), that limit is a *second*, tighter upper clamp
 applied to this same output — see ADR-003 §1's amendment for why this
 must apply to the corrected output too, not just to training.
+
+**Ordering relative to ADR-006.** This clamp is the *final* step of the
+per-slot pipeline, applied once, after both of ADR-006's stages have
+already run on the raw (unclamped) value: first the FC-update ramp
+(§1a, blending old- and new-`FC`-based predictions over one hour), then
+the intraday deviation correction (§1, multiplying by a ratio that is
+itself separately clamped to `[1-cutoff, 1+cutoff]` in §2 — a different,
+smaller clamp bounding the *multiplier*, not the *output*). Running this
+output clamp any earlier would not guarantee the *final* value respects
+the bound: the ramp's two sides can carry different `FC` bounds, and the
+intraday correction can itself push a value that was fine beforehand back
+above or below the limit (e.g. a >1 ratio boosting an already near-limit
+prediction). Clamping only once, last, after everything else has already
+been applied, is what actually guarantees the number Shady outputs never
+violates a physical bound, regardless of which upstream corrections were
+active.
 
 Regardless of method, `magnitude_weight_i` downweights samples where
 `FC_i` is near zero, because a near-zero forecast slot (sunrise/sunset,
@@ -283,6 +317,31 @@ slot), exposed in the config flow (§6) as "smoothing radius in slots",
 defaulting to `1` (±5 minutes). A radius of `0` disables temporal
 smoothing entirely, reproducing the strictly-independent-slots behavior
 originally described in §3a.
+
+**`time_weight_i` formula.** Samples beyond `smoothing_radius` slots away
+are not in the pool at all (hard cutoff); within it, weight decreases
+linearly with slot distance:
+
+```
+time_weight_i = 1 - distance_i / (smoothing_radius + 1)
+```
+
+where `distance_i` is the slot distance to the diagnosed slot (`0` for
+the slot itself, `1` for its immediate neighbors, etc.). This gives
+`time_weight_i = 1.0` at the center and `1/(smoothing_radius + 1)` at the
+outermost included neighbor — e.g. `1.0` / `0.5` for the default radius
+of `1`, or `1.0` / `0.667` / `0.333` for a radius of `2`. A Gaussian
+kernel (`exp(-distance_i² / 2σ²)`) was considered as an alternative and
+rejected for this specific decision: it would need `σ` either tied to
+`smoothing_radius` (in which case the outermost weight stays roughly
+constant near `0.61` regardless of how large the radius is, rather than
+this formula's built-in tendency to grow more conservative as the radius
+grows) or exposed as its own separate field, reintroducing exactly the
+kind of second, redundant locality parameter §2's amendment note already
+argued against once (there, for the since-removed azimuth/elevation
+kernel bandwidth). At the small radii in practical use (0–2), the two
+shapes are close enough that this single-parameter linear form is a
+worthwhile trade against that added complexity, not a limitation.
 
 ### 4 — Rolling 28-day training window as the default
 

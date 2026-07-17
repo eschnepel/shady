@@ -41,8 +41,13 @@ PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
    String: Wechselrichter-Clipping-Samples werden aus dem Training
    ausgeschlossen *und* die korrigierte Ausgabe wird zusätzlich auf das
    Inverter-Limit gedeckelt; Temperatur-Derating wird vor der Regression
-   herausgerechnet – beides deaktiviert Shady standardmäßig, bis explizit
-   konfiguriert.
+   herausgerechnet und bei der Vorhersage wieder zurückgerechnet – beides
+   deaktiviert Shady standardmäßig, bis explizit konfiguriert. Ein
+   zusätzliches globales Flag (ein FC-Datenprovider pro Config-Entry) legt
+   fest, ob dieser Provider (z.B. Solcast) den Temperaturkoeffizienten
+   bereits selbst einrechnet – falls ja, wird Shadys eigene
+   Temperatur-Korrektur für alle Strings übersprungen, um keine doppelte
+   Verrechnung zu erzeugen.
 5. Ergebnis: ein angepasster Forecast-Sensor pro String (heute + morgen),
    mit einer auf Tagessumme aggregierten Konfidenz (`FC`-gewichtet über
    alle Slots des Tages – die Konfidenz eines einzelnen Slots ist für sich
@@ -55,16 +60,25 @@ PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
    Array), Rest-Tages-Prognose, sowie zwei Integralsensoren (Ist-Energie
    und korrigierte-Forecast-Energie, beide mit Reset um Mitternacht) für
    den direkten Ist-vs-Forecast-Vergleich in kWh über den Tagesverlauf.
-8. Optional: die Rest-Tages-Prognose reagiert auf die heutige, bereits
-   beobachtete Abweichung zwischen Ist- und Forecast-Integral (ab
-   mindestens 12 aktiven Slots = 1h), begrenzt durch einen konfigurierbaren
-   Cut-off (Default 0 = deaktiviert).
+8. Optional, **pro String**: die Rest-Tages-Prognose reagiert auf die in
+   den letzten 2 Stunden beobachtete Ist-vs-Forecast-Abweichung (direkt
+   aus der Recorder-Historie gelesen, ab mindestens 12 aktiven Slots in
+   diesem Fenster), begrenzt durch einen konfigurierbaren Cut-off (Default
+   0 = deaktiviert). Pro String, weil z.B. Schnee unter einem verschatteten
+   String später abtaut als unter einem freien – ein aggregierter Wert
+   würde beides vermischen. Nach jedem Provider-Forecast-Update wird zudem
+   eine Stunde lang linear zwischen altem und neuem FC-Wert übergeblendet,
+   damit Wettermodell-Updates nicht als Sprung im Dashboard auftauchen.
 
 ## Offene Fragen für das weitere Brainstorming
 
 - Smoothing-Radius-Default (§3b) mit echten Daten validieren.
 
 ## Struktur
+
+Siehe [`docs/architecture.mmd`](docs/architecture.mmd) für ein
+Mermaid-Abhängigkeitsdiagramm der Verarbeitungsschritte (String- und
+Aggregatebene kombiniert).
 
 Siehe [`adr/000-coding-standards.md`](adr/000-coding-standards.md) für die
 Modulgrenzen, [`adr/001-empirical-shading-model.md`](adr/001-empirical-shading-model.md)

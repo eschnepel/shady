@@ -76,6 +76,10 @@ series: [
     name: 'today kernel',
     data: [[21.7, 3.4]],
   },
+  {
+    name: 'today actual',
+    data: [[21.7, 3.15]],
+  },
 ],
 ```
 
@@ -96,12 +100,23 @@ its own scatter series/color:
   configured default (ADR-001 §2) — the point of this sensor is
   comparing methods on the user's own data, so showing only the active
   one would defeat it.
+- **Today-actual series**, `"today actual"` — a single-point series at
+  `[FC_today, PV_today]`, the *real* measured yield for the diagnosed
+  slot. This is only possible because of the slot choice below: it must
+  already be over.
 
 **Which slot is "the diagnosed slot"** for a given moment defaults to the
-next upcoming 5-minute slot to be forecast, so the sensor's content stays
-relevant as the day progresses, following the coordinator's own
-today/tomorrow refresh cadence (ADR-002 §3) rather than needing a
-separate schedule.
+**last complete** 5-minute slot, not the next upcoming one — this is a
+deliberate change from an earlier draft of this ADR. A not-yet-elapsed
+slot has no actual yield to compare against, so its diagnostic view could
+only ever show the four methods disagreeing with each other, never with
+reality. Using the most recently finished slot means `"today actual"`
+above is always populated, letting a person directly see which method's
+prediction — made using the same historical pool shown alongside it —
+actually came closest. The sensor's content still stays current as the
+day progresses, simply always trailing "now" by at most one slot rather
+than leading it, and still follows the coordinator's own refresh cadence
+(ADR-002 §2) rather than needing a separate schedule.
 
 ### 3 — Extra fitting cost only when the switch is on
 
@@ -134,6 +149,11 @@ presentation and does not belong in `regression/` or `forecast_adjust.py`.
   slot's fit" exercise from this project's own design process into a
   standing, opt-in feature — the same validation is available to every
   installation on its own real data, not just during development.
+- **Pro:** Diagnosing the last complete slot rather than the next upcoming
+  one means the sensor always has a real measured value to compare all
+  four methods against, not just the four methods disagreeing with each
+  other — turning it from "which prediction do I trust" guesswork into a
+  direct accuracy check against what just actually happened.
 - **Pro:** Showing all four methods' today-predictions side by side,
   against the real training pool, lets a user judge whether the
   configured default (`wls2`) is behaving sensibly for their specific
