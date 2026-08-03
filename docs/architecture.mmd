@@ -14,7 +14,7 @@ flowchart TB
     TEMP[25°C-Normalisierung<br/>Training]
     PRED[Vorhersage bei 25°C]
     FC[Rohe FC-Historie]
-    FCSensor([Sensor: korrigierter Forecast<br/>Slot-Array, pro String])
+    FCSensor([ShadyForecastSensor<br/>Slot-Array, pro String])
 
   end
 
@@ -55,5 +55,5 @@ flowchart TB
     SUMFC --> INTFC
   FCSensor --> SUMFC
   PVSensor --> SUMPV
-  FCLive --> SCATTER
+  FC --> SCATTER
   PVSensor --> SCATTER

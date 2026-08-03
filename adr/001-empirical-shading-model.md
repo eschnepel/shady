@@ -1,4 +1,4 @@
-# ADR-001 – Empirical, Sun-Position-Based Shading Model
+# ADR-001 – Empirical, Forecast-Value-Based Shading Model
 
 **Date:** 2026-07-04
 **Status:** Accepted
@@ -28,16 +28,6 @@ history, and defines the supporting architecture: how the baseline
 (unshaded) forecast is sourced, how the regression works, and what the
 config flow needs to collect as a result.
 
-**Amendment note:** an earlier draft of this ADR specified sun
-azimuth/elevation as the regression predictor, reasoning that a static
-obstruction's effect should generalize across seasons via sun position
-rather than calendar time. That reasoning was superseded once a prior
-proof-of-concept became known: linear fitting with the *raw forecast
-value* as predictor, one model per 5-minute slot, had already been built
-and validated in practice. §1 and §2 below reflect that corrected,
-POC-grounded design; azimuth/elevation and `sun_geometry.py` no longer
-appear anywhere in the architecture.
-
 ---
 
 ## Decision
@@ -47,10 +37,7 @@ appear anywhere in the architecture.
 **This decision was validated by a working proof-of-concept** before this
 ADR was written: linear fitting with the raw forecast value as the
 predictor, one model per 5-minute slot, was implemented and worked well
-in practice. This ADR documents and generalizes that proven approach — an
-earlier draft of this ADR predicted sun azimuth/elevation as the input
-variable instead; that turned out to be unnecessary and is corrected here
-(see the Context section's amendment note).
+in practice. This ADR documents and generalizes that proven approach.
 
 The regression predictor `x` is the **raw baseline forecast value itself**
 (`FC_i`, e.g. in Watts) for the timestamp in question, and the target `y`
@@ -65,22 +52,18 @@ one remaining variable that is (a) genuinely informative about the
 future prediction is the raw forecast value itself — not a geometric
 quantity that would need computing from scratch via `sun_geometry.py`.
 
-This also means Shady needs **no astronomical calculation at all**:
-`sun_geometry.py` is removed from the architecture (see the updated module
-diagram in ADR-000 §3) — there is no remaining place in the design that
-depends on sun azimuth/elevation. Latitude/longitude/elevation are
-likewise no longer needed as regression inputs (they may still be useful
-for other purposes, e.g. determining sunrise/sunset for UI purposes, but
-are not required by the model itself).
+This also means Shady needs **no astronomical calculation at all** (see
+the module diagram in ADR-000 §3) — nothing in the design depends on sun
+azimuth/elevation, and latitude/longitude/elevation are not needed as
+regression inputs (they may still be useful for other purposes, e.g.
+determining sunrise/sunset for UI purposes, but are not required by the
+model itself).
 
 ### 2 — Regression method: a pluggable, globally-selected strategy
 
 **Two distinct roles for `FC`, never conflated.** Fitting and predicting
 use `FC` values from two different points in time, sourced two different
-ways, and this ADR names them explicitly to avoid the two being confused
-in either the code or its diagrams (an earlier internal review of the
-architecture diagram briefly conflated them, which is exactly the
-mistake this note exists to prevent):
+ways:
 
 - **Training-time `FC`** — the string's raw `FC` *history* (via
   `providers/`, ADR-001 §5, and the recorder), read for every historical
@@ -165,12 +148,10 @@ above, without `wls3`'s demonstrated extrapolation risk.
 The predicted output is clamped to `[0, FC]` before being used (never
 negative, never more than the slot's own raw forecast value) — this
 mirrors the defensive-clamping philosophy in Effy's ADR-005 (never let a
-degenerate input propagate raw) and replaces the earlier `[0, 1]`
-factor-clamp now that the model predicts an absolute value rather than a
-multiplicative factor. If a string has an inverter AC power limit
-configured (ADR-003 §1), that limit is a *second*, tighter upper clamp
-applied to this same output — see ADR-003 §1's amendment for why this
-must apply to the corrected output too, not just to training.
+degenerate input propagate raw). If a string has an inverter AC power
+limit configured (ADR-003 §1), that limit is a *second*, tighter upper
+clamp applied to this same output — see ADR-003 §1a for why this must
+apply to the corrected output too, not just to training.
 
 **Ordering relative to ADR-006.** This clamp is the *final* step of the
 per-slot pipeline, applied once, after both of ADR-006's stages have
@@ -259,7 +240,7 @@ This is chosen over one continuous per-string model for three reasons:
 
 - **It matches the shape of the problem.** Any baseline forecast is
   already delivered as discrete per-slot values (§5), and the recorder
-  statistics Shady reads/writes are natively 5-minute-sliced (Effy
+  statistics Shady reads are natively 5-minute-sliced (Effy
   ADR-003). Slot-partitioned models mean producing an adjusted forecast is
   always "look up this slot's model and evaluate it" — no per-query
   neighbor search across the full historical point cloud.
@@ -336,12 +317,125 @@ rejected for this specific decision: it would need `σ` either tied to
 `smoothing_radius` (in which case the outermost weight stays roughly
 constant near `0.61` regardless of how large the radius is, rather than
 this formula's built-in tendency to grow more conservative as the radius
-grows) or exposed as its own separate field, reintroducing exactly the
-kind of second, redundant locality parameter §2's amendment note already
-argued against once (there, for the since-removed azimuth/elevation
-kernel bandwidth). At the small radii in practical use (0–2), the two
-shapes are close enough that this single-parameter linear form is a
-worthwhile trade against that added complexity, not a limitation.
+grows) or exposed as its own separate field — a second, redundant
+locality parameter with no obvious default, on top of `smoothing_radius`
+itself. At the small radii in practical use (0–2), the two shapes are
+close enough that this single-parameter linear form is a worthwhile
+trade against that added complexity, not a limitation.
+
+### 3c — Excluding a whole neighbor series at a shading boundary
+
+§3b's `time_weight_i` handles ordinary noise well — a neighbor slot's
+samples are just somewhat less trusted the farther away they are — but it
+has no way to distinguish "somewhat noisier" from "systematically a
+different shading regime entirely". Exactly at a shading boundary (a
+tree's edge falling between two adjacent 5-minute slots, or the seasonal
+sweep discussed in §3a/§3b's own history), one whole neighbor series can
+be consistently better or worse than the center slot's — not scattered
+around a similar central tendency, but shifted wholesale. Blending such a
+neighbor in at a reduced (but still nonzero) weight still pulls the
+center slot's fit toward the wrong regime; the distance-based weight
+alone cannot fix this, because the problem isn't distance, it's that the
+neighbor's data doesn't belong to the same regime at all.
+
+Before a neighbor's samples are included in a slot's pool at all, its
+series is checked against the center slot's own series:
+
+```
+neighbor_median = median(PV_i / FC_i for i in neighbor_series)
+center_median   = median(PV_i / FC_i for i in center_series)
+deviation = |neighbor_median - center_median| / center_median
+
+if deviation > neighbor_fitting_cutoff:  # default 0.25, global, §6
+    exclude the entire neighbor series from this slot's pool
+```
+
+The comparison uses the **ratio** `PV_i/FC_i`, not raw `PV_i` values,
+specifically because adjacent slots can have meaningfully different `FC`
+magnitudes just from being a few minutes apart in time-of-day (most
+noticeably near sunrise/sunset, where irradiance changes quickly) — a
+raw-value comparison would flag that ordinary, shading-unrelated
+difference as a false positive. The ratio normalizes it away and isolates
+whether the neighbor's *performance relative to what was forecast* is
+systematically different, which is the actual shading-regime signal.
+`median`, not `mean`, is used for the same reason `magnitude_weight_i`
+and the various clamps throughout this design favor robust statistics —
+a handful of weather-driven outlier days should not by themselves trigger
+an exclusion. `neighbor_fitting_cutoff` is a **global**, config-flow-
+exposed setting (§6, default `25%`) — unlike the fixed constants
+elsewhere in this design (e.g. the `12`-active-slot gate in ADR-006 §1),
+this one is user-tunable from the start, since how much regime difference
+counts as "a real boundary" plausibly varies by installation (canopy
+density, obstruction sharpness) in a way the 12-slot gate's underlying
+concept does not.
+
+This is a **hard exclusion** (`time_weight_i` effectively forced to `0`
+for every sample in that neighbor series for this slot), not a further
+reduction of the existing linear weight — a systematically-shifted
+neighbor is misleading signal, not merely weaker signal, so partial
+trust is the wrong response to it. The check is re-evaluated at every
+recalibration (ADR-002 §1), alongside the rest of the pool, since which
+slots straddle a boundary can itself shift as the rolling window (§4)
+advances.
+
+### 3d — Alternative: rescale instead of exclude (`neighbor_fitting_cutoff = -1%`)
+
+Exclusion (§3c) discards a neighbor series entirely once it disagrees
+enough — throwing away real day-to-day variation and weather-response
+shape along with the systematic bias. Setting `neighbor_fitting_cutoff`
+to the sentinel value **`-1%`** switches to a different strategy:
+**never exclude, always rescale.** Every neighbor series is corrected to
+the center slot's own median before it enters the pool, rather than being
+judged against a threshold at all:
+
+```
+correction_factor = center_median / neighbor_median
+rescaled_PV_i = PV_i * correction_factor   for every i in neighbor_series
+```
+
+`(FC_i, rescaled_PV_i)` pairs replace the neighbor's raw pairs in the
+pool, still weighted by `magnitude_weight_i · time_weight_i` exactly as
+§3b already specifies — the rescaling only corrects *which level* the
+neighbor's ratio sits at, nothing else about how it is weighted changes.
+Because only the median shifts, day-to-day weather variation within the
+neighbor series is preserved as-is (a cloudy day two days ago is still
+visibly a cloudy day after rescaling, just centered on the right
+baseline), and if the neighbor itself is mid-transition (its own edge
+sweeping through within the window), that shape survives the correction
+too — this is a single multiplicative adjustment, not a point-by-point
+overwrite. `-1%` was chosen as the sentinel because it is not a value a
+real percentage deviation could ever take (deviation is defined as an
+absolute value, §3c), the same kind of "reuse an otherwise-impossible
+value as a mode switch" trick ADR-006 §2 already uses for its own
+cut-off field (`0` there means "disabled" rather than a literal
+zero-width clamp).
+
+This inherits the same near-zero-`FC` instability §2's `magnitude_weight_i`
+already exists to dampen: if `neighbor_median` is itself very small
+(a neighbor slot near sunrise/sunset with little historical signal),
+`correction_factor` can become large and the rescaled values noisy.
+`magnitude_weight_i` still applies to these rescaled samples exactly as
+it would to any other, which tempers but does not eliminate this —
+worth keeping in mind when choosing between §3c's exclusion and §3d's
+rescaling for an installation with slots close to the day's edges.
+
+**A useful emergent property:** if a slot sits exactly on a shading
+boundary — both its `-1` and `+1` neighbors deviate enough to be excluded
+— smoothing effectively (and correctly) collapses to `smoothing_radius =
+0` for that specific slot at that specific time, without needing to
+special-case "this slot is a boundary" anywhere. Calm, non-boundary
+regions keep the full benefit of §3b's smoothing; boundary slots
+automatically fall back to being judged on their own data alone.
+
+This check lives in `regression/base.py`, alongside the shared pool-
+construction logic every strategy in `regression/` relies on before its
+own `fit()` runs — it is common preprocessing, not specific to any one of
+`linear`/`kernel`/`wls2`/`wls3`. The raw `FC`/`PV` pairs it operates on
+are supplied by `coordinator.py`, which fetches them via `cache.py`'s
+`get_slot_pool` accessor (ADR-007 §1e) — `regression/base.py` itself
+never reaches into `cache.py` directly (only `coordinator.py` does,
+ADR-007 §2), keeping the pool-construction logic a pure function of
+whatever data it is handed.
 
 ### 4 — Rolling 28-day training window as the default
 
@@ -408,38 +502,87 @@ it still never writes state and never reaches into another integration's
 internal coordinator or `hass.data`, only its public entity
 state/attributes.
 
+**Global default, per-string override.** The discovery-and-scoring
+process above runs once to establish a **global default** baseline
+candidate, set up before any string is configured (§6) — the common case
+being one PV-forecast service for the whole installation. Any individual
+string can still override this with its own baseline candidate (e.g. a
+per-plane Solcast site for that specific string's orientation) if
+configured; if it does not, it uses the global default. This mirrors the
+same global-with-override shape already used for the temperature source
+(ADR-003 §2a).
+
 ### 6 — Config flow shape
 
-Given §3 and §5, the config flow collects one or more string definitions
-iteratively rather than via parallel multi-selects (which would risk
-misordered pairs):
+Given §3 and §5, the config flow establishes global settings **first**,
+before any string exists — a person configures "how Shady should behave"
+once, then adds however many strings share that behavior, rather than
+being asked global questions only after already committing to a first
+string:
 
 ```
-Step "add_string":
-  - Name (free text, e.g. "Dach Süd")
-  - Baseline candidate (dropdown, ranked by providers/discovery.py;
-    "None of these" → manual entity + attribute path entry)
-  - Actual-yield entity (standard HA entity selector, sensor domain,
-    power or energy device_class)
-Step "add_another":
-  - "Add another string?" (boolean) → back to "add_string" or continue
-Step "settings" (final):
+Step "settings" (first):
+  - Global default baseline candidate (dropdown, ranked by
+    providers/discovery.py per §5; "None of these" → manual entity +
+    attribute path entry) — used by any string that does not override it
+  - "Does this baseline already account for temperature effects itself?"
+    (boolean, default false — ADR-003 §2c; presented right alongside the
+    baseline candidate above, since it is a property of *that* choice)
   - Training window in days (default 28)
   - Regression method: `wls2` (default) / `linear` / `kernel` / `wls3`
     (global — applies to every configured string, see §2; chosen manually,
     no auto-selection based on data volume)
   - Smoothing radius in slots (default 1, global; see §3b — `0` disables
     temporal smoothing)
+  - Neighbor-fitting cut-off (default 25%, global; see §3c/§3d — the
+    maximum median-ratio deviation a neighbor series may have before
+    being excluded from a slot's training pool; the sentinel `-1%`
+    switches to always-rescale instead of exclude, per §3d; not the same
+    field as ADR-006's intraday-correction cut-off, despite the similar
+    name)
+  - Default temperature source (optional; entity selector covering
+    sensor.* with device_class temperature and weather.* entities;
+    leave empty to disable derating correction by default for all
+    strings — ADR-003 §2a)
   - Intraday-Korrektur Cut-off (default 0 = deaktiviert; siehe ADR-006)
+
+Step "add_string" (repeated):
+  - Name (free text, e.g. "Dach Süd")
+  - Baseline candidate override (optional; same dropdown as the global
+    default above; leave empty to use the global default set in
+    "settings"). A string that *does* override is, by definition,
+    treated as temperature-aware (ADR-003 §2c) — no separate per-string
+    flag is offered, on the assumption that the realistic reason to
+    override per string at all is a per-plane setup on a dedicated
+    PV-forecast service (e.g. Solcast configured with one site per
+    string), which is exactly the kind of provider ADR-003 §2c's flag
+    is about in the first place.
+  - Actual-yield entity (standard HA entity selector, sensor domain,
+    power or energy device_class)
+  - "Configure advanced corrections (clipping/derating) for this string?"
+    (boolean, default off) → yes: "add_string_advanced", no:
+    "add_another"
+
+Step "add_string_advanced" (optional, per string):
+  - Converter/inverter AC power limit (optional number, W; leave empty
+    to disable clipping exclusion for this string — ADR-003 §1)
+  - Temperature source override (optional; leave empty to use the global
+    default; "none" disables derating for this string specifically even
+    if a global default is set — ADR-003 §2a)
+  - Temperature coefficient in %/°C (only shown/used if a temperature
+    source — global default or override — applies to this string;
+    default −0.4 — ADR-003 §2)
+
+Step "add_another":
+  - "Add another string?" (boolean) → back to "add_string" or finish
 ```
 
-Note there is no latitude/longitude/elevation field: the earlier draft of
-this ADR needed site location to compute sun position; since §1's
-correction removed that dependency entirely, location is no longer
-collected anywhere in Shady's config flow.
+Note there is no latitude/longitude/elevation field: the regression needs
+no astronomical calculation (§1), so location is not collected anywhere
+in Shady's config flow.
 
 The options flow mirrors this to allow adding/editing strings and changing
-the training window after initial setup, following the same pattern as
+any global setting after initial setup, following the same pattern as
 Effy's `EffyOptionsFlow`.
 
 ---
@@ -468,6 +611,20 @@ Effy's `EffyOptionsFlow`.
   slot-boundary discontinuity risk directly in the training-data weights
   (reusing the same weighted-pool mechanism as `magnitude_weight_i`),
   instead of a separate blind post-hoc smoothing pass.
+- **Pro:** §3c's median-based exclusion means smoothing (§3b) does not
+  have to choose between "smooth everywhere" and "smooth nowhere" — it
+  gets the benefit of pooling neighbor data in calm regions while
+  automatically backing off exactly at shading boundaries, where pooling
+  would otherwise actively hurt, without needing to detect "this is a
+  boundary" as a special case anywhere in the code. §3d's rescale
+  alternative (`-1%` sentinel) gives a second option for installations
+  that would rather keep every neighbor's data, corrected, than lose it
+  outright.
+- **Pro:** Config flow ordering (§6) establishes every global setting
+  before a person configures their first string, so string-specific
+  questions (baseline override, converter limit, temperature override)
+  are answered with the relevant global defaults already visible, rather
+  than the reverse.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough per-slot samples
@@ -491,18 +648,10 @@ Effy's `EffyOptionsFlow`.
   is deliberately tunable (down to `0`, disabling it) rather than fixed,
   precisely because how sharp a "real" transition is expected to be varies
   by installation.
-- **Con:** The regression method (§2) is a single, global choice across all
-  configured strings. A system with genuinely different characteristics
-  per string (e.g. one string whose pool has a strong residual seasonal
-  trend worth capturing with `wls2`, another where `kernel`'s plain
-  weighted mean is already sufficient) cannot mix methods; the user must
-  pick the one method that serves the whole installation. Revisit as a
-  per-string option if this turns out to matter in practice (see also the
-  "pro String" decision in §3, which already allows separate *models* —
-  just not separate *methods* — per string).
-- **Con:** `wls2`/`wls3` are more prone to overshoot exactly at the
-  extrapolation points Shady structurally has to predict at (a forecast
-  value higher than anything in the recent rolling window) than `linear`
-  is — demonstrated numerically in §2, not just asserted. A user who
-  switches to `wls3` expecting a strictly better fit may get a worse
-  real-world forecast on unusually clear days specifically.
+- **Con:** §3c's default 25% deviation cut-off, while now config-flow
+  exposed (§6) rather than fixed, still ships with a default that is a
+  reasonable starting point, not a value validated against real
+  installations yet. Set too low, it would exclude neighbors over
+  ordinary weather variance, quietly shrinking the effective smoothing
+  radius most of the time; set too high, it would let a genuine regime
+  difference through.

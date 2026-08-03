@@ -36,17 +36,24 @@ baseline updates or recalibration. State: current summed power (W).
 
 Sums every configured string's **corrected forecast for the current
 slot** (ADR-001 §2, after the clamps in ADR-001 §2 and, where configured,
-ADR-003 §1's amendment). Updates on the same trigger as the per-string
+ADR-003 §1a). Updates on the same trigger as the per-string
 corrected-forecast sensors (ADR-002 §2 — model update or baseline update),
 not independently. State: current summed corrected power (W).
 
 ### 3 — `ShadyFcDaySumSensor` — corrected forecast, summed across strings, whole day
 
 The sum, **per slot**, of every configured string's corrected forecast for
-*every one of today's 288 slots* — including already-past ones, via the
-snapshot cache introduced in ADR-002 §3's amendment (necessary because
-without it, once a slot is in the past, no per-string data to sum would
-still be available). Two array attributes carry the shape:
+*every one of today's 288 slots* — including already-past ones. Each
+string's own corrected values are pushed into `cache.py` as they are
+computed (ADR-007 §1c — `ShadyForecastSensor`'s series has `to_index =
+None`, per ADR-007 §1b, since Shady calculates and pushes it rather than
+querying it back), which is what makes past slots still available here
+without a second recomputation path (ADR-002 §3). `coordinator.py` builds
+this sensor's two array attributes with one call to `cache.py`'s
+`get_time_range(string_forecast_sensor_ids, start=00:00, end=23:55,
+group_by="slot")` (ADR-007 §1e) — `group_by="slot"` returns one dict per
+slot, `{sensor_id: value, ...}`, exactly the shape needed to sum every
+string's value at each slot directly, with no separate transpose step:
 
 - `slot_timestamps`: 288 ISO-8601 timestamps, `00:00` through `23:55` of
   the current day.
@@ -98,19 +105,28 @@ day.
   sample and a new one, compute the trapezoidal energy increment between
   them. This is unit-tested with zero mocking like the rest of the pure
   layer (ADR-000 §6).
-- **The running total itself is stateful HA-entity concern, not a pure
-  computation** — each sensor persists its accumulated value (HA's
-  restore-state mechanism, the same pattern Home Assistant's own
-  Integration helper uses) so a restart does not lose the day's progress,
-  and adds the pure-function increment on every update of its source
-  sensor (§1 or §2 respectively).
+- **The running total itself is stateful, and lives in `cache.py`
+  (ADR-007) — the one cache instance there that is wired to Home
+  Assistant's restore-state mechanism**, since losing it mid-day would
+  visibly wrong-foot the sensor (unlike most of `cache.py`'s other
+  caches, which are safely rebuildable and so are not restart-persisted).
+  `coordinator.py` reads the current total from `cache.py`, adds the
+  pure-function increment on every update of the relevant source sum (§1
+  or §2 respectively), writes the new total back to `cache.py`, and
+  pushes it to the corresponding sensor. `sensor.py`'s
+  `ShadyPvEnergyIntegralSensor`/`ShadyFcEnergyIntegralSensor` stay thin —
+  they read and display whatever `coordinator.py` last pushed, the same
+  relationship every other sensor in this design has to the coordinator.
 - **Reset at midnight, not `00:01`.** Unlike ADR-002 §1's recalibration
   schedule (deliberately offset by one minute to let the recorder settle
   the previous day's last slot), a meter-style reset has no such
-  settling concern — it should zero out right at the day boundary,
-  scheduled via `async_track_time_change(hass, ..., hour=0, minute=0,
-  second=0)`. The two schedules are independent and deliberately not
-  the same trigger, despite both being "midnight things".
+  settling concern — it should zero out right at the day boundary. This
+  is a fourth, independent schedule `coordinator.py` registers alongside
+  ADR-002 §1's recalibration schedule and ADR-006 §1's 5-minute
+  recorder-poll schedule — `async_track_time_change(hass, ..., hour=0,
+  minute=0, second=0)` — deliberately not reusing either of those
+  triggers despite all being "periodic coordinator things", and on
+  firing, tells `cache.py` to zero the relevant total.
 
 ### Module: a new pure aggregation layer
 
@@ -123,11 +139,22 @@ aggregation.py          (pure logic: cross-string sums for §1/§2/§3/§4;
                          *which* string a value came from — only lists of
                          numbers in, one number or array out)
        ↑
-sensor.py               (six new HA entity classes wrapping the above;
-                         §5/§6 additionally own the persisted running
-                         total and the midnight-reset schedule, since
-                         that is inherently stateful HA-entity behavior
-                         `aggregation.py` itself cannot own)
+cache.py                (pure logic, ADR-007: stores §5/§6's running
+                         totals — restart-persisted, unlike most of this
+                         module's other caches — alongside the model
+                         cache, day-snapshot array, ramp state, and
+                         diagnostic pool cache from other ADRs)
+       ↑
+coordinator.py          (calls aggregation.py for all six sensors; reads/
+                         writes §5/§6's totals via cache.py; registers
+                         the midnight-reset schedule above alongside its
+                         other three triggers — one orchestrator, not a
+                         second one living inside sensor.py)
+       ↑
+sensor.py               (six thin HA entity classes that read and display
+                         whatever coordinator.py last computed — no
+                         business logic, no owned state, matching every
+                         other sensor in this design)
 ```
 
 ---
@@ -143,10 +170,16 @@ sensor.py               (six new HA entity classes wrapping the above;
   power at any single moment.
 - **Pro:** Reusing §3's cached array for §4 (remaining-today) means no
   second data-retention mechanism is needed for a very similar sensor.
-- **Con:** §3's snapshot cache (and the ADR-002 §3 amendment it required)
-  is additional persisted state the coordinator must maintain and restore
-  across restarts — a genuinely new responsibility, not free, even though
-  each individual value is cheap.
+- **Con:** §3's array relies on `cache.py` (ADR-007) having accumulated
+  each slot's value by push as the day progressed — its own in-memory
+  validated range is *not* restart-persisted (only §5/§6's integral
+  totals are, per ADR-007 §1). This is not a permanent data loss, since
+  `ShadyForecastSensor` is an ordinary HA entity and the recorder already
+  keeps its own history of every value that was ever pushed to it — but
+  it does mean a restart mid-day triggers ADR-007 §1d's full-history
+  catch-up query for that sensor (recovering exactly what was pushed
+  before the restart from the recorder) rather than the cheaper
+  incremental-tail path a sensor that had stayed running would have used.
 - **Con:** §5/§6's persisted running totals mean Shady is now responsible
   for correct restore-state behavior around restarts and the midnight
   reset boundary (e.g. a restart *during* the reset window needs to not

@@ -11,9 +11,9 @@ This ADR documents the overarching engineering conventions used throughout
 the Shady codebase. It exists so that contributors and future maintainers can
 understand *why* the code looks the way it does without having to infer it
 from individual diffs. The numbered ADRs (001 onward) cover specific
-domain decisions (e.g. horizon-profile modeling, sun-position calculation,
-forecast-adjustment strategy); this one covers everything that applies
-uniformly across all files.
+domain decisions (e.g. the empirical per-slot regression model, coordinator
+update/recalibration strategy, cross-string aggregation); this one covers
+everything that applies uniformly across all files.
 
 This document is adapted from the sibling project
 [Effy](https://github.com/eschnepel/effy)'s ADR-000, so that both projects
@@ -96,21 +96,28 @@ aggregation.py          (pure logic: cross-string sums, whole-day arrays,
                          trapezoidal energy-increment calculation; see
                          ADR-005)
        ↑
-coordinator.py          (orchestrates: pulls recorder history + provider data,
-                         re-fits the regression on a rolling window, schedules
-                         recalculation)
+cache.py                (pure logic: index-addressable time-series store
+                         for FC/PV history and the day-snapshot array,
+                         plus simple dict stores for the model cache and
+                         ramp state, and the persisted integral totals;
+                         no HA imports, constructed with an injected
+                         fetch_fn so it never imports the recorder API
+                         itself; see ADR-007)
+       ↑
+coordinator.py          (orchestrates: registers all scheduling triggers,
+                         calls the pure layer including cache.py, decides
+                         which cache instances get restart-persisted,
+                         pushes results to sensors — the only module that
+                         imports cache.py)
        ↑
 sensor.py / config_flow.py / switch.py  (HA entity glue)
        ↑
 __init__.py             (wires platforms + coordinator into hass.data)
 ```
 
-There is deliberately no `sun_geometry.py` — an earlier draft of ADR-001
-used sun azimuth/elevation as a regression input, which would have lived
-here; that was superseded once a validated proof-of-concept showed the raw
-forecast value alone (fit per 5-minute slot) works, and no module in the
-current architecture needs astronomical calculations at all (see ADR-001
-§1's amendment note).
+There is deliberately no `sun_geometry.py`: the regression predictor is
+the raw forecast value itself (ADR-001 §1), fit per 5-minute slot, and no
+module in the architecture needs astronomical calculations.
 
 Dependencies point upward only. `yield_correction.py`,
 `regression/`, and `forecast_adjust.py` never import from any HA-facing
@@ -149,23 +156,25 @@ baseline.
   e.g. `DEFAULT_POLL_INTERVAL` in `coordinator.py`).
 - Private helpers are prefixed with a single underscore (`_kernel_weight`,
   `_slot_key_for_timestamp`) and are not exported.
-- HA-facing entities (`ShadySensor`, `ShadyCoordinator`, `ShadyConfigFlow`,
-  `ShadyOptionsFlow`) are all prefixed `Shady` for discoverability when
-  grepping or reading stack traces.
+- HA-facing entities (`ShadyForecastSensor`, `ShadyCoordinator`,
+  `ShadyConfigFlow`, `ShadyOptionsFlow`) are all prefixed `Shady` for
+  discoverability when grepping or reading stack traces.
 - One concept per module: `providers/` only discovers and normalizes
   third-party baseline data, each module in `regression/` implements
   exactly one fitting strategy behind the shared `base.py` protocol,
   `forecast_adjust.py` only applies a fitted model to a forecast series,
-  `coordinator.py` only orchestrates. A module that starts doing two
-  unrelated things is a signal to split it.
+  `cache.py` only stores and retrieves state (ADR-007), `coordinator.py`
+  only orchestrates. A module that starts doing two unrelated things is a
+  signal to split it.
 
 ### 6 — Testing philosophy
 
 - Every module in `regression/`, `providers/normalize.py`,
-  and `forecast_adjust.py` are unit-tested with **zero mocking** — no
-  `unittest.mock`, no fake `hass` object. Because they have no Home
-  Assistant dependency, tests call the real functions with real dataclass
-  instances and assert on real return values. This is only possible
+  `forecast_adjust.py`, and `cache.py` are unit-tested with **zero
+  mocking** — no `unittest.mock`, no fake `hass` object. Because they have
+  no Home Assistant dependency, tests call the real functions with real
+  dataclass instances and assert on real return values. This is only
+  possible
   *because* of the module boundary in §3; it is the practical payoff of
   that design choice. `providers/discovery.py` is the one exception — it
   reads `hass.states` by design (ADR-001 §5) and is tested against a real
@@ -192,17 +201,18 @@ baseline.
   errors on every usage of that name, rather than a single fixable root
   cause.
 - Every test class documents the scenario it covers in a docstring or
-  comment referencing the worked example in the README where applicable
-  (e.g. a test mirroring "tree shades the east string between 08:00 and
-  10:30 in winter" from the README's worked example).
-- Invariant checks (e.g. `0.0 <= shading_factor <= 1.0` for every sample,
-  or "adjusted forecast never exceeds the raw baseline at the same
-  timestamp") are asserted explicitly in tests, not just spot-checked
-  values — these are the most important correctness guarantees of the
-  whole system and are tested as first-class assertions in every scenario
-  class. Each of the four `regression/` strategies is tested against the
-  same shared scenario fixtures (see ADR-001 §2), so their outputs are
-  comparable rather than each having its own bespoke test data.
+  comment, so the intent behind a fixture (e.g. "a hard shading edge
+  crossing mid-window" or "an inverter clipping at high FC") is clear
+  without having to re-derive it from the numbers alone.
+- Invariant checks (e.g. `0.0 <= corrected_output <= FC` — or `<=
+  min(FC, inverter_limit)` when a clipping limit is configured, per
+  ADR-001 §2 / ADR-003 §1a — for every sample) are asserted explicitly in
+  tests, not just spot-checked values — these are the most important
+  correctness guarantees of the whole system and are tested as
+  first-class assertions in every scenario class. Each of the four
+  `regression/` strategies is tested against the same shared scenario
+  fixtures (see ADR-001 §2), so their outputs are comparable rather than
+  each having its own bespoke test data.
 
 ### 7 — Documentation: ADRs over inline essays
 
@@ -239,7 +249,7 @@ every comment that explained it.
 - **Pro:** A new contributor can run four commands
   (`ruff format --check`, `ruff check`, `mypy --strict`, `pytest`) and know
   immediately whether their change meets the bar.
-- **Pro:** The pure-logic/HA-glue split makes the sun-position and shading
+- **Pro:** The pure-logic/HA-glue split makes the regression and shading
   math trivially testable and reusable (e.g. it could power a non-HA CLI
   tool or a different forecast source unchanged).
 - **Pro:** ADRs prevent "tribal knowledge" about *why* a clamp, an

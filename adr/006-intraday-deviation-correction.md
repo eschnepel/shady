@@ -18,18 +18,18 @@ deviation onto the future portion of a string's per-slot forecast (§1/§2),
 and one that smooths the visible jump whenever the baseline provider
 itself revises its forecast mid-day (§1a).
 
-**This operates per string, not on ADR-005's aggregate sensors.** An
-earlier draft of this ADR computed the deviation ratio from
-`ShadyPvEnergyIntegralSensor`/`ShadyFcEnergyIntegralSensor` (ADR-005
-§5/§6), which sum across all configured strings. That is wrong for the
-same reason ADR-001 §3 fits a separate model per string in the first
-place: shading changes the *timeline* of a same-day event, not just its
-magnitude — snow covering a heavily-shaded string melts later in the day
-than snow on an unshaded one, so the two strings' deviation ratios
-diverge for real, physical reasons through much of the day. Computing one
-combined ratio across strings would average a slowly-recovering shaded
-string together with an already-recovered unshaded one and get both
-wrong. Both §1 and §1a therefore run independently per string, using each
+**This operates per string, not on ADR-005's aggregate sensors.** Computing
+the deviation ratio from `ShadyPvEnergyIntegralSensor`/
+`ShadyFcEnergyIntegralSensor` (ADR-005 §5/§6), which sum across all
+configured strings, would be wrong for the same reason ADR-001 §3 fits a
+separate model per string in the first place: shading changes the
+*timeline* of a same-day event, not just its magnitude — snow covering a
+heavily-shaded string melts later in the day than snow on an unshaded
+one, so the two strings' deviation ratios diverge for real, physical
+reasons through much of the day. Computing one combined ratio across
+strings would average a slowly-recovering shaded string together with an
+already-recovered unshaded one and get both wrong. Both §1 and §1a
+therefore run independently per string, using each
 string's own actual-yield entity and its own per-string corrected-forecast
 values — ADR-005's aggregate sensors remain purely a user-facing summary,
 downstream of this, not an input to it.
@@ -38,27 +38,29 @@ downstream of this, not an input to it.
 
 ## Decision
 
-### 1 — Deviation ratio: a rolling 2-hour window, read from the recorder
+### 1 — Deviation ratio: a rolling 2-hour window, via the shared cache
 
 ```
 ratio_string = pv_energy_window / fc_energy_window
 ```
 
 computed **per string**, where both quantities are the energy accumulated
-over the trailing **2 hours**, at 5-minute resolution. Rather than have
-the coordinator maintain its own rolling cache of readings to support
-this (an earlier draft of this ADR proposed exactly that), both series
-are read directly from **the recorder's existing history** of two
-entities that are already being recorded automatically, with no special
-write path needed: the string's actual-yield entity, and the string's own
-corrected-forecast sensor. This is the same `statistics_during_period`
-read pattern Effy's ADR-003 established (`mean` field, 5-minute
-`statistics_short_term` table) — but purely on the **read** side, using
-only the public, documented API. Unlike Effy, Shady never needs the
-internal `async_import_statistics` write path ADR-003 there had to fall
-back on, because these are ordinary sensor entities Home Assistant already
-records on its own; Shady only ever reads history it did nothing special
-to create.
+over the trailing **2 hours**, at 5-minute resolution. Both series come
+from `cache.py`'s `get_time_range(sensor_ids, start=now-2h, end=now,
+group_by="sensor")` accessor (ADR-007 §1e) — the string's actual-yield
+entity and its own `ShadyForecastSensor`. This is the same underlying
+`statistics_during_period` read pattern Effy's ADR-003 established
+(`mean` field, 5-minute `statistics_short_term` table) that `cache.py`'s
+injected `fetch_fn` uses (ADR-007 §1d), but Shady never calls it directly
+here — going through `cache.py` means this 2-hour read is validated and
+gap-filled the same way every other time-series access in this design
+is, rather than being a second, bespoke recorder-reading path. Unlike
+Effy, Shady never needs the internal `async_import_statistics` write path
+ADR-003 there had to fall back on, because these are ordinary sensor
+entities Home Assistant already records on its own (or, for
+`ShadyForecastSensor`, values Shady itself already pushed into `cache.py`,
+ADR-007 §1c) — Shady only ever reads history it did nothing special to
+create.
 
 This is refreshed on its own schedule — **every 5 minutes**
 (`async_track_time_interval(hass, ..., minutes=5)`) — independent of
@@ -66,7 +68,9 @@ ADR-002's existing triggers (midnight/button for refitting, baseline
 updates for forecast recomputation). 5-minute resolution matches Shady's
 own slot grid exactly, so there is no benefit to polling more often, and
 polling *less* often would mean the window's edge lags behind by more
-than one slot.
+than one slot. ADR-004 §2 reuses this same trigger to advance which slot
+its diagnostic sensor is showing, rather than introducing a third,
+near-identical schedule.
 
 **Why 2 hours, not since-midnight:** snow covering the panels for the
 first few hours of a morning, then melting by around noon, is exactly the
@@ -79,17 +83,16 @@ correction recover on its own as conditions actually change, without
 needing to detect "the snow melted" as an event — and, per the Context
 above, it does so on each string's own timeline, not a blended one.
 
-The minimum-sample-size gate from an earlier draft of this ADR — at least
-12 "active" slots, reusing ADR-001 §2's magnitude-weight threshold —
-still applies, per string, scoped to the trailing window: at least 12
-active slots must have occurred *within* the current window (for that
-string) before its ratio is trusted and applied. Before the gate is
-satisfied for a given string — whether because too little of the day has
-happened yet, or because its window temporarily contains too few active
-slots — that string's future slots are reported at their plain,
-uncorrected value regardless of the cutoff setting in §2, while another
-string that has already satisfied its own gate can be corrected at the
-same moment.
+The minimum-sample-size gate — at least 12 "active" slots, reusing
+ADR-001 §2's magnitude-weight threshold — applies per string, scoped to
+the trailing window: at least 12 active slots must have occurred *within*
+the current window (for that string) before its ratio is trusted and
+applied. Before the gate is satisfied for a given string — whether
+because too little of the day has happened yet, or because its window
+temporarily contains too few active slots — that string's future slots
+are reported at their plain, uncorrected value regardless of the cutoff
+setting in §2, while another string that has already satisfied its own
+gate can be corrected at the same moment.
 
 ### 1a — Ramping across a provider forecast update, unconditionally
 
@@ -114,10 +117,9 @@ w = min(1, (t - update_time) / 1h)
 which point the blend is complete and the slot's value is simply
 `value_under_new_fc` — same as an instant switch would have given, just
 arrived at gradually. **This applies unconditionally, including a
-string's very first update of the day** — an earlier draft of this ADR
-implicitly special-cased "the first update has nothing to ramp from and
-so skips the ramp", which was an unintended exception, not a deliberate
-one.
+string's very first update of the day** — the first baseline publication
+of the morning is exactly as capable of producing a visible jump as any
+later revision is, so it ramps the same way.
 
 **Anchor point for the day's first ramp.** Before the day's first slot
 with real data, both `FC` and `PV` are null/zero (night) — there is
@@ -184,7 +186,7 @@ multiplication then still passes through ADR-001 §2's separate, final
 output clamp (`[0, FC]`/inverter limit), per the ordering established in
 §1a above; this section's multiplication is stage 2 of that two-stage
 pipeline, not the pipeline's last step. Already-past values are never
-touched, matching ADR-002 §3's amendment that past slots are frozen once
+touched, matching ADR-002 §3's rule that past slots are frozen once
 their time has passed.
 
 Because the correction happens at the per-string source, `ShadyFcDaySumSensor`
@@ -197,7 +199,7 @@ directly sees exactly the same corrected shape the aggregate is built
 from — one source of truth, per string, not a separate aggregate-level
 adjustment layered on top.
 
-Each string's underlying sensor gains attributes for transparency
+Each string's `ShadyForecastSensor` gains attributes for transparency
 (consistent with the diagnostic philosophy in ADR-004): `intraday_ratio`
 (that string's raw, unclamped §1 value), `intraday_correction_active`
 (boolean, per string), `values_raw` (that string's pre-correction future
@@ -215,17 +217,21 @@ module needed:
 - `apply_fc_update_ramp(old_values, new_values, update_time, now) ->
   list[float]` — §1a's linear blend, called once per string.
 
-The trailing-window read itself (§1) is a `coordinator.py` responsibility
-using `statistics_during_period` (the same public recorder API access
-point Effy's ADR-003 reads with), added alongside its existing "pulls
-recorder history" role (ADR-000 §3) — no new module needed there either,
-since fetching historical statistics for regression training data was
-already this module's job. `coordinator.py` also owns §1a's small,
-short-lived per-string ramp state (discarded once each ramp completes;
-unlike §1 there is no recorder-backed equivalent to read instead, since a
-ramp concerns future values that don't exist in history yet). The
-config-flow field lives in the same "settings" step as the training
-window, regression method, and smoothing radius (ADR-001 §6).
+The trailing-window read itself (§1) goes through `cache.py`'s
+`get_time_range` accessor (ADR-007 §1e), which in turn sources any
+not-yet-cached portion via `statistics_during_period` (the same public
+recorder API access point Effy's ADR-003 reads with, ADR-007 §1d) —
+`coordinator.py` calls `cache.py`, it does not call
+`statistics_during_period` itself. §1a's small, short-lived per-string
+ramp state lives in `cache.py` (ADR-007) too, as a simple dict store
+rather than the time-series shape §1's window uses — it is discarded
+once each ramp completes and is not restart-persisted (unlike §1, there
+is no recorder-backed equivalent to read instead, since a ramp concerns
+future values that don't exist in history yet, but losing it on a
+restart just means a ramp restarts rather than resumes, an accepted gap
+per ADR-007). The config-flow field lives in the same "settings" step
+as the training window, regression method, and smoothing radius (ADR-001
+§6).
 
 ---
 

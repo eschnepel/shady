@@ -20,10 +20,14 @@ Verschattung rein empirisch aus der Beziehung zwischen dem rohen
 PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
 über den Forecast-Wert, nicht über Zeit oder Sonnenstand:
 
-1. Für jeden konfigurierten String wird eine **Baseline** (unverschatteter
+1. Zuerst wird global eine **Standard-Baseline** (unverschatteter
    Forecast) automatisch erkannt – entweder aus einer PV-Forecast-
    Integration (z.B. Forecast.Solar, Solcast) oder, falls keine vorhanden
-   ist, aus der Sonnenstunden-Prognose einer Wetterintegration. Manche
+   ist, aus der Sonnenstunden-Prognose einer Wetterintegration – bevor
+   überhaupt ein String angelegt wird. Jeder String kann diese Baseline
+   optional mit einer eigenen überschreiben (z.B. ein Solcast-Standort pro
+   Dachausrichtung); eine solche Override gilt automatisch als
+   "temperaturbewusst" (siehe Punkt 4), ohne eigene Nachfrage. Manche
    Provider liefern nur stündliche oder halbstündliche Werte – Shady
    verteilt diese auf die feineren 5-Minuten-Slots.
 2. Pro String **und** pro 5-Minuten-Slot des Tages (00:00, 00:05, …,
@@ -35,26 +39,43 @@ PV-Forecast-Wert und dem realen historischen Ertrag – pro Slot, direkt
    das Extrapolations-Risiko von `wls3`); `linear` (im POC validiert),
    `kernel`, `wls3` stehen als Optionen zur Verfügung.
 3. Ein globaler Smoothing-Radius (Default: 1 Nachbar-Slot) verhindert harte
-   Sprünge zwischen benachbarten Slots.
+   Sprünge zwischen benachbarten Slots – außer an einer Verschattungsgrenze:
+   weicht der Median einer Nachbar-Serie um mehr als 25% (konfigurierbar)
+   vom Median der Haupt-Slot-Serie ab, wird die gesamte Nachbar-Serie für
+   diesen Slot vom Training ausgeschlossen, statt die Vorhersage in die
+   falsche Richtung zu ziehen. Alternativ (Cutoff-Wert `-1%`) wird die
+   Nachbar-Serie statt ausgeschlossen auf den Median des Haupt-Slots
+   umskaliert und bleibt so nutzbar – Wetter- und Zeitabstand-Gewichtung
+   greifen unverändert weiter.
 4. Ein rollierendes 28-Tage-Fenster (konfigurierbar) hält das Modell nah an
    der aktuellen Situation (z.B. Laubfall bei einem Baum). Optional, pro
-   String: Wechselrichter-Clipping-Samples werden aus dem Training
-   ausgeschlossen *und* die korrigierte Ausgabe wird zusätzlich auf das
-   Inverter-Limit gedeckelt; Temperatur-Derating wird vor der Regression
+   String: Wechselrichter-/Konverter-Clipping-Samples werden aus dem
+   Training ausgeschlossen *und* die korrigierte Ausgabe wird zusätzlich
+   auf das Limit gedeckelt; Temperatur-Derating wird vor der Regression
    herausgerechnet und bei der Vorhersage wieder zurückgerechnet – beides
    deaktiviert Shady standardmäßig, bis explizit konfiguriert. Ein
    zusätzliches globales Flag (ein FC-Datenprovider pro Config-Entry) legt
    fest, ob dieser Provider (z.B. Solcast) den Temperaturkoeffizienten
    bereits selbst einrechnet – falls ja, wird Shadys eigene
    Temperatur-Korrektur für alle Strings übersprungen, um keine doppelte
-   Verrechnung zu erzeugen.
+   Verrechnung zu erzeugen. Ein String mit eigener Baseline-Override
+   (Punkt 1) gilt dabei immer automatisch als temperaturbewusst, unabhängig
+   vom globalen Flag.
 5. Ergebnis: ein angepasster Forecast-Sensor pro String (heute + morgen),
    mit einer auf Tagessumme aggregierten Konfidenz (`FC`-gewichtet über
    alle Slots des Tages – die Konfidenz eines einzelnen Slots ist für sich
    genommen wenig aussagekräftig).
 6. Optional (Diagnose-Switch, Default aus): ein Streudiagramm-Sensor pro
    String mit allen vier Regressionsmethoden im direkten Vergleich auf den
-   eigenen historischen Daten, fertig aufbereitet für ApexCharts.
+   eigenen historischen Daten, fertig aufbereitet für ApexCharts – inkl.
+   Trefferquote pro Methode (als Zahl im `accuracy`-Attribut und direkt im
+   Serien-Namen, z.B. "wls2 (96%)"). Standardmäßig wird immer der letzte
+   vollständige Slot gezeigt; über den Service `shady.select_diagnostic_slot`
+   (Zeitstempel-Parameter) lässt sich stattdessen gezielt ein bestimmter,
+   bereits vergangener Slot auswählen, z.B. um ein konkretes Ereignis zu
+   untersuchen. Die historischen Slot-Daten werden gecacht (Update nur bei
+   Rekalibrierung bzw. Systemstart), damit weder die 5-Minuten-Aktualisierung
+   noch die manuelle Slot-Auswahl wiederholte Recorder-Abfragen auslösen.
 7. Zusätzlich, über alle Strings summiert: Ist-Ertrag jetzt, korrigierter
    Forecast jetzt, korrigierter Forecast für den ganzen Tag (288-Werte-
    Array), Rest-Tages-Prognose, sowie zwei Integralsensoren (Ist-Energie
@@ -93,6 +114,10 @@ für den optionalen Diagnose-Switch und den ApexCharts-Streudiagramm-Sensor, und
 für die Summen- und Integralsensoren über alle Strings, und
 [`adr/006-intraday-deviation-correction.md`](adr/006-intraday-deviation-correction.md)
 für die optionale Rest-Tages-Korrektur basierend auf der heutigen
-Ist-vs-Forecast-Abweichung.
+Ist-vs-Forecast-Abweichung, und
+[`adr/007-coordinator-cache-split.md`](adr/007-coordinator-cache-split.md)
+für die Aufteilung von `coordinator.py` in Orchestrierung und ein
+dediziertes, reines `cache.py`-Modul für allen zwischengespeicherten
+Zustand.
 
-Weitere ADRs (007 ff.) werden im Laufe des Brainstormings ergänzt.
+Weitere ADRs (008 ff.) werden im Laufe des Brainstormings ergänzt.

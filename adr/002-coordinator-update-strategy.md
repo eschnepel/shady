@@ -82,8 +82,8 @@ leaving a config entry without any model until the next scheduled time.
 ### 2 — Forecast recompute: on model update, and on every baseline update
 
 The adjusted-forecast output — for the **future slots only** covered by
-§3's today/tomorrow horizon — is recomputed and pushed to the
-corresponding sensors, following the shared-coordinator/subscriber
+§3's today/tomorrow horizon — is recomputed and pushed to each string's
+`ShadyForecastSensor`, following the shared-coordinator/subscriber
 pattern from Effy's ADR-006 Option C, whenever either of two things
 happens:
 
@@ -126,20 +126,22 @@ forward-looking forecast, not a historical record, and does not write
 recorder statistics the way Effy does (out of scope for this integration;
 see the open question in the README).
 
-**Amendment (ADR-005):** "not recomputed" does not mean "not retained".
-The whole-day aggregate sensor introduced in ADR-005 §1 needs every
-slot's corrected value for the *entire* current day, including ones
-already past by the time anyone looks at the sensor — and a baseline
-provider's own live attributes typically stop covering an hour once it
-has elapsed, so that data cannot be reconstructed later from the source.
-The coordinator therefore **snapshots** each slot's corrected value into
-a per-day cache array at the moment it is first computed (i.e. while it
-was still a future slot, per the normal §2 recompute trigger), and never
-touches that array entry again once the slot's time has passed. This is
-a passive cache, not a second recomputation path — it changes nothing
-about which slots actively get *new* predictions (still only "remainder
-of today + tomorrow", as above), only about not discarding a value Shady
-already computed.
+**"Not recomputed" does not mean "not retained".** ADR-005's whole-day
+aggregate sensor needs every slot's corrected value for the *entire*
+current day, including ones already past by the time anyone looks at the
+sensor — and a baseline provider's own live attributes typically stop
+covering an hour once it has elapsed, so that data cannot be
+reconstructed later from the source. The coordinator therefore **pushes**
+each string's corrected value into `cache.py` (ADR-007 §1c) at the moment
+it is first computed (i.e. while it was still a future slot, per the
+normal §2 recompute trigger) — `ShadyForecastSensor`'s series has
+`to_index = None` in `cache.py`'s validated-range tracking (ADR-007 §1b),
+meaning it is populated by push, never by query, and a past entry is
+simply never touched again once written. This is a passive cache, not a
+second recomputation path — it changes nothing about which slots
+actively get *new* predictions (still only "remainder of today +
+tomorrow", as above), only about not discarding a value Shady already
+computed.
 
 If the baseline provider has not yet published tomorrow's data at the
 time of a recompute (e.g. some providers only publish the next day's
@@ -149,12 +151,14 @@ period is filled in on the next baseline update.
 
 ### 4 — Resulting module responsibilities
 
-- `coordinator.py` owns: the per-string, per-slot fitted-model cache; the
-  daily recalibration schedule and up-to-yesterday cutoff (§1); listeners
-  on every configured baseline entity (§2); and pushing recomputed results
-  to subscriber sensors. It exposes the refit routine as a single public
-  method so both the midnight schedule and the button (§1) call the exact
-  same code path.
+- `coordinator.py` owns: the daily recalibration schedule and
+  up-to-yesterday cutoff (§1); listeners on every configured baseline
+  entity (§2); and pushing recomputed results to each string's
+  `ShadyForecastSensor`. The per-string, per-slot fitted-model cache
+  itself lives in `cache.py` (ADR-007) — `coordinator.py` reads/writes it
+  but does not own its storage. `coordinator.py` exposes the refit
+  routine as a single public method so both the midnight schedule and the
+  button (§1) call the exact same code path.
 - `button.py` adds one diagnostic `ShadyRecalculateButton` per config
   entry (mirroring Effy's `EffyRecalculateButton`), whose `async_press`
   simply calls the coordinator's refit method and logs/swallows exceptions

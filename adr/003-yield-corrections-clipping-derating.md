@@ -39,12 +39,20 @@ This ADR is Shady's own.
 
 ## Decision
 
-Both corrections are **optional, per-string** settings (unlike the
-regression method and smoothing radius in ADR-001 §2/§3b, which are
-global) — surfaced through an advanced, opt-in step in the config flow,
-since not every installation is clipped or thermally exposed to the same
-degree, and forcing every user to answer these questions up front would
-add friction to the common case where they don't apply.
+Both corrections are optional, so neither adds friction for an
+installation where it doesn't apply — surfaced through an advanced,
+opt-in step in the config flow, since not every installation is clipped
+or thermally exposed to the same degree. Their scope differs, though:
+clipping (§1/§1a) is entirely **per-string** (an inverter limit is a
+property of that specific string's hardware), while derating (§2/§2a/
+§2b) is a **mix** — the temperature source default and the §2c
+provider-already-corrects flag are global (one FC data provider per
+config entry, §2c), the temperature coefficient and an optional
+temperature-source override are per-string. This mirrors the same
+global-vs-per-string split already established elsewhere (ADR-001 §2's
+regression method and §3b's smoothing radius are global; ADR-001 §3's
+models are per-string) rather than following one uniform rule for every
+setting in this ADR.
 
 ### 1 — Clipping: exclude, don't downweight
 
@@ -64,21 +72,22 @@ fit slightly toward "no shading here", which is not something the data
 actually supports; excluding it is the correct treatment of censored
 data, not a stricter version of the same downweighting mechanism.
 
-**Amendment — the same limit also bounds the corrected output, not only
-the training data.** Excluding clipped samples from training (above)
-keeps the *fit itself* honest, but says nothing about what happens at
-*prediction* time: a fitted model — especially `wls2`/`wls3` with their
-curvature — can still predict a corrected forecast above the inverter's
-physical ceiling for an unusually high `FC` value, the same extrapolation
-failure mode ADR-001 §2 already demonstrates numerically. So when an
-inverter AC power limit is configured for a string, it is applied as a
-**second, tighter upper clamp** on top of ADR-001 §2's `[0, FC]` clamp —
-the corrected output is clamped to `[0, min(FC, inverter_limit)]`. This
-costs nothing extra to implement (it is the same clamp mechanism,
-just with a second bound) and closes a gap that the training-time
-exclusion alone does not: excluding clipped samples stops the model from
-*learning* the wrong shape, but only the output clamp stops it from
-*predicting* past a limit it never saw violated in training either.
+### 1a — The same limit also bounds the corrected output, not only the training data
+
+Excluding clipped samples from training (§1) keeps the *fit itself*
+honest, but says nothing about what happens at *prediction* time: a
+fitted model — especially `wls2`/`wls3` with their curvature — can still
+predict a corrected forecast above the inverter's physical ceiling for an
+unusually high `FC` value, the same extrapolation failure mode ADR-001
+§2 already demonstrates numerically. So when an inverter AC power limit
+is configured for a string, it is applied as a **second, tighter upper
+clamp** on top of ADR-001 §2's `[0, FC]` clamp — the corrected output is
+clamped to `[0, min(FC, inverter_limit)]`. This costs nothing extra to
+implement (it is the same clamp mechanism, just with a second bound) and
+closes a gap that the training-time exclusion alone does not: excluding
+clipped samples stops the model from *learning* the wrong shape, but only
+the output clamp stops it from *predicting* past a limit it never saw
+violated in training either.
 
 ### 2 — Derating: correct before the ratio is formed, not inside the model
 
@@ -182,9 +191,8 @@ prediction time, specifically for the ambient/weather tier:
   target slot's timestamp, rather than the "current condition" reading
   §2a otherwise specifies for building the training set. Most weather
   integrations expose both; §2a's restriction to current-condition-only
-  was about training-time correctness (an amendment there is not
-  needed), this is a separate, prediction-time-only use of the same
-  configured entity.
+  is a training-time concern only — this is a separate, prediction-time-only
+  use of the same configured entity.
 - **Plain ambient or module sensor source** (no forecast capability):
   falls back to a naive persistence assumption — the most recently known
   reading is used as the expected temperature for every future slot being
@@ -244,6 +252,22 @@ rather than by which integration or service published them, and
 attribute shape alone does not reveal whether temperature was already
 factored in upstream.
 
+**A per-string baseline override is temperature-aware by definition, no
+separate per-string flag.** ADR-001 §5/§6 let an individual string
+override the global default baseline candidate with its own (e.g. a
+per-plane Solcast site for that string's specific orientation). Rather
+than asking the same "does this provider model temperature?" question a
+second time at the per-string level, a per-string override is simply
+*assumed* temperature-aware — the realistic reason to configure one
+per-string baseline at all is a dedicated PV-forecast service used
+per-plane, which is exactly the category of provider this flag exists to
+recognize. A string using the global default still follows that global
+flag's value, whatever it is set to. This trades a small amount of
+correctness (an override that happens to *not* be temperature-aware,
+e.g. a per-string weather-based fallback, would incorrectly skip §2/§2b's
+correction for that one string) for one fewer question in the common
+case — see the Consequences below.
+
 ### 3 — Module: a new pre-processing layer, below `regression/`
 
 Both corrections live in a new pure module, `yield_correction.py`. Unlike
@@ -266,10 +290,10 @@ forecast_adjust.py     (calls back into yield_correction.py's reverse
                        transform per §2b — converts a 25°C-equivalent
                        prediction back to the target slot's own expected
                        temperature — then runs ADR-006's two-stage
-                       adjustment (the provider-update ramp, §1a, then
-                       the intraday deviation correction, §1) on that
-                       unclamped value, and only then applies §1's
-                       amendment output clamp — once, last)
+                       adjustment (the provider-update ramp, ADR-006 §1a,
+                       then the intraday deviation correction, ADR-006
+                       §1) on that unclamped value, and only then applies
+                       §1a's output clamp — once, last)
 ```
 
 `yield_correction.py` itself stays a single, small, stateless module —
@@ -282,52 +306,15 @@ function returns the input series unchanged), so a string with no
 inverter limit or temperature sensor configured behaves exactly as
 specified in ADR-001, with zero overhead.
 
-### 4 — Config flow: global default source, opt-in advanced step per string
+### 4 — Config flow: see ADR-001 §6
 
-Extending ADR-001 §6's final step, two fields are added there — the
-temperature source default (§2a) and the provider-temperature flag (§2c),
-both global, config-entry-wide settings:
-
-```
-Step "settings" (final, extended):
-  - ...(training window, regression method, smoothing radius — unchanged
-    from ADR-001 §6)...
-  - Default temperature source (optional; entity selector covering
-    sensor.* with device_class temperature and weather.* entities;
-    leave empty to disable derating correction by default for all strings)
-  - "Does the FC data provider already account for temperature effects
-    itself?" (boolean, default false — §2c; applies to every configured
-    string alike, since a config entry has exactly one FC data provider
-    in practice)
-```
-
-`add_string` gains one more question, and a new optional step, exactly as
-before:
-
-```
-Step "add_string":
-  - Name
-  - Baseline candidate (§5 of ADR-001)
-  - Actual-yield entity
-  - "Configure advanced corrections (clipping/derating) for this string?"
-    (boolean, default off) → yes: "add_string_advanced", no: "add_another"
-
-Step "add_string_advanced" (optional, per string):
-  - Inverter AC power limit (optional number, W; leave empty to disable
-    clipping exclusion for this string)
-  - Temperature source override (optional entity selector, same domains as
-    the global default above; leave empty to use the global default from
-    the final step, or "none" to disable derating for this string
-    specifically even if a global default is set)
-  - Temperature coefficient in %/°C (only shown/used if a temperature
-    source — global default or override — applies to this string;
-    default −0.4)
-  → continues to "add_another"
-```
-
-The options flow mirrors this, so corrections can be added to or removed
-from an already-configured string later, following the same pattern
-established in ADR-001 §6.
+ADR-001 §6 is the single, authoritative config-flow specification —
+including the fields this ADR introduces (default temperature source and
+the §2c provider-temperature flag, both in the global "settings" step;
+converter/inverter limit and temperature-source override/coefficient in
+the per-string "add_string_advanced" step). This ADR does not duplicate
+that listing; see ADR-001 §6 directly, and §2c above for the per-string
+override rule specifically.
 
 ---
 
@@ -349,7 +336,7 @@ established in ADR-001 §6.
 - **Pro:** Keeping corrections in a dedicated pre-processing module means
   `regression/` (ADR-001 §2) and its four strategies stay exactly as
   specified, with no special-casing for corrected vs. uncorrected samples.
-- **Pro:** The output-clamp amendment to §1 closes a gap that
+- **Pro:** §1a's output clamp closes a gap that
   training-time exclusion alone cannot: it protects the corrected forecast
   itself from exceeding a known physical ceiling even when the fitted
   model — through ordinary extrapolation, not a bug — would otherwise
@@ -402,10 +389,15 @@ established in ADR-001 §6.
   relevant (Solcast being the concrete example) — Shady has no way to
   verify this automatically, only to pick the safer of two possible wrong
   defaults.
-- **Con:** §2c is deliberately one global flag, not per-string, on the
-  assumption that a config entry has exactly one FC data provider in
-  practice. An installation that genuinely mixes providers across
-  strings (e.g. one string sourced from Solcast, another from a plain
-  weather-based fallback) cannot represent that with a single flag — it
-  would need to be split across two config entries, or accept the flag
-  being wrong for one of them.
+- **Con:** §2c's global flag reflects the *default* FC data provider,
+  which is no longer a hard "exactly one provider per config entry"
+  limitation now that a string can override its baseline candidate
+  (ADR-001 §5/§6) — mixing, say, a weather-based global default with one
+  Solcast-sourced string is representable: the override is automatically
+  treated as temperature-aware regardless of the global flag's value.
+  The remaining gap is the *other* direction: a string that overrides
+  its baseline with something that is deliberately **not**
+  temperature-aware (e.g. a per-string weather-based fallback used
+  alongside an otherwise-Solcast setup) has no way to say so — every
+  override is assumed temperature-aware, per the rule in §2c, whether or
+  not that happens to be true for it specifically.
