@@ -136,32 +136,36 @@ day.
 
 ### Module: a new pure aggregation layer
 
+```mermaid
+flowchart BT
+    forecast_adjust["forecast_adjust.py"]
+    aggregation["aggregation.py"]
+    cache["cache.py"]
+    coordinator["coordinator.py"]
+    sensor["sensor.py"]
+
+    aggregation --> forecast_adjust
+    cache --> aggregation
+    coordinator --> cache
+    sensor --> coordinator
 ```
-forecast_adjust.py     (per-string corrected forecast, unchanged)
-       ↑
-aggregation.py          (pure logic: cross-string sums for §1/§2/§3/§4;
-                         trapezoidal energy-increment calculation for
-                         §5/§6; no HA imports, no per-string knowledge of
-                         *which* string a value came from — only lists of
-                         numbers in, one number or array out)
-       ↑
-cache.py                (pure logic, ADR-007: stores §5/§6's running
-                         totals — restart-persisted, unlike most of this
-                         module's other caches — alongside the model
-                         cache, day-snapshot array, ramp state, and
-                         diagnostic pool cache from other ADRs)
-       ↑
-coordinator.py          (calls aggregation.py for all six sensors; reads/
-                         writes §5/§6's totals via cache.py; registers
-                         the midnight-reset schedule above alongside its
-                         other three triggers — one orchestrator, not a
-                         second one living inside sensor.py)
-       ↑
-sensor.py               (six thin HA entity classes that read and display
-                         whatever coordinator.py last computed — no
-                         business logic, no owned state, matching every
-                         other sensor in this design)
-```
+
+- **`forecast_adjust.py`** — per-string corrected forecast, unchanged.
+- **`aggregation.py`** — pure logic: cross-string sums for §1/§2/§3/§4;
+  trapezoidal energy-increment calculation for §5/§6; no HA imports, no
+  per-string knowledge of *which* string a value came from — only lists
+  of numbers in, one number or array out.
+- **`cache.py`** — pure logic, ADR-007: stores §5/§6's running totals —
+  restart-persisted, unlike most of this module's other caches —
+  alongside the model cache, day-snapshot array, ramp state, and
+  diagnostic pool cache from other ADRs.
+- **`coordinator.py`** — calls `aggregation.py` for all six sensors;
+  reads/writes §5/§6's totals via `cache.py`; registers the
+  midnight-reset schedule above alongside its other three triggers — one
+  orchestrator, not a second one living inside `sensor.py`.
+- **`sensor.py`** — six thin HA entity classes that read and display
+  whatever `coordinator.py` last computed — no business logic, no owned
+  state, matching every other sensor in this design.
 
 ---
 

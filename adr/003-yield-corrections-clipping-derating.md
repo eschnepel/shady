@@ -277,26 +277,32 @@ Both corrections live in a new pure module, `yield_correction.py`. Unlike
 is now used at **two** points in the pipeline — once forward, preparing
 training data, and once in reverse, finishing a prediction:
 
+```mermaid
+flowchart BT
+    providers["providers/"]
+    yield_correction["yield_correction.py"]
+    regression["regression/"]
+    forecast_adjust["forecast_adjust.py"]
+
+    yield_correction --> providers
+    regression --> yield_correction
+    forecast_adjust --> regression
+    forecast_adjust -.->|"reverse transform, §2b"| yield_correction
 ```
-providers/            (baseline + actual-yield raw series)
-       ↑
-yield_correction.py   (forward: excludes clipped samples per §1;
-                       normalizes actual-yield samples to 25°C per §2;
-                       no HA imports, tested with zero mocking like the
-                       rest of the pure layer, per ADR-000 §6)
-       ↑
-regression/            (unchanged from ADR-001 — never sees a raw,
-                       clipped, or temperature-biased sample)
-       ↑
-forecast_adjust.py     (calls back into yield_correction.py's reverse
-                       transform per §2b — converts a 25°C-equivalent
-                       prediction back to the target slot's own expected
-                       temperature — then runs ADR-006's two-stage
-                       adjustment (the provider-update ramp, ADR-006 §1a,
-                       then the intraday deviation correction, ADR-006
-                       §1) on that unclamped value, and only then applies
-                       §1a's output clamp — once, last)
-```
+
+- **`providers/`** — baseline + actual-yield raw series.
+- **`yield_correction.py`** — forward: excludes clipped samples per §1;
+  normalizes actual-yield samples to 25°C per §2; no HA imports, tested
+  with zero mocking like the rest of the pure layer, per ADR-000 §6.
+- **`regression/`** — unchanged from ADR-001 — never sees a raw, clipped,
+  or temperature-biased sample.
+- **`forecast_adjust.py`** — calls back into `yield_correction.py`'s
+  reverse transform per §2b (the dashed edge above) — converts a
+  25°C-equivalent prediction back to the target slot's own expected
+  temperature — then runs ADR-006's two-stage adjustment (the
+  provider-update ramp, ADR-006 §1a, then the intraday deviation
+  correction, ADR-006 §1) on that unclamped value, and only then applies
+  §1a's output clamp — once, last.
 
 `yield_correction.py` itself stays a single, small, stateless module —
 the forward and reverse functions are two entry points into the same

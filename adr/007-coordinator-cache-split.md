@@ -295,33 +295,40 @@ mind five different caches' internal shapes while doing so.
 
 ### 3 — Updated module diagram
 
+Picking up from `regression/` in ADR-000 §3's full diagram (`providers/`,
+`yield_correction.py`, and `regression/` are unchanged, so they're
+omitted below):
+
+```mermaid
+flowchart BT
+    forecast_adjust["forecast_adjust.py"]
+    aggregation["aggregation.py"]
+    cache["cache.py"]
+    coordinator["coordinator.py"]
+    entity_glue["sensor.py / config_flow.py / switch.py"]
+    init["__init__.py"]
+
+    aggregation --> forecast_adjust
+    cache --> aggregation
+    coordinator --> cache
+    entity_glue --> coordinator
+    init --> entity_glue
 ```
-...
-forecast_adjust.py     (per-string corrected forecast, unchanged)
-       ↑
-aggregation.py          (pure logic: cross-string sums, energy-increment
-                         calculation, accuracy calculation; see ADR-005/
-                         ADR-004)
-       ↑
-cache.py                (pure logic: index-addressable time-series store
-                         — §1a-§1e — for FC/PV history and the
-                         day-snapshot array, plus simple dict stores for
-                         the model cache and ramp state, and the two
-                         persisted integral totals; no HA imports;
-                         constructed with an injected fetch_fn so it
-                         never imports the recorder API itself; see
-                         ADR-007)
-       ↑
-coordinator.py          (HA-facing: registers all four triggers, calls
-                         the pure layer including cache.py, decides which
-                         cache instances get restart-persisted, pushes
-                         results to sensors — the only module that
-                         imports cache.py)
-       ↑
-sensor.py / config_flow.py / switch.py  (HA entity glue)
-       ↑
-__init__.py             (wires platforms + coordinator into hass.data)
-```
+
+- **`forecast_adjust.py`** — per-string corrected forecast, unchanged.
+- **`aggregation.py`** — pure logic: cross-string sums, energy-increment
+  calculation, accuracy calculation; see ADR-005/ADR-004.
+- **`cache.py`** — pure logic: index-addressable time-series store —
+  §1a-§1e — for FC/PV history and the day-snapshot array, plus simple
+  dict stores for the model cache and ramp state, and the two persisted
+  integral totals; no HA imports; constructed with an injected `fetch_fn`
+  so it never imports the recorder API itself; see ADR-007.
+- **`coordinator.py`** — HA-facing: registers all four triggers, calls
+  the pure layer including `cache.py`, decides which cache instances get
+  restart-persisted, pushes results to sensors — the only module that
+  imports `cache.py`.
+- **`sensor.py` / `config_flow.py` / `switch.py`** — HA entity glue.
+- **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 This slots in exactly where `coordinator.py` already sat in the overall
 diagram (ADR-000 §3) — nothing downstream of `coordinator.py` changes,

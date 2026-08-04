@@ -70,51 +70,57 @@ tested as such (see §6).
 
 ### 3 — Module boundaries and dependency direction
 
+```mermaid
+flowchart BT
+    providers["providers/"]
+    yield_correction["yield_correction.py"]
+    regression["regression/"]
+    forecast_adjust["forecast_adjust.py"]
+    aggregation["aggregation.py"]
+    cache["cache.py"]
+    coordinator["coordinator.py"]
+    entity_glue["sensor.py / config_flow.py / switch.py"]
+    init["__init__.py"]
+
+    yield_correction --> providers
+    regression --> yield_correction
+    forecast_adjust --> regression
+    aggregation --> forecast_adjust
+    cache --> aggregation
+    coordinator --> cache
+    entity_glue --> coordinator
+    init --> entity_glue
 ```
-providers/             (pure-ish: discovers + normalizes forecast/sunshine/
-  discovery.py           cloud-coverage baseline series from whatever HA
-  normalize.py            entity exposes them; see ADR-001. Reads
-  base.py                 hass.states only — no writes, no coordinator/
-                          internal API access. Also broadcasts a source's
-                          native resolution (hourly/half-hourly/5-minute)
-                          across the 5-minute slot grid.)
-       ↑
-yield_correction.py     (pure logic: optional per-string clipping exclusion
-                         + temperature derating correction, no-op if not
-                         configured; see ADR-003)
-       ↑
-regression/             (pure logic: pluggable per-string, per-5-minute-slot
-  base.py                 regression strategy — linear/kernel/wls2/wls3,
-  kernel.py               fitting actual yield as a function of the raw
-  linear.py               forecast value — fit + predict with a shared
-  wls2.py                 confidence definition; see ADR-001/ADR-002)
-  wls3.py
-       ↑
-forecast_adjust.py     (pure logic: applies a string's fitted per-slot model
-                         to its raw baseline series)
-       ↑
-aggregation.py          (pure logic: cross-string sums, whole-day arrays,
-                         trapezoidal energy-increment calculation; see
-                         ADR-005)
-       ↑
-cache.py                (pure logic: index-addressable time-series store
-                         for FC/PV history and the day-snapshot array,
-                         plus simple dict stores for the model cache and
-                         ramp state, and the persisted integral totals;
-                         no HA imports, constructed with an injected
-                         fetch_fn so it never imports the recorder API
-                         itself; see ADR-007)
-       ↑
-coordinator.py          (orchestrates: registers all scheduling triggers,
-                         calls the pure layer including cache.py, decides
-                         which cache instances get restart-persisted,
-                         pushes results to sensors — the only module that
-                         imports cache.py)
-       ↑
-sensor.py / config_flow.py / switch.py  (HA entity glue)
-       ↑
-__init__.py             (wires platforms + coordinator into hass.data)
-```
+
+- **`providers/`** (`discovery.py`, `normalize.py`, `base.py`) — pure-ish:
+  discovers + normalizes forecast/sunshine/cloud-coverage baseline series
+  from whatever HA entity exposes them; see ADR-001. Reads `hass.states`
+  only — no writes, no coordinator/internal API access. Also broadcasts a
+  source's native resolution (hourly/half-hourly/5-minute) across the
+  5-minute slot grid.
+- **`yield_correction.py`** — pure logic: optional per-string clipping
+  exclusion + temperature derating correction, no-op if not configured;
+  see ADR-003.
+- **`regression/`** (`base.py`, `kernel.py`, `linear.py`, `wls2.py`,
+  `wls3.py`) — pure logic: pluggable per-string, per-5-minute-slot
+  regression strategy — linear/kernel/wls2/wls3, fitting actual yield as
+  a function of the raw forecast value — fit + predict with a shared
+  confidence definition; see ADR-001/ADR-002.
+- **`forecast_adjust.py`** — pure logic: applies a string's fitted
+  per-slot model to its raw baseline series.
+- **`aggregation.py`** — pure logic: cross-string sums, whole-day arrays,
+  trapezoidal energy-increment calculation; see ADR-005.
+- **`cache.py`** — pure logic: index-addressable time-series store for
+  FC/PV history and the day-snapshot array, plus simple dict stores for
+  the model cache and ramp state, and the persisted integral totals; no
+  HA imports, constructed with an injected `fetch_fn` so it never imports
+  the recorder API itself; see ADR-007.
+- **`coordinator.py`** — orchestrates: registers all scheduling triggers,
+  calls the pure layer including `cache.py`, decides which cache
+  instances get restart-persisted, pushes results to sensors — the only
+  module that imports `cache.py`.
+- **`sensor.py` / `config_flow.py` / `switch.py`** — HA entity glue.
+- **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 There is deliberately no `sun_geometry.py`: the regression predictor is
 the raw forecast value itself (ADR-001 §1), fit per 5-minute slot, and no
@@ -243,6 +249,28 @@ every comment that explained it.
   inputs are derived from live sensor/forecast data and configuration that
   is expected to occasionally be noisy rather than invalid.
 
+### 9 — Diagrams and tables: Markdown/Mermaid-native, not ASCII art
+
+Structural diagrams (module dependency graphs, data-flow pipelines, state
+machines) are written as Mermaid code blocks (` ```mermaid `), not as
+hand-drawn ASCII boxes/arrows inside a plain code fence — Mermaid renders
+natively on GitHub and in most Markdown viewers, where ASCII art
+frequently misaligns once line-wrapped, font-substituted, or viewed on a
+narrow screen. Tabular data is written as a native Markdown table
+(`| ... | ... |` with a header separator row), not hand-aligned with
+manual spacing in a code fence, for the same reason — every table
+already in this ADR set follows this. Per-node/per-module explanatory
+prose belongs in an adjacent bullet list next to the diagram, not
+crammed inside the diagram's own node labels — a diagram should show
+*structure* (what depends on what, what calls back into what), prose
+explains *why*, and the two don't have to fight for space in the same
+box. Plain code fences remain the right tool for what they were always
+for: formulas (e.g. `time_weight_i = 1 - distance_i /
+(smoothing_radius + 1)`), type/data-shape sketches (e.g. `dict[sensor_id:
+str, list[float | None | str]]`), and short illustrative
+data/config examples — none of these are themselves diagrams or tables,
+so this rule does not apply to them.
+
 ---
 
 ## Consequences
@@ -256,6 +284,14 @@ every comment that explained it.
 - **Pro:** ADRs prevent "tribal knowledge" about *why* a clamp, an
   interpolation choice, or a suppression exists from living only in a pull
   request that gets buried.
+- **Pro:** Mermaid diagrams (§9) render correctly on GitHub and in editor
+  previews without depending on a monospace font staying aligned — an
+  ASCII-art box diagram that looks fine in one viewer can silently
+  misalign in another, which a rendered diagram cannot do.
+- **Con:** Splitting a module diagram's structure (Mermaid nodes/edges)
+  from its explanatory detail (an adjacent bullet list, per §9) means two
+  places to keep in sync instead of one self-contained ASCII block — an
+  edit that adds a module needs both the diagram and the list updated.
 - **Con:** Strict mypy plus per-file suppression configuration is more
   upfront setup than "just ignore HA imports everywhere" — but it means type
   errors in actual business logic are never silently masked by a blanket
