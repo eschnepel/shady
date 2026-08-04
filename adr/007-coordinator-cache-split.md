@@ -28,8 +28,11 @@ individual addition was a reasonable, small extension at the time:
   intact, unlike the others below
 - Short-lived per-string ramp state, discarded once a ramp completes
   (ADR-006 §1a)
-- Per-string historical `(FC, PV)` pool cache for diagnostics, refreshed
-  at recalibration/system-start (ADR-004 §3)
+- Per-string historical `(FC, PV)` pool cache, refreshed at
+  recalibration/system-start — backs both regression training (ADR-001
+  §3a/§3b) and diagnostics (ADR-004 §3), the two consumers that read the
+  same underlying slot-indexed history rather than each keeping its own
+  copy
 
 This is exactly the situation ADR-000 §3 already warns about: "a module
 that starts doing two unrelated things is a signal to split it." It also
@@ -203,14 +206,14 @@ Two genuinely different access shapes are needed by different consumers,
 so `cache.py` offers two purpose-built methods rather than one
 parameterized to cover both:
 
-- **`get_slot_pool(sensor_ids, slot_of_day, window_days, on_invalid="skip") -> dict[sensor_id, list[float]]`**
+- **`get_slot_pool(sensor_ids, slot_of_day, window_days, on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id, list[float]]`**
   — "the same slot, across many days": exactly ADR-001 §3a/§3b/§3c/§3d's
   training pool shape. Grouped by sensor (one list per sensor-id) since
   that is what `regression/base.py`'s pool construction consumes directly
   per string. Default `on_invalid="skip"` — a fit should simply not see
   an invalid sample, not be corrupted by a placeholder value standing in
   for one.
-- **`get_time_range(sensor_ids, start, end, on_invalid=0.0, group_by="sensor"|"slot") -> dict | list[dict]`**
+- **`get_time_range(sensor_ids, start, end, on_invalid: Literal["skip", "raw"] | float = 0.0, group_by="sensor"|"slot") -> dict | list[dict]`**
   — "every slot in a contiguous range": ADR-005 §3's whole-day array,
   ADR-006 §1's trailing-2h window. `group_by="sensor"` returns
   `{sensor_id: [v0, v1, ...]}` (one time series per sensor — what ADR-006
@@ -223,10 +226,37 @@ parameterized to cover both:
   fixed length matters more than it does for a training pool, and `0` is
   a reasonable stand-in for "no data" in a power series.
 
+**What the third mode, `"raw"`, is for.** `"skip"` and a numeric default
+both
+already discard the difference between "never queried"/"invalidated"
+(`None`) and "queried, definitively unavailable" (`str`, §1a) — the right
+choice for a consumer like `regression/base.py`'s pool construction or
+ADR-005/ADR-006's summed windows, which only ever want a clean
+`list[float]` and have no use for the reason a gap exists. `"raw"` skips
+that shaping step entirely and returns each entry exactly as `cache.py`
+stores it internally (§1a) — `float`, `None`, or the `str` reason-id,
+unchanged. This changes the accessor's own return-type contract for that
+one call, from `list[float]` to `list[float | None | str]`; a consumer
+choosing `"raw"` takes on the same responsibility for handling all three
+states that reading `cache.py`'s `values` store (§1a) directly would
+require, the one difference being that it still goes through §1d's
+validate-before-read step below rather than bypassing it. Neither
+consumer described elsewhere in this design (`get_slot_pool`'s regression
+callers, `get_time_range`'s aggregation/window callers) uses `"raw"`
+today — both genuinely want the cleaned shape their own default already
+gives them — but the accessor design does not foreclose it: a future
+diagnostic or data-quality consumer (e.g. surfacing *which* sensors are
+stuck on a stable `"unavailable"` versus merely not-yet-queried) can
+request it from either method without `cache.py` needing a new method or
+a bespoke escape hatch added later.
+
 Both methods **validate before reading**: each call first runs §1d's
 validation function for the requested sensor-ids and range, fetching
 on-demand anything not already fresh, then reads and shapes the result —
-a consumer never has to separately remember to validate first.
+a consumer never has to separately remember to validate first. This
+applies identically regardless of which `on_invalid` mode is chosen —
+`"raw"` changes how a gap is *reported*, not whether the cache was
+brought up to date before reporting it.
 
 Both **return** a fully-materialized `dict`/`list`, not a generator. Data
 volumes here are small (at most a few thousand floats per call, a
@@ -325,6 +355,13 @@ only what sits directly beneath it.
 - **Pro:** `fetch_fn` injection (§1d) keeps `cache.py` fully testable
   without a real or mocked recorder — a test constructs a cache with a
   trivial fake function returning canned data.
+- **Pro:** The third `on_invalid="raw"` mode (§1e) means a future consumer
+  that needs to distinguish "not yet queried" from "queried, definitively
+  unavailable" does not require a new accessor method or a direct reach
+  into `cache.py`'s internal `values` store to get it — both existing
+  accessors already expose the full three-state value model (§1a)
+  on request, alongside the two cleaned shapes (`"skip"`/default value)
+  their current, known consumers actually use.
 - **Con:** One more file to navigate for a project of this size — for a
   simpler integration with only one or two caches this split might be
   premature; it is justified here specifically because five independent
@@ -343,7 +380,9 @@ only what sits directly beneath it.
   that has to be gotten right (an off-by-one in `list_offset` silently
   misaligns every subsequent read for that sensor).
 - **Con:** `get_slot_pool`/`get_time_range` (§1e) are two separate
-  methods with different defaults (`on_invalid="skip"` vs. `0.0`) rather
-  than one uniform interface — a deliberate choice given how differently
-  their consumers need to treat a gap, but it means there are two
-  accessor shapes to learn instead of one.
+  methods with different defaults (`on_invalid="skip"` vs. `0.0`, out of
+  the three modes — `"skip"`, a numeric default, or `"raw"` — either
+  accessor accepts) rather than one uniform interface — a deliberate
+  choice given how differently their consumers need to treat a gap, but
+  it means there are two accessor shapes to learn instead of one, each
+  with its own default out of three possible `on_invalid` behaviors.

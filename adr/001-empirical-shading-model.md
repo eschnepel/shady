@@ -176,6 +176,21 @@ information and is disproportionately sensitive to small absolute
 measurement noise. This mirrors the same defensive-clamping philosophy
 just mentioned.
 
+`magnitude_weight_i` itself is continuous, not a hard cutoff — it
+smoothly approaches, but is only ever exactly `0` at, `FC_i == 0` itself
+(the provider reporting no forecast output at all for that slot, e.g.
+full night). A slot with a small but nonzero `FC_i` (deep dawn/dusk, or a
+heavily overcast midday reading) is downweighted, not excluded — it still
+contributes to the fit, just with little influence. This `FC_i == 0`
+boundary is also, separately, the exact definition ADR-006 §1 reuses for
+its "active slot" count: a slot is **active** if and only if `FC_i ≠ 0`
+(equivalently, `magnitude_weight_i > 0`) — a plain binary yes/no read of
+the same boundary defined here, not a second, independently-tuned
+near-zero threshold. §2's own regression weighting stays continuous
+throughout; ADR-006 §1's sample-size gate is the one place elsewhere in
+this design that needs a binary answer instead, and it gets that answer
+from this same boundary rather than inventing another one.
+
 ### 2a — What "good" means here: daily total, not individual slots
 
 An individual slot's confidence (§2 above) is not, by itself, very
@@ -474,27 +489,46 @@ signal:
   - list of dicts with a timestamp-like key and a numeric value-like key
     (e.g. Solcast's `detailedForecast`)
 - **`weather.*` entities** — for users without a dedicated PV-forecast
-  integration. Attribute shapes recognized: sunshine-duration-like values
-  in a weather integration's forecast attribute (e.g. `sunshine_duration`,
-  common in DWD/Open-Meteo-based weather integrations). This is used as a
-  proxy baseline ("expected yield under a clear/predicted sky") rather than
-  a direct watt/Wh series, and is normalized accordingly before it enters
-  the regression.
+  integration. Two attribute shapes are recognized here, both proxy
+  baselines ("expected yield under a clear/predicted sky") rather than a
+  direct watt/Wh series, and both normalized accordingly before entering
+  the regression:
+  - sunshine-duration-like values in a weather integration's forecast
+    attribute (e.g. `sunshine_duration`, common in DWD/Open-Meteo-based
+    weather integrations) — already a *positive* clear-sky proxy (more
+    sunshine ⇒ more expected yield), so it is used directly, only rescaled
+    to the baseline's expected numeric range.
+  - cloud-coverage-like values (e.g. `cloud_coverage`,
+    `cloud_coverage_total`, common in Met.no/OpenWeatherMap-based weather
+    integrations) — the *inverse* of a clear-sky proxy (more cloud ⇒ less
+    expected yield). `providers/normalize.py` inverts it (e.g.
+    `100 - cloud_coverage` for a percentage-scaled source) before it is
+    treated as a baseline value; everything downstream of normalization
+    (`regression/`, the whole rest of this ADR) only ever sees the
+    already-inverted, positive-going series and has no notion that the
+    raw source was a coverage percentage rather than a sunshine duration.
 
-`providers/normalize.py` maps both shapes, via a small table of known
-key-name aliases (timestamp keys: `datetime`, `start`, `period_start`,
-`time`; value keys: `wh`, `pv_estimate`, `power`, `value`, `energy`,
-`sunshine_duration`), onto one canonical `list[tuple[datetime, float]]`
+`providers/normalize.py` maps both `sensor.*` shapes and both `weather.*`
+shapes above, via a small table of known key-name aliases (timestamp keys:
+`datetime`, `start`, `period_start`, `time`; value keys: `wh`,
+`pv_estimate`, `power`, `value`, `energy`, `sunshine_duration`,
+`cloud_coverage`), onto one canonical `list[tuple[datetime, float]]`
 series that any strategy in `regression/` and `forecast_adjust.py` consume
-without caring which integration or domain it came from.
+without caring which integration, domain, or (for the weather case)
+polarity the source data came in.
 
 Candidates are **scored, not auto-selected**: an attribute name containing
-"forecast"/"pv"/"sunshine", parseable ISO8601 timestamps, and
+"forecast"/"pv"/"sunshine"/"cloud", parseable ISO8601 timestamps, and
 plausible-unit numeric values all raise the score; the config flow (see
 §6) presents the ranked candidates and always offers a manual
 entity+attribute fallback, since third-party attribute shapes are not a
 versioned contract (the same caution Effy's ADR-003 raises about recorder
-internals applies here to other integrations' attributes).
+internals applies here to other integrations' attributes). A candidate
+matched on `cloud_coverage` is labeled distinctly from one matched on
+`sunshine_duration` in the presented list (e.g. "cloud coverage (inverted)"
+vs. "sunshine duration") so a person confirming the match can tell which
+normalization was applied, rather than the two proxy kinds being
+presented identically.
 
 `providers/` is explicitly the one module allowed to read `hass.states`
 directly among the "pure-ish" layer (see updated diagram in ADR-000 §3) —
@@ -523,8 +557,10 @@ string:
 ```
 Step "settings" (first):
   - Global default baseline candidate (dropdown, ranked by
-    providers/discovery.py per §5; "None of these" → manual entity +
-    attribute path entry) — used by any string that does not override it
+    providers/discovery.py per §5 — covering both `sensor.*` PV-forecast
+    candidates and `weather.*` sunshine-duration/cloud-coverage proxy
+    candidates alike; "None of these" → manual entity + attribute path
+    entry) — used by any string that does not override it
   - "Does this baseline already account for temperature effects itself?"
     (boolean, default false — ADR-003 §2c; presented right alongside the
     baseline candidate above, since it is a property of *that* choice)
@@ -544,7 +580,8 @@ Step "settings" (first):
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all
     strings — ADR-003 §2a)
-  - Intraday-Korrektur Cut-off (default 0 = deaktiviert; siehe ADR-006)
+  - Intraday deviation-correction cut-off (default 0 = disabled; see
+    ADR-006)
 
 Step "add_string" (repeated):
   - Name (free text, e.g. "Dach Süd")

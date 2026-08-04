@@ -1,9 +1,9 @@
 """Shady – Shading-Adjusted PV Forecast integration.
 
-Platzhalter-Skeleton für die Brainstorming-Phase. Die eigentliche
-Coordinator-/Platform-Verdrahtung folgt, sobald die Kernlogik
-(sun_geometry.py, horizon_profile.py, shading.py, forecast_adjust.py)
-gemäß ADR-000 §3 entworfen ist.
+Placeholder skeleton for the brainstorming phase. The actual coordinator/
+platform wiring follows once the core logic (providers/,
+yield_correction.py, regression/, forecast_adjust.py, aggregation.py,
+cache.py) is implemented per ADR-000 §3.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ PLATFORMS = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Shady from a config entry. TODO: Coordinator einhängen."""
+    """Set up Shady from a config entry. TODO: wire up the coordinator."""
     hass.data.setdefault(DOMAIN, {})
-    # TODO: ShadyCoordinator instanzieren und in hass.data ablegen,
-    # sobald coordinator.py existiert (siehe ADR-000 §3).
+    # TODO: instantiate ShadyCoordinator and store it in hass.data,
+    # once coordinator.py exists (see ADR-000 §3).
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

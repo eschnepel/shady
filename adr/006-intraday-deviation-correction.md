@@ -84,15 +84,29 @@ needing to detect "the snow melted" as an event — and, per the Context
 above, it does so on each string's own timeline, not a blended one.
 
 The minimum-sample-size gate — at least 12 "active" slots, reusing
-ADR-001 §2's magnitude-weight threshold — applies per string, scoped to
-the trailing window: at least 12 active slots must have occurred *within*
-the current window (for that string) before its ratio is trusted and
-applied. Before the gate is satisfied for a given string — whether
-because too little of the day has happened yet, or because its window
-temporarily contains too few active slots — that string's future slots
-are reported at their plain, uncorrected value regardless of the cutoff
-setting in §2, while another string that has already satisfied its own
-gate can be corrected at the same moment.
+ADR-001 §2's `FC_i == 0` boundary (a slot is active iff `FC_i ≠ 0`,
+equivalently `magnitude_weight_i > 0` — a plain binary read of the same
+boundary §2 otherwise applies continuously) — applies per string, scoped
+to the trailing window: at least 12 active
+slots must have occurred *within* the current window (for that string)
+before its ratio is trusted and applied. **Why 12:** at 5-minute
+resolution, 12 slots is exactly one hour — so the gate requires at least
+half of the 2-hour trailing window (§1 above) to have been genuine
+daylight generation, not merely "the window contains *some* data,
+however little." This matters most right around sunrise, when the window
+is freshly opening and could otherwise be mostly pre-dawn `FC_i == 0`
+slots plus one or two very early, barely-active ones — computing and
+trusting a ratio from a single active slot at that point would be noise,
+not signal. Requiring a full hour's worth before the correction engages
+means the ratio only ever reflects a meaningfully sized sample of actual
+same-day generation, at the cost of the correction staying off (falling
+back to the plain, uncorrected value per below) for roughly the first
+hour after each string's own sunrise. Before the gate is satisfied for a
+given string — whether because too little of the day has happened yet,
+or because its window temporarily contains too few active slots — that
+string's future slots are reported at their plain, uncorrected value
+regardless of the cutoff setting in §2, while another string that has
+already satisfied its own gate can be corrected at the same moment.
 
 ### 1a — Ramping across a provider forecast update, unconditionally
 

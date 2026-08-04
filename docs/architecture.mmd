@@ -1,42 +1,42 @@
 flowchart TB
-  TEMPFLAG{Globales Flag:<br/>FC-Provider inkludiert<br/>Temperatur-Koeffizient<br/>bereits selbst?}
+  TEMPFLAG{Global flag:<br/>FC provider already<br/>includes temperature<br/>coefficient?}
 
-  subgraph String["Pro String (je konfigurierter String)"]
-    TEMPBACK[Temperatur-Rückrechnung<br/>auf Ziel-Slot-Temperatur]
-    RAMP[Stufe 1: FC-Update-Rampe<br/>1h linear]
-    INTRA[Stufe 2: Intraday-Korrektur<br/>2h-Fenster aus Recorder]
-    CLAMP[Clamp 0..FC<br/>bzw. Inverter-Limit<br/>letzter Schritt]
-    PVSensor([Sensor: Ist-Ertrag<br/>pro String])
-    CLIP[Clipping-Ausschluss<br/>Training]
-    FCLive[roher FC-Wert für jeden Slot heute/morgen]
-    PV[Rohe PV-Historie]
-    FIT[Modell-Fit pro Slot<br/>linear / kernel / wls2 / wls3]
-    TEMP[25°C-Normalisierung<br/>Training]
-    PRED[Vorhersage bei 25°C]
-    FC[Rohe FC-Historie]
-    FCSensor([ShadyForecastSensor<br/>Slot-Array, pro String])
-
-  end
-
-  subgraph Agg["Aggregation (über alle Strings)"]
-    SUMFC([Sensor: Summe korr. FC<br/>aktuell])
-    DAYSUM([Sensor: Summe korr. FC<br/>Tagesarray, inkl. Snapshot vergangener Slots])
-    SUMPV([Sensor: Summe Ist-Ertrag<br/>aktuell])
-    INTFC([Sensor: Energie-Integral korr. FC<br/>Reset Mitternacht])
-    REST([Sensor: Rest-Tages-Summe])
-    INTPV([Sensor: Energie-Integral Ist<br/>Reset Mitternacht])
+  subgraph String["Per string (for each configured string)"]
+    TEMPBACK[Temperature back-conversion<br/>to target-slot temperature]
+    RAMP[Stage 1: FC update ramp<br/>1h linear]
+    INTRA[Stage 2: intraday correction<br/>2h window from recorder]
+    CLAMP[Clamp 0..FC<br/>or inverter limit<br/>final step]
+    PVSensor([Sensor: actual yield<br/>per string])
+    CLIP[Clipping exclusion<br/>training]
+    FCLive[raw FC value for each slot today/tomorrow]
+    PV[Raw PV history]
+    FIT[Model fit per slot<br/>linear / kernel / wls2 / wls3]
+    TEMP[25°C normalization<br/>training]
+    PRED[Prediction at 25°C]
+    FC[Raw FC history]
+    FCSensor([ShadyForecastSensor<br/>slot array, per string])
 
   end
 
-  subgraph Diag["Diagnose (optional, per Switch)"]
-    SWITCH([Switch: Diagnose<br/>Default aus])
-    SCATTER([Sensor: Streudiagramm<br/>pro String, alle 4 Methoden + heutiger Ist-Wert])
+  subgraph Agg["Aggregation (across all strings)"]
+    SUMFC([Sensor: sum of corrected FC<br/>current])
+    DAYSUM([Sensor: sum of corrected FC<br/>day array, incl. snapshot of past slots])
+    SUMPV([Sensor: sum of actual yield<br/>current])
+    INTFC([Sensor: energy integral, corrected FC<br/>reset at midnight])
+    REST([Sensor: remaining-day sum])
+    INTPV([Sensor: energy integral, actual<br/>reset at midnight])
+
   end
 
-  TEMPFLAG -. steuert .-> TEMPBACK
+  subgraph Diag["Diagnostics (optional, via switch)"]
+    SWITCH([Switch: diagnostics<br/>default off])
+    SCATTER([Sensor: scatter chart<br/>per string, all 4 methods + today's actual value])
+  end
+
+  TEMPFLAG -. controls .-> TEMPBACK
     PV --> CLIP
     PV --> PVSensor
-  TEMPFLAG -. steuert .-> TEMP
+  TEMPFLAG -. controls .-> TEMP
     CLIP --> TEMP
     TEMP --> FIT
     SWITCH --> SCATTER

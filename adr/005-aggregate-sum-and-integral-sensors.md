@@ -68,9 +68,15 @@ a slot-power-to-slot-energy conversion is needed, and it happens only
 here (ADR-001's regression itself always operates on power values per
 slot; ADR-005 is where those get integrated into an energy total). The
 future portion of `slot_values` (entries not yet past) is where an
-optional intraday deviation correction is applied — see ADR-006, which
-amends this sensor's array directly rather than any sensor downstream of
-it.
+optional intraday deviation correction can show up — but the correction
+itself is applied **per string, upstream of this sensor**, not to this
+sensor's own array: ADR-006 §1/§3 corrects each string's own
+`ShadyForecastSensor` values at the source, and this sensor's `slot_values`
+simply sums whatever those per-string values currently are, correction
+included when active. This sensor therefore needs no correction logic of
+its own (see ADR-006 §3) — it stays exactly the plain per-slot sum
+described above regardless of whether the correction is active for any
+given string.
 
 ### 4 — `ShadyFcRemainingTodaySensor` — expected remaining energy today
 

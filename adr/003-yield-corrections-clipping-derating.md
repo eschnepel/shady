@@ -214,10 +214,12 @@ are unaware of.
 ### 2c — Not every baseline provider needs this correction at all
 
 §2/§2a/§2b implicitly assumed every baseline is a "raw" signal with no
-temperature modeling of its own — true for a sunshine-duration-derived
-weather fallback (ADR-001 §5), but **not** true for a dedicated PV-forecast
-service: Solcast, in particular, already applies its own temperature-
-coefficient modeling internally before publishing a forecast value.
+temperature modeling of its own — true for a sunshine-duration- or
+cloud-coverage-derived weather fallback alike (ADR-001 §5; neither proxy
+has any notion of module temperature, only expected irradiance), but
+**not** true for a dedicated PV-forecast service: Solcast, in particular,
+already applies its own temperature-coefficient modeling internally
+before publishing a forecast value.
 Running §2/§2b's normalize-then-reverse correction on top of a baseline
 that already accounts for temperature would double-count the effect —
 correcting for temperature twice, once inside the provider's own number

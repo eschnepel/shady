@@ -71,12 +71,13 @@ tested as such (see §6).
 ### 3 — Module boundaries and dependency direction
 
 ```
-providers/             (pure-ish: discovers + normalizes forecast/sunshine
-  discovery.py           baseline series from whatever HA entity exposes them;
-  normalize.py            see ADR-001. Reads hass.states only — no writes,
-  base.py                 no coordinator/internal API access. Also broadcasts
-                          a source's native resolution (hourly/half-hourly/
-                          5-minute) across the 5-minute slot grid.)
+providers/             (pure-ish: discovers + normalizes forecast/sunshine/
+  discovery.py           cloud-coverage baseline series from whatever HA
+  normalize.py            entity exposes them; see ADR-001. Reads
+  base.py                 hass.states only — no writes, no coordinator/
+                          internal API access. Also broadcasts a source's
+                          native resolution (hourly/half-hourly/5-minute)
+                          across the 5-minute slot grid.)
        ↑
 yield_correction.py     (pure logic: optional per-string clipping exclusion
                          + temperature derating correction, no-op if not
