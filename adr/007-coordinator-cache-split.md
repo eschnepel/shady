@@ -68,6 +68,15 @@ cache (objects, not floats) and the short-lived ramp state (ADR-006
 see the end of §1e for why they do not need it. The integral running
 totals (ADR-005 §5/§6) are simpler still — one persisted scalar each.
 
+`cache.py` is constructed with `window_days: int` (the global setting
+from ADR-001 §4/§6) as a **setup parameter**, alongside `fetch_fn` (§1d)
+— not re-supplied on every call. `window_days` is one value for the
+whole cache instance, exactly like the global config-flow setting it
+mirrors; sizing the per-sensor lists (§1a) and resolving a slot pool's
+default window (§1e) both read this one stored value rather than each
+call site passing its own copy of a number that never actually varies
+between calls.
+
 **Not every cache needs restart-persistence, and `cache.py` does not
 decide that on its own.** The energy-integral running totals (ADR-005
 §5/§6) must survive a restart with their exact accumulated value intact —
@@ -123,11 +132,21 @@ currently starts:
 list_offset: dict[sensor_id: str, int]   # absolute index of list[0]
 ```
 
-Trimming (dropping the oldest day's 288 entries once the window has
-rolled forward, keeping the list capped near its target size) advances
-`list_offset` without needing to touch every other piece of state that
-refers to an absolute index — in particular, the validated ranges in §1b
-stay meaningful across a trim without rewriting.
+**Trimming is one explicit call, not an implicit side effect of writes.**
+`cache.trim()` drops each sensor's oldest entries once its window has
+rolled forward, advancing `list_offset` without needing to touch every
+other piece of state that refers to an absolute index — in particular,
+the validated ranges in §1b stay meaningful across a trim without
+rewriting. `coordinator.py` calls `cache.trim()` exactly once, at the
+ADR-002 §1 recalibration trigger (midnight or button) — never as a side
+effect of the 5-minute tick (ADR-006 §1) or a baseline update (ADR-002
+§2). This matters beyond tidiness once §1f's pinned reference date
+exists: trimming needs to check whether it is currently set before
+discarding anything older than the live window, and tying that check to
+one explicit, predictable call — rather than letting it happen
+implicitly on whichever trigger's write is next — is what makes that
+check a guarantee instead of a race. See §1f for exactly how the
+retained floor is computed.
 
 ### 1b — Validated range tracking
 
@@ -206,13 +225,18 @@ Two genuinely different access shapes are needed by different consumers,
 so `cache.py` offers two purpose-built methods rather than one
 parameterized to cover both:
 
-- **`get_slot_pool(sensor_ids, slot_of_day, window_days, on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id, list[float]]`**
+- **`get_slot_pool(sensor_ids, slot_of_day, on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id, list[float]]`**
   — "the same slot, across many days": exactly ADR-001 §3a/§3b/§3c/§3d's
   training pool shape. Grouped by sensor (one list per sensor-id) since
   that is what `regression/base.py`'s pool construction consumes directly
   per string. Default `on_invalid="skip"` — a fit should simply not see
   an invalid sample, not be corrupted by a placeholder value standing in
-  for one.
+  for one. `window_days` is not a parameter here — it is read from the
+  cache's own construction-time setting (§1) instead. This method is
+  always **today-anchored** — regression fitting (ADR-001 §2) and an
+  auto-tracking diagnostics sensor (ADR-004 §2) both want the live
+  window, never a pinned one; see §1f's `get_pinned_slot_pool` for the
+  manually-pinned case.
 - **`get_time_range(sensor_ids, start, end, on_invalid: Literal["skip", "raw"] | float = 0.0, group_by="sensor"|"slot") -> dict | list[dict]`**
   — "every slot in a contiguous range": ADR-005 §3's whole-day array,
   ADR-006 §1's trailing-2h window. `group_by="sensor"` returns
@@ -280,6 +304,72 @@ short-lived record, not a rolling window. Both stay as simple
 index/validation machinery above; only the genuinely time-series-shaped
 caches (raw `FC`/`PV` history, the day-snapshot array) use it.
 
+### 1f — Pinned diagnostic reference date: one value, cache-wide
+
+A manually-pinned diagnostic slot (ADR-004 §2a) needs its slot-pool built
+from a window ending at the *pinned* date, not at today. **There is only
+one pinned reference date at a time, for the whole cache instance — not
+one per sensor, and not one per string.** `cache.py` holds it as a
+single scalar, `pinned_reference: date | None`, set via
+`pin_reference(date)` and cleared via `clear_reference()` — no
+`sensor_id` argument to either, in the same spirit as `window_days` (§1)
+being one setup-level value rather than something re-supplied, or
+re-scoped, per call. `coordinator.py` calls these in direct response to
+the `shady.select_diagnostic_slot` service (ADR-004 §2a), which is
+itself not entity-targeted — there is no per-`ShadyDiagnosticsSensor`
+"am I pinned" state anywhere, in `cache.py` or otherwise. Every
+diagnostics sensor (each string's, and ADR-004 §2b's summed one) simply
+reads whether `pinned_reference` is currently set each time it needs to
+know which slot to show: `cache.py`'s one scalar is the *complete*
+answer, not one input alongside separate per-entity state.
+
+A dedicated accessor keeps this out of `get_slot_pool`'s signature
+entirely, consistent with `window_days` also not being a per-call
+argument (§1e): **`get_pinned_slot_pool(sensor_ids, slot_of_day,
+on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id,
+list[float]]`** — same shape as `get_slot_pool`, but its window is
+resolved from `pinned_reference` **internally**: `[pinned_reference −
+window_days, pinned_reference]` if a pin is currently set, otherwise
+falling back to today-anchored — `[today − window_days, today]`, `window_days`
+sizing the window identically either way. This is the **only** accessor
+ADR-004's diagnostics feature ever calls, whether currently pinned or
+auto-tracking — there is no separate today-only diagnostics call to
+choose between; `coordinator.py` never branches on `pinned_reference`
+itself to decide which function to call, it just always calls this one
+and lets it resolve its own anchor. `get_slot_pool` (§1e) remains
+today-anchored only, but is no longer used by diagnostics at all — its
+one remaining caller is regression fitting during recalibration (ADR-001
+§3a/§3b/§3c/§3d), which needs "today", full stop, regardless of any
+diagnostic pin.
+
+Because both branches resolve to the same-shaped `[anchor − window_days,
+anchor]` window and go through the same validate-before-read call
+(§1d), whether a given `get_pinned_slot_pool` call actually needs a new
+recorder fetch or is served entirely from cache depends on **whether
+that window is already cached** — not on which branch was taken. In the
+common auto-tracking case, the resolved window is `[today − window_days,
+today]`, exactly what the same day's recalibration already fetched
+moments earlier, so the call is served from already-validated entries
+with no new recorder query. An old pin's window will typically *not*
+already be cached, so that same call does trigger a genuine fetch for
+the missing range — the underlying mechanism is identical in both
+cases; only whether it happens to find its target already there differs.
+
+**Effect on trimming.** Because there is only one pinned date, not one
+per sensor, trimming does not need any per-sensor bookkeeping for this
+either: whenever `pinned_reference` is set, `cache.trim()` (§1a) uses
+`min(today − window_days, pinned_reference − window_days)` as the
+retained floor for **every** sensor — simpler than tracking which
+sensor-ids the pin specifically depends on, at the cost of retaining
+slightly more data than the strict minimum while a pin is active. Once `clear_reference()`
+is called, the floor reverts to the plain `today − window_days` on the
+*next* `cache.trim()` call — clearing a pin does not itself reclaim
+anything retained on its account; the next explicit trim does. A pin set
+for a date whose data an *earlier* trim (before the pin existed) already
+discarded cannot be recovered from cache alone — same residual
+limitation ADR-004 §2a already accepts for the pre-existing "outside the
+window" case, just narrower in scope now.
+
 ### 2 — `coordinator.py` shrinks to pure orchestration
 
 With state ownership moved out, `coordinator.py`'s remaining job is
@@ -295,9 +385,13 @@ mind five different caches' internal shapes while doing so.
 
 ### 3 — Updated module diagram
 
-Picking up from `regression/` in ADR-000 §3's full diagram (`providers/`,
-`yield_correction.py`, and `regression/` are unchanged, so they're
-omitted below):
+Picking up from `regression/` in ADR-000 §3's full diagram: `providers/`
+and `regression/` are unchanged and omitted below. `yield_correction.py`
+is also omitted here — not because it is unchanged (ADR-003 §3 gave it a
+second, reverse edge from `forecast_adjust.py`, reflected in ADR-000 §3's
+diagram), but because nothing in *this* ADR touches it; see ADR-000 §3 or
+ADR-003 §3 for `yield_correction.py`'s own up-to-date diagram, including
+that reverse edge from `forecast_adjust.py` below.
 
 ```mermaid
 flowchart BT

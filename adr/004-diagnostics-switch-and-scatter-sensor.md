@@ -1,4 +1,4 @@
-# ADR-004 – Diagnostics: Enable Switch and Per-String Scatter-Series Sensor
+# ADR-004 – Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed)
 
 **Date:** 2026-07-05
 **Status:** Accepted
@@ -23,14 +23,16 @@ opt-in diagnostic feature.
 ### 1 — A dedicated enable switch, default off
 
 A single `ShadyDiagnosticsSwitch` entity (one per config entry) gates all
-diagnostic sensors (§2). It defaults to **off**. While off, diagnostic
-sensors exist (so they don't appear/disappear from the entity registry,
-which HA handles awkwardly) but report `state: "disabled"` with no
-`series` attribute, and — importantly — the coordinator does **not** do
-the extra fitting work described in §3 while the switch is off. This
-keeps the cost of diagnostics at zero for the common case of a user who
-never turns it on, following the same "no-op when not configured" pattern
-already established for the corrections in ADR-003 §3.
+diagnostic sensors — every per-string `ShadyDiagnosticsSensor` (§2) and
+the config-entry-level `ShadyDiagnosticsSumSensor` (§2b) alike. It
+defaults to **off**. While off, diagnostic sensors exist (so they don't
+appear/disappear from the entity registry, which HA handles awkwardly)
+but report `state: "disabled"` with no `series` attribute, and —
+importantly — the coordinator does **not** do the extra fitting work
+described in §4 while the switch is off. This keeps the cost of
+diagnostics at zero for the common case of a user who never turns it on,
+following the same "no-op when not configured" pattern already
+established for the corrections in ADR-003 §3.
 
 ### 2 — One scatter-series sensor per configured PV string
 
@@ -142,52 +144,74 @@ Auto-tracking "the last complete slot" is the default, but a person
 debugging a specific event (e.g. "why did the forecast look off around
 14:00 yesterday") needs to inspect *that* slot specifically, not whatever
 is currently most recent. A service, `shady.select_diagnostic_slot`,
-targets one or more `ShadyDiagnosticsSensor` entities (the standard HA
-service-target pattern — a person can select all of a config entry's
-diagnostic sensors at once, or just one string's) with a single optional
-parameter:
+takes a single optional parameter:
 
-- **`timestamp`** (optional, ISO-8601 datetime): pins the targeted
-  sensor(s) to the slot containing this timestamp, rounded *down* to the
-  nearest 5-minute boundary (matching the slot grid, ADR-001 §3a).
-  Rejected with a validation error if the timestamp does not correspond
-  to an already-elapsed slot — the whole feature depends on
-  `PV_selected` existing (§2), so a future or still-in-progress slot has
-  nothing to show. Omitting `timestamp` entirely (or calling the service
-  with no parameters) **clears** the pin and returns the targeted
-  sensor(s) to auto-tracking "last complete slot".
+- **`timestamp`** (optional, ISO-8601 datetime): pins the diagnosed slot
+  to the slot containing this timestamp, rounded *down* to the nearest
+  5-minute boundary (matching the slot grid, ADR-001 §3a). Rejected with
+  a validation error if the timestamp does not correspond to an
+  already-elapsed slot — the whole feature depends on `PV_selected`
+  existing (§2), so a future or still-in-progress slot has nothing to
+  show. Omitting `timestamp` entirely (or calling the service with no
+  parameters) **clears** the pin and returns to auto-tracking "last
+  complete slot".
+
+**There is exactly one diagnosed-slot state per config entry — not one
+per sensor.** Every diagnostic sensor, the per-string
+`ShadyDiagnosticsSensor`s (§2) and the summed `ShadyDiagnosticsSumSensor`
+(§2b) alike, shows the *same* moment: whichever slot `cache.py`'s
+`pinned_reference` (ADR-007 §1f) currently names, or "last complete slot"
+if it is unset. There is no per-sensor "is this one pinned or still
+auto-tracking" toggle to keep in sync — the service is not entity-
+targeted at all, since there is only ever one thing, config-entry-wide,
+for it to affect. This is also what makes §2b's sum sensor well-defined
+in the first place: summing `FC`/`PV` values across strings only makes
+sense if every string's diagnostic is looking at the same instant: a
+per-sensor pin would let strings disagree about *when*, making a
+config-entry-level sum meaningless. In practice, one shared moment also
+matches the motivating use case directly — "what did every string look
+like around 14:00 yesterday" is a cross-string comparison at one moment,
+not several strings each frozen at a different, unrelated one.
 
 While pinned, the 5-minute tick (§2's "Refresh cadence") does not advance
-the diagnosed slot for that sensor, and effectively becomes a no-op for
-it: a manually-selected slot is, by construction, already fully elapsed,
-so nothing about its underlying data changes as time passes — there is
-nothing to refresh. Pinning one string's sensor does not affect any
-other string's, consistent with the service being entity-targeted rather
-than a global setting.
+the diagnosed slot, and effectively becomes a no-op for the diagnosed-
+slot choice itself: a manually-selected slot is, by construction, already
+fully elapsed, so nothing about its underlying data changes as time
+passes — there is nothing to advance to.
 
-**No new data-fetching is needed to support this.** §3's cache already
-retains every one of the 288 slots' pools as a byproduct of the day's
-recalibration, precisely because fitting all 288 models requires reading
-all 288 pools anyway — picking an arbitrary already-cached slot instead
-of whichever one auto-tracking would have picked is just a different
-lookup key into data that was already there. The same applies to
-`selected {method}`/`selected actual`: evaluating the four already-fitted
-models at a different historical slot's own `FC` value, and reading that
-slot's own recorded `PV`, are the same cheap operations §2 already
-performs for the auto-tracked case.
-
-A manually-selected slot from **outside the current rolling window**
-(older than `window_days`, ADR-001 §4) will show an empty or stale
-slot-pool series, since the cache only retains the current window's
-pools — this is an accepted limitation (re-fetching an arbitrary past
-window on demand would reintroduce the per-tick recorder load §3 exists
-to avoid), not a bug; `selected {method}`/`selected actual` still work
-for such a slot as long as the recorder itself still has that slot's raw
-`FC`/`PV` history, independent of the pool cache's own window.
+**Every diagnostic sensor's slot-pool series comes from one function,
+`get_pinned_slot_pool` (ADR-007 §1f) — whether currently pinned or
+auto-tracking.** There is no separate today-only call for the
+auto-tracking case: `get_pinned_slot_pool` resolves its own window
+internally, `[pinned_reference − window_days, pinned_reference]` if a
+pin is set, else `[today − window_days, today]` — `window_days` sizing
+the window the same way either time. Whether a given call needs a
+genuine new recorder fetch or is served entirely from cache depends on
+whether that resolved window happens to already be cached, not on
+whether a pin is active. While auto-tracking, the resolved window is
+`[today − window_days, today]` — exactly what the same day's
+recalibration already fetched moments earlier to fit all 288 slots'
+models, so the call is served from already-validated cache entries with
+no new recorder query. **A pin to a date outside the live window is
+different: its resolved window will typically not already be cached, so
+the same call does trigger a real fetch for the missing range** —
+`cache.py`'s validate-before-read (ADR-007 §1d) handles this the same
+as any other cache miss, on the spot. The one residual limitation is
+data that was already trimmed *before* the pin was set: `cache.trim()`
+(ADR-007 §1a/§1f) only extends its retained floor for a pin that already
+existed at trim time, so a timestamp pinned today whose data a
+*previous* day's trim already discarded cannot be recovered from the
+cache alone — `selected {method}`/`selected actual` still work for such
+a slot regardless, as long as the recorder itself still has that slot's
+raw `FC`/`PV` history, independent of the pool cache's own retained
+window. `selected {method}`/`selected actual` themselves are cheap
+either way, pinned or not: evaluating the four already-fitted models at
+a historical slot's own `FC` value, and reading that slot's own recorded
+`PV`, do not depend on the pool cache at all.
 
 **Pinning does not freeze the predictions themselves.** When
 recalibration (ADR-002 §1) next runs, the four models refit regardless of
-whether any sensor is currently pinned, and a pinned sensor's `selected
+whether a pin is currently active, and a pinned sensor's `selected
 {method}`/`accuracy` values are recomputed against the *newly*-fitted
 models, still queried at the same (unchanged) pinned slot's own `FC`
 value. Only *which slot* stays fixed while pinned — what the current
@@ -204,15 +228,44 @@ a third schedule, this reuses the 5-minute recorder-poll trigger ADR-006
 §1 already introduces (`async_track_time_interval(hass, ...,
 minutes=5)`) — advancing which slot is diagnosed, and refreshing
 `"selected actual"`/`"selected {method}"`/`accuracy` (all cheap: one
-PV/FC lookup plus four model evaluations), on every tick, **for sensors
-currently auto-tracking**. A sensor pinned to a manually-selected slot
-(§2a) does not advance on this tick at all — see §2a for why that is
-correct, not merely skipped. The slot-pool series (`"-1"`/`"0"`/`"1"`) do
-**not** get re-queried on this same tick either way — see §3. The four
-fitted models behind the `"selected {method}"` points are unaffected by
-this faster tick and still only change at ADR-002 §1's cadence, exactly
-as §4 describes; only *which* slot's data is being displayed, and that
-slot's now-available actual value and accuracy, track the 5-minute tick.
+PV/FC lookup plus four model evaluations per string, then a sum for
+§2b's sensor) on every tick, **while auto-tracking**. While pinned (§2a),
+none of this advances on this tick at all. The slot-pool series
+(`"-1"`/`"0"`/`"1"`) do **not** get re-queried on this same tick either
+way — see §3. The four fitted models behind the `"selected {method}"`
+points are unaffected by this faster tick and still only change at
+ADR-002 §1's cadence, exactly as §4 describes; only *which* slot's data
+is being displayed, and that slot's now-available actual value and
+accuracy, track the 5-minute tick.
+
+### 2b — A summed-up diagnostics sensor across all strings
+
+Alongside the per-string sensors (§2), one config-entry-level
+`ShadyDiagnosticsSumSensor` mirrors ADR-005's `ShadyPvSumSensor`/
+`ShadyFcSumSensor` pattern: the same `series`/`accuracy` shape as §2, but
+every point is the **pointwise sum across strings** at the one shared
+diagnosed slot (§2a) — e.g. the `"0"` series' day-*i* point is
+`[Σ FC_i, Σ PV_i]` across all configured strings for that day, not a
+concatenation of every string's own points into one bigger cloud. This
+is exactly why §2a makes the diagnosed slot config-entry-wide rather than
+per-sensor: a pointwise sum across strings is only meaningful if "day
+*i*'s point" means the same day and slot for every string being summed.
+
+This sensor does **no new fitting or fetching of its own** — matching
+ADR-005's sum sensors being "plain state-tracking aggregates, updating
+opportunistically whenever the underlying per-string values change"
+rather than independent computations. It reads each per-string sensor's
+already-computed series (§2, §2a) and sums them pointwise; `accuracy` is
+then computed from those *summed* predicted/actual values (`1 -
+|Σ predicted_i − Σ PV_selected| / Σ PV_selected`, same clamping as §2),
+not by averaging the per-string accuracy percentages — consistent with
+deriving ratios from sums rather than summing ratios, the same principle
+ADR-005 applies throughout. It updates on the same triggers as the
+per-string sensors it reads (§2a's 5-minute tick while auto-tracking; a
+pin update; recalibration for the four fitted-model points), gated by
+the same `ShadyDiagnosticsSwitch` (§1).
+
+
 
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 
@@ -224,33 +277,42 @@ wasteful: that data only meaningfully changes once a day, when the
 rolling window advances by one calendar day.
 
 This does not need a second recorder-reading mechanism, because the data
-required is **exactly what `cache.py`'s `get_slot_pool` accessor already
-provides** (ADR-007 §1e) — the same per-slot historical pool
-`coordinator.py` reads for every one of the 288 slots during
-recalibration (ADR-002 §1), since fitting all 288 slot models
-necessarily means reading all 288 pools first. When the diagnostics
-switch (§1) is on, the sensor's `"-1"`/`"0"`/`"1"` series are populated by
-calling `get_slot_pool` for the diagnosed slot (and its neighbors) — and
-because `cache.py`'s validation (ADR-007 §1d) already knows this data was
-fetched moments ago for recalibration, this call costs nothing extra: no
-new recorder query, just a read of already-validated cache entries.
+required is **exactly what `cache.py`'s cache already holds** — the same
+per-slot historical pool `coordinator.py` reads for every one of the 288
+slots during recalibration (ADR-002 §1), since fitting all 288 slot
+models necessarily means reading all 288 pools first. When the
+diagnostics switch (§1) is on, every per-string sensor's
+`"-1"`/`"0"`/`"1"` series are populated by calling `get_pinned_slot_pool`
+(ADR-007 §1f) for the diagnosed slot (and its neighbors) — the **same**
+call whether currently pinned or auto-tracking (§2a); there is no
+separate today-only accessor diagnostics falls back to. While
+auto-tracking, that call's internally-resolved window happens to be
+exactly what recalibration already fetched moments earlier, so it costs
+nothing extra: no new recorder query, just a read of already-validated
+cache entries. While pinned to a date outside the live window, the same
+call's resolved window is typically *not* already cached, so it is not
+free the same way — see §2a for what that costs. §2b's sum sensor adds
+no third call of its own — it reads whichever result the per-string
+sensors already got back from `get_pinned_slot_pool` and sums it.
 
 The cache refreshes on exactly the same triggers as the recalibration
 that produces it — **midnight or button** (ADR-002 §1) — plus **once at
 system start**, since a fresh restart has no recalibration-produced data
 yet to retain until the first one runs; a restart also invalidates
 `cache.py`'s validated ranges (ADR-007 §1b) for these sensors, so the
-first `get_slot_pool` call after one naturally triggers the full-history
-fetch path (ADR-007 §1d) rather than assuming stale in-memory state
-survived. The slot-pool series are **not** refreshed on the 5-minute tick
-from §2, nor on ADR-002 §2's baseline-update trigger — only recalibration
-(or a restart priming it for the first time) changes what they show for
-the rest of the day. Turning the diagnostics switch on *between* two
-recalibrations means `get_slot_pool` may return mostly-invalidated data
-until the next of those triggers fires; the slot-pool series show nothing
-new until then, while `"selected {method}"`/`"selected actual"`/`accuracy`
-keep working immediately, since those only need the diagnosed slot's own
-live `FC`/`PV` values, not the historical pool.
+first `get_pinned_slot_pool` call after one naturally triggers the
+full-history fetch path (ADR-007 §1d) rather than assuming stale
+in-memory state survived. While **auto-tracking**, the slot-pool series
+are **not** refreshed on the 5-minute tick from §2, nor on ADR-002 §2's
+baseline-update trigger — only recalibration (or a restart priming it
+for the first time) changes what they show for the rest of the day.
+Turning the diagnostics switch on *between* two recalibrations means
+`get_pinned_slot_pool` may return mostly-invalidated data until the next
+of those triggers fires; the slot-pool series show nothing new until
+then, while `"selected {method}"`/`"selected actual"`/`accuracy` keep
+working immediately, since those only need the diagnosed slot's own live
+`FC`/`PV` values, not the historical pool. While **pinned**, none of
+this staleness applies — see §2a.
 
 ### 4 — Extra fitting cost only when the switch is on
 
@@ -278,17 +340,28 @@ side effect of recalibration — not owned by `coordinator.py` directly,
 matching every other cache in this design. The accuracy calculation
 (`1 - |predicted - actual| / actual`, clamped, per §2) is a pure function
 in `aggregation.py`, since it takes plain numbers in and returns a plain
-number out, with no HA or per-string knowledge needed. `sensor.py` adds
-`ShadyDiagnosticsSensor`, staying thin like every other sensor in this
-design: it reads `coordinator.py`'s cached pools (from `cache.py`) and
-the freshly-computed selected/accuracy values, and shapes them into the
-`series`/`accuracy` structure above — this shaping is pure presentation
-and does not belong in `regression/` or
+number out, with no HA or per-string knowledge needed; §2b's pointwise
+sum-then-accuracy calculation is a second, equally pure function
+alongside it, taking each string's already-computed numbers in rather
+than reaching back into `regression/` itself. `sensor.py` adds
+`ShadyDiagnosticsSensor` (§2, one per string) and
+`ShadyDiagnosticsSumSensor` (§2b, one per config entry, following the
+six `ShadyPvSumSensor`-style sensors' placement in `sensor.py` per
+ADR-005's "Module: a new pure aggregation layer" section), both
+staying thin like every other sensor in this design: each reads
+`coordinator.py`'s cached pools (from `cache.py`) and the
+freshly-computed selected/accuracy values (the sum sensor reading the
+per-string sensors' own already-shaped output, not `cache.py` a second
+time), and shapes them into the `series`/`accuracy` structure above —
+this shaping is pure presentation and does not belong in `regression/` or
 `forecast_adjust.py`. The `shady.select_diagnostic_slot` service (§2a) is
-registered in `__init__.py` (the usual home for service registration)
-and its handler is a thin wrapper that validates the timestamp and
-delegates to a method on the targeted `ShadyDiagnosticsSensor` entities —
-no new module needed for a single service handler this small.
+registered in `__init__.py` (the usual home for service registration),
+is **not** entity-targeted (§2a — there is one diagnosed-slot state per
+config entry, not one per sensor), and its handler is a thin wrapper that
+validates the timestamp and calls `cache.py`'s `pin_reference`/
+`clear_reference` (ADR-007 §1f) directly for that config entry's
+coordinator — no new module needed for a single service handler this
+small.
 
 ---
 
@@ -311,8 +384,11 @@ no new module needed for a single service handler this small.
 - **Pro:** Manually selecting a slot by timestamp (§2a) turns this from a
   "what does it look like right now" tool into one that can also answer
   "what did it look like at that specific moment" — useful precisely when
-  investigating a specific past event, at no extra data-fetching cost
-  since §3's cache already holds every slot's pool.
+  investigating a specific past event. This costs nothing extra when the
+  pinned date is recent enough to already be cached, and at most one
+  bounded, on-demand fetch (ADR-007 §1d/§1f) otherwise — not a new
+  per-tick query pattern, just an occasional one-time catch-up the first
+  time an older date is pinned.
 - **Pro:** Default-off plus the always-on entity / conditionally-computed
   content pattern (§1) keeps the cost at zero for installations that
   never enable it, consistent with ADR-003 §3's no-op philosophy for
@@ -322,15 +398,26 @@ no new module needed for a single service handler this small.
   separate legend, tooltip, or lookup needed — while the plain-number
   `accuracy` attribute (§2) still gives automations/templates a value to
   read without parsing a formatted string.
-- **Pro:** Caching the historical pool as a side effect of recalibration
-  (§3) means the diagnostic feature adds no new recorder-query pattern to
-  the system at all — it reuses data `coordinator.py` was already reading
-  for fitting, at the same cadence, at the cost of retaining it in memory
-  slightly longer.
+- **Pro:** Both the auto-tracking and pinned cases go through the same
+  `get_pinned_slot_pool` call (§3, ADR-007 §1f), reusing the exact same
+  recorder-reading mechanism (`fetch_fn`/`statistics_during_period`,
+  ADR-007 §1d) `coordinator.py` already uses for fitting — the diagnostic
+  feature introduces no second way of talking to the recorder, only an
+  occasional extra invocation of the one it already has.
+- **Pro:** The summed diagnostics sensor (§2b) gives a config-entry-level
+  "how did the whole system do" view alongside the per-string detail,
+  matching ADR-005's existing sum-sensor pattern, at no extra fitting or
+  fetching cost of its own — it only ever sums numbers the per-string
+  sensors already computed.
 - **Con:** With the switch on, recalibration (ADR-002 §1) does roughly
   4× the fitting work per string (all four methods instead of one) for
   the diagnosed slot — small in absolute terms (one slot, not 288), but
   not free, and scales with the number of configured strings.
+- **Con:** There is exactly one diagnosed-slot state per config entry
+  (§2a), not one per string — a direct trade against the summed sensor
+  (§2b) being well-defined at all. A person cannot pin string A to one
+  moment while comparing it against string B at a different moment; every
+  currently-pinned view, across every string, moves together.
 - **Con:** The slot-pool series (§3) can be up to a day stale relative to
   the diagnosed slot's own live position — e.g. right before the next
   midnight recalibration, the cached pool still reflects yesterday's

@@ -133,6 +133,25 @@ day.
   minute=0, second=0)` — deliberately not reusing either of those
   triggers despite all being "periodic coordinator things", and on
   firing, tells `cache.py` to zero the relevant total.
+- **Restart-during-the-reset-window idempotency.** Because the totals are
+  restart-persisted (above), a restart landing anywhere in the
+  `[00:00, 00:01)` window needs a defined outcome, not just a documented
+  risk (see the Consequences section) — otherwise `async_setup_entry`
+  could double-zero an already-reset total, or skip zeroing one that
+  restored with yesterday's value still in it. The persisted state
+  carries a `last_reset_date` (the calendar date, HA's local timezone, the
+  total was last zeroed for) alongside the numeric total itself. On
+  `async_setup_entry`, before the midnight-reset schedule is even
+  registered, `coordinator.py` compares `last_reset_date` to today's date:
+  if they already match, the restored total is used as-is (the reset, or
+  an equivalent startup fit, already happened before the restart); if
+  `last_reset_date` is in the past, the total is zeroed immediately and
+  `last_reset_date` is set to today. The scheduled `hour=0, minute=0`
+  trigger performs the same "is `last_reset_date` already today?" check
+  before zeroing, rather than zeroing unconditionally — making the reset
+  idempotent regardless of whether it fires from the schedule, from
+  startup, or (in the pathological case of both landing in the same
+  narrow window) from both.
 
 ### Module: a new pure aggregation layer
 
@@ -192,12 +211,12 @@ flowchart BT
   incremental-tail path a sensor that had stayed running would have used.
 - **Con:** §5/§6's persisted running totals mean Shady is now responsible
   for correct restore-state behavior around restarts and the midnight
-  reset boundary (e.g. a restart *during* the reset window needs to not
-  double-reset or skip a reset) — the same category of edge case Home
-  Assistant's own Integration helper has already had to solve, being
-  reimplemented here rather than reused, because Shady needs it wired to
-  its own specific midnight trigger rather than a generically-configured
-  helper entity.
+  reset boundary — the same category of edge case Home Assistant's own
+  Integration helper has already had to solve, being reimplemented here
+  (via the `last_reset_date` idempotency check, §5/§6's implementation
+  notes above) rather than reused, because Shady needs it wired to its own
+  specific midnight trigger rather than a generically-configured helper
+  entity.
 - **Con:** `ShadyFcDaySumSensor`'s two 288-element array attributes are,
   like ADR-004's `series` attribute, a de-facto public contract once a
   dashboard is built against `slot_timestamps`/`slot_values` — same

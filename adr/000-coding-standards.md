@@ -90,6 +90,7 @@ flowchart BT
     coordinator --> cache
     entity_glue --> coordinator
     init --> entity_glue
+    forecast_adjust -.->|"reverse transform, ADR-003 §2b/§3"| yield_correction
 ```
 
 - **`providers/`** (`discovery.py`, `normalize.py`, `base.py`) — pure-ish:
@@ -99,8 +100,12 @@ flowchart BT
   source's native resolution (hourly/half-hourly/5-minute) across the
   5-minute slot grid.
 - **`yield_correction.py`** — pure logic: optional per-string clipping
-  exclusion + temperature derating correction, no-op if not configured;
-  see ADR-003.
+  exclusion + temperature derating correction, no-op if not configured.
+  Used at two points in the pipeline, not only the one upward edge above:
+  `regression/` calls it forward to prepare training data, and
+  `forecast_adjust.py` calls back into it in reverse (the dashed edge
+  above) to finish a prediction — see ADR-003, especially §3's diagram
+  for the detailed view of this module alone.
 - **`regression/`** (`base.py`, `kernel.py`, `linear.py`, `wls2.py`,
   `wls3.py`) — pure logic: pluggable per-string, per-5-minute-slot
   regression strategy — linear/kernel/wls2/wls3, fitting actual yield as
