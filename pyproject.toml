@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache 2.0" }
 keywords = ["solar", "pv", "forecast", "shading", "home-assistant"]
+dependencies = [
+  "numpy>=1.26.0",
+]
 classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",

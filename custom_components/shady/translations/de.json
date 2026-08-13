@@ -5,7 +5,7 @@
     "step": {
       "user": {
         "title": "Shady konfigurieren",
-        "description": "Platzhalter – Config-Flow-Felder folgen aus dem Brainstorming (z.B. Forecast-Quelle, Standort, Horizontprofil).",
+        "description": "Platzhalter – Config-Flow-Felder gemäß ADR-001 §6 (z.B. Baseline-Kandidat, Trainingsfenster, Regressionsmethode).",
         "data": {}
       }
     },

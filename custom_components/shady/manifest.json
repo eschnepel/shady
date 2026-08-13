@@ -5,7 +5,7 @@
   "documentation": "https://github.com/eschnepel/shady",
   "issue_tracker": "https://github.com/eschnepel/shady/issues",
   "codeowners": ["@eschnepel"],
-  "requirements": [],
+  "requirements": ["numpy>=1.26.0"],
   "dependencies": [],
   "after_dependencies": ["recorder"],
   "config_flow": true,

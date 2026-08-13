@@ -287,7 +287,11 @@ volumes here are small (at most a few thousand floats per call, a
 handful of sensors) — a generator would add interface complexity
 (consumers of `get_slot_pool` want a concrete list to hand to `numpy`/the
 fit routines anyway, ADR-001 §2) for no real memory or latency benefit at
-this scale.
+this scale. *(Amended by ADR-008 §2: the full-sweep consumer now uses a
+dedicated `numpy`-array-returning accessor, `get_regression_pools`,
+instead of converting `get_slot_pool`'s lists itself — see ADR-008 for
+the rationale and the accessor's shape. `get_slot_pool` itself is
+unchanged.)*
 
 `sensor_ids` always accepts a **list**, even for a single sensor (a
 one-element list) — the common real callers (ADR-005's cross-string

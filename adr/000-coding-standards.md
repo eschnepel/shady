@@ -63,10 +63,14 @@ ignore[misc]`), and `untyped-decorator` errors are attached to the
 `@callback` line itself, not the `def` line below it — mypy's reported line
 number is authoritative and should never be guessed at.
 
-Every module in `regression/`, and `forecast_adjust.py`
-have zero Home Assistant imports and are held to the full, unsuppressed
-strict standard — they are pure, framework-independent Python and are
-tested as such (see §6).
+Every module in `providers/normalize.py`, `yield_correction.py`,
+`regression/`, `forecast_adjust.py`, `aggregation.py`, and `cache.py` has
+zero Home Assistant imports and is held to the full, unsuppressed strict
+standard — they are pure, framework-independent Python and are tested as
+such (see §6). This list is deliberately kept identical to §6's — a module
+belongs to this tier if and only if it is also in the zero-mocking test
+tier; the two lists describe the same boundary from two different angles
+and must be updated together whenever a new module is added to either.
 
 ### 3 — Module boundaries and dependency direction
 
@@ -79,7 +83,7 @@ flowchart BT
     aggregation["aggregation.py"]
     cache["cache.py"]
     coordinator["coordinator.py"]
-    entity_glue["sensor.py / config_flow.py / switch.py"]
+    entity_glue["sensor.py / config_flow.py / switch.py / button.py"]
     init["__init__.py"]
 
     yield_correction --> providers
@@ -124,16 +128,20 @@ flowchart BT
   calls the pure layer including `cache.py`, decides which cache
   instances get restart-persisted, pushes results to sensors — the only
   module that imports `cache.py`.
-- **`sensor.py` / `config_flow.py` / `switch.py`** — HA entity glue.
+- **`sensor.py` / `config_flow.py` / `switch.py` / `button.py`** — HA
+  entity glue. `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1);
+  `button.py` is `ShadyRecalculateButton` (ADR-002 §4).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 There is deliberately no `sun_geometry.py`: the regression predictor is
 the raw forecast value itself (ADR-001 §1), fit per 5-minute slot, and no
 module in the architecture needs astronomical calculations.
 
-Dependencies point upward only. `yield_correction.py`,
-`regression/`, and `forecast_adjust.py` never import from any HA-facing
-module, and never import `homeassistant.*` directly. `providers/` is the one exception: it
+Dependencies point upward only. `providers/normalize.py`,
+`yield_correction.py`, `regression/`, `forecast_adjust.py`,
+`aggregation.py`, and `cache.py` never import from any HA-facing module,
+and never import `homeassistant.*` directly. `providers/discovery.py` is
+the one exception within `providers/`: it
 necessarily reads `hass.states`/`hass.config_entries` to discover and read
 other integrations' entities, but is still isolated from `coordinator.py`'s
 orchestration concerns and never touches the recorder or writes state. This
@@ -181,12 +189,12 @@ baseline.
 
 ### 6 — Testing philosophy
 
-- Every module in `regression/`, `providers/normalize.py`,
-  `forecast_adjust.py`, and `cache.py` are unit-tested with **zero
-  mocking** — no `unittest.mock`, no fake `hass` object. Because they have
-  no Home Assistant dependency, tests call the real functions with real
-  dataclass instances and assert on real return values. This is only
-  possible
+- Every module in `providers/normalize.py`, `yield_correction.py`,
+  `regression/`, `forecast_adjust.py`, `aggregation.py`, and `cache.py`
+  is unit-tested with **zero mocking** — no `unittest.mock`, no fake
+  `hass` object. Because they have no Home Assistant dependency, tests
+  call the real functions with real dataclass instances and assert on
+  real return values. This is only possible
   *because* of the module boundary in §3; it is the practical payoff of
   that design choice. `providers/discovery.py` is the one exception — it
   reads `hass.states` by design (ADR-001 §5) and is tested against a real

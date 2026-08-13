@@ -5,7 +5,7 @@
     "step": {
       "user": {
         "title": "Configure Shady",
-        "description": "Placeholder – config flow fields to be defined during brainstorming (e.g. forecast source, location, horizon profile).",
+        "description": "Placeholder – config flow fields to be defined per ADR-001 §6 (e.g. baseline candidate, training window, regression method).",
         "data": {}
       }
     },
