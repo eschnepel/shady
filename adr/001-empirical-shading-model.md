@@ -2,6 +2,12 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
+**Amended:** 2026-07-05 — §2/§2a updated to cross-reference ADR-004 and
+ADR-006 once accepted. **2026-08-13** — §3d updated to reference
+ADR-007 and ADR-008. **2026-08-14** — split: baseline-forecast sourcing
+(formerly §5) and the config flow shape (formerly §6) moved out to
+ADR-009 and ADR-010; no behavioral change — see the Revision note at
+the end of this document.
 
 ---
 
@@ -24,9 +30,12 @@ brainstorming for two reasons:
 
 This ADR replaces the horizon-profile approach with a **self-calibrating,
 empirical model** that learns the shading pattern directly from recorder
-history, and defines the supporting architecture: how the baseline
-(unshaded) forecast is sourced, how the regression works, and what the
-config flow needs to collect as a result.
+history, and defines the regression model itself: the predictor,
+fitting strategy, per-string/per-slot granularity, and rolling training
+window. Baseline (unshaded) forecast sourcing and the config flow shape
+that ties this model together with ADR-003 and ADR-006 are split out
+into ADR-009 and ADR-010 respectively (originally §5 and §6 of this
+ADR).
 
 ---
 
@@ -66,7 +75,7 @@ use `FC` values from two different points in time, sourced two different
 ways:
 
 - **Training-time `FC`** — the string's raw `FC` *history* (via
-  `providers/`, ADR-001 §5, and the recorder), read for every historical
+  `providers/`, ADR-009, and the recorder), read for every historical
   sample in a slot's pool (§3a/§3b). Paired with that same sample's
   (clipped-and-normalized, per ADR-003 §1/§2) actual yield, this is what
   `fit(samples)` below trains on.
@@ -83,7 +92,7 @@ rolling window), with every sample weighted by `magnitude_weight_i`
 (downweighting near-zero-forecast samples, e.g. sunrise/sunset, for the
 reason given below) and by the time-proximity weight from §3b. *How*
 `f` is fit is a **pluggable strategy**, chosen once by the user for the
-whole integration (all strings share the same method; see §6), not
+whole integration (all strings share the same method; see ADR-010), not
 auto-selected and not configurable per string. Four strategies are
 supported, behind a shared `regression/base.py` protocol (`fit(samples)
 -> FittedModel`, `predict(fc) -> (adjusted_forecast, confidence)`):
@@ -154,23 +163,13 @@ clamp applied to this same output — see ADR-003 §1a for why this must
 apply to the corrected output too, not just to training.
 
 **Ordering relative to ADR-006.** This clamp is the *final* step of the
-per-slot pipeline, applied once, after ADR-006's correction (§1) has
-already run on the raw (unclamped) value — whatever shape that takes for
-the currently-configured state: under Ramping (ADR-006 §1a), a single
-ramped-and-clamped-ratio multiply; under Blending (ADR-006 §1b), two
-independently-computed sides (old and new) crossfaded together; under
-Disabled, no correction at all, the value passing through unchanged.
-Either correction's own ratio is itself separately clamped to
-`[1-cutoff, 1+cutoff]` in ADR-006 §2 — a different, smaller clamp
-bounding the *multiplier*, not the *output*. Running this output clamp
-any earlier would not guarantee the *final* value respects the bound: a
-Blending crossfade's two sides can carry different `FC` bounds, and the
-intraday correction can itself push a value that was fine beforehand back
-above or below the limit (e.g. a >1 ratio boosting an already near-limit
-prediction). Clamping only once, last, after everything else has already
-been applied, is what actually guarantees the number Shady outputs never
-violates a physical bound, regardless of which state ADR-006's switch is
-currently in.
+per-slot pipeline, applied exactly once, after ADR-006's correction (§1)
+has already run on the raw (unclamped) value — whatever shape that takes
+for the currently-configured state (Ramping, Blending, or Disabled). See
+ADR-006 §1b for the full ordering rationale — including why a single
+clamp applied last, rather than clamping either side of a Blending
+crossfade separately, is what actually guarantees the output never
+violates a physical bound.
 
 Regardless of method, `magnitude_weight_i` downweights samples where
 `FC_i` is near zero, because a near-zero forecast slot (sunrise/sunset,
@@ -223,8 +222,8 @@ not one global factor for the whole system. A single global factor would
 average away exactly the signal Shady exists to detect: shading that only
 affects part of the array (e.g. the east string is behind a tree, the west
 string is not). Each string is configured as a `(baseline_series,
-actual_yield_entity)` pair (see §5), and gets its own fitted model, its own
-confidence, and its own adjusted-forecast output sensor.
+actual_yield_entity)` pair (see ADR-009), and gets its own fitted model,
+its own confidence, and its own adjusted-forecast output sensor.
 
 ### 3a — Slot partitioning: one model per 5-minute-of-day slot
 
@@ -244,9 +243,9 @@ publish hourly values, others half-hourly; Shady's own slot grid is always
 published value as its `FC_i` — e.g. an hourly provider's `10:00` value is
 `FC_i` for the slots `10:00`, `10:05`, …, `10:55` alike; a half-hourly
 provider's value covers only `10:00`–`10:25` before the next published
-value takes over. This is a property of `providers/normalize.py` (ADR-001
-§5) — it broadcasts each published value across the 5-minute slots it
-covers — and is transparent to `regression/` and `forecast_adjust.py`,
+value takes over. This is a property of `providers/normalize.py` (ADR-009) — it
+broadcasts each published value across the 5-minute slots it covers —
+and is transparent to `regression/` and `forecast_adjust.py`,
 which only ever see one `FC_i` per slot regardless of the source's native
 granularity. Slots that are consistently near-zero in both `FC` and `PV`
 throughout the window (night) are inferred directly from that data — via
@@ -258,7 +257,7 @@ natural consequence, with no separate "is it night" check needed.
 This is chosen over one continuous per-string model for three reasons:
 
 - **It matches the shape of the problem.** Any baseline forecast is
-  already delivered as discrete per-slot values (§5), and the recorder
+  already delivered as discrete per-slot values (ADR-009), and the recorder
   statistics Shady reads are natively 5-minute-sliced (Effy
   ADR-003). Slot-partitioned models mean producing an adjusted forecast is
   always "look up this slot's model and evaluate it" — no per-query
@@ -313,7 +312,7 @@ This was chosen over output-side smoothing (e.g. a moving average over the
 
 The temporal smoothing radius is a **global** setting (like the regression
 method in §2 — one value for the whole integration, not per string or per
-slot), exposed in the config flow (§6) as "smoothing radius in slots",
+slot), exposed in the config flow (ADR-010) as "smoothing radius in slots",
 defaulting to `1` (±5 minutes). A radius of `0` disables temporal
 smoothing entirely, reproducing the strictly-independent-slots behavior
 originally described in §3a.
@@ -365,7 +364,7 @@ neighbor_median = median(PV_i / FC_i for i in neighbor_series)
 center_median   = median(PV_i / FC_i for i in center_series)
 deviation = |neighbor_median - center_median| / center_median
 
-if deviation > neighbor_fitting_cutoff:  # default 0.25, global, §6
+if deviation > neighbor_fitting_cutoff:  # default 0.25, global, ADR-010
     exclude the entire neighbor series from this slot's pool
 ```
 
@@ -381,7 +380,7 @@ systematically different, which is the actual shading-regime signal.
 and the various clamps throughout this design favor robust statistics —
 a handful of weather-driven outlier days should not by themselves trigger
 an exclusion. `neighbor_fitting_cutoff` is a **global**, config-flow-
-exposed setting (§6, default `25%`), user-tunable from the start, since
+exposed setting (ADR-010, default `25%`), user-tunable from the start, since
 how much regime difference counts as "a real boundary" plausibly varies
 by installation (canopy density, obstruction sharpness) in a way a single
 fixed, one-size-fits-all threshold could not capture.
@@ -474,160 +473,12 @@ having more than 28 to work with even at steady state — an acceptable
 trade-off given the cold-start behavior described in §2 and the small-`n`
 fitting cost already accepted in §3a.
 
-### 5 — Baseline (unshaded forecast) sourcing: generic attribute discovery
+### 5, 6 — Baseline sourcing and config flow: see ADR-009, ADR-010
 
-Rather than hardcoding adapters for specific integrations (Forecast.Solar,
-Solcast, …), `providers/discovery.py` scans HA entities for
-**attribute shapes that look like a forecast series**, and lets the user
-confirm the match — it never applies a detected baseline silently.
-
-Two entity domains are scanned, covering two different kinds of baseline
-signal:
-
-- **`sensor.*` entities** — for a dedicated PV-forecast integration's
-  output. Attribute shapes recognized:
-  - dict of `{timestamp: number}` (e.g. Forecast.Solar's `wh_period`)
-  - list of dicts with a timestamp-like key and a numeric value-like key
-    (e.g. Solcast's `detailedForecast`)
-- **`weather.*` entities** — for users without a dedicated PV-forecast
-  integration. Two attribute shapes are recognized here, both proxy
-  baselines ("expected yield under a clear/predicted sky") rather than a
-  direct watt/Wh series, and both normalized accordingly before entering
-  the regression:
-  - sunshine-duration-like values in a weather integration's forecast
-    attribute (e.g. `sunshine_duration`, common in DWD/Open-Meteo-based
-    weather integrations) — already a *positive* clear-sky proxy (more
-    sunshine ⇒ more expected yield), so it is used directly, only rescaled
-    to the baseline's expected numeric range.
-  - cloud-coverage-like values (e.g. `cloud_coverage`,
-    `cloud_coverage_total`, common in Met.no/OpenWeatherMap-based weather
-    integrations) — the *inverse* of a clear-sky proxy (more cloud ⇒ less
-    expected yield). `providers/normalize.py` inverts it (e.g.
-    `100 - cloud_coverage` for a percentage-scaled source) before it is
-    treated as a baseline value; everything downstream of normalization
-    (`regression/`, the whole rest of this ADR) only ever sees the
-    already-inverted, positive-going series and has no notion that the
-    raw source was a coverage percentage rather than a sunshine duration.
-
-`providers/normalize.py` maps both `sensor.*` shapes and both `weather.*`
-shapes above, via a small table of known key-name aliases (timestamp keys:
-`datetime`, `start`, `period_start`, `time`; value keys: `wh`,
-`pv_estimate`, `power`, `value`, `energy`, `sunshine_duration`,
-`cloud_coverage`), onto one canonical `list[tuple[datetime, float]]`
-series that any strategy in `regression/` and `forecast_adjust.py` consume
-without caring which integration, domain, or (for the weather case)
-polarity the source data came in.
-
-Candidates are **scored, not auto-selected**: an attribute name containing
-"forecast"/"pv"/"sunshine"/"cloud", parseable ISO8601 timestamps, and
-plausible-unit numeric values all raise the score; the config flow (see
-§6) presents the ranked candidates and always offers a manual
-entity+attribute fallback, since third-party attribute shapes are not a
-versioned contract (the same caution Effy's ADR-003 raises about recorder
-internals applies here to other integrations' attributes). A candidate
-matched on `cloud_coverage` is labeled distinctly from one matched on
-`sunshine_duration` in the presented list (e.g. "cloud coverage (inverted)"
-vs. "sunshine duration") so a person confirming the match can tell which
-normalization was applied, rather than the two proxy kinds being
-presented identically.
-
-`providers/` is explicitly the one module allowed to read `hass.states`
-directly among the "pure-ish" layer (see updated diagram in ADR-000 §3) —
-it still never writes state and never reaches into another integration's
-internal coordinator or `hass.data`, only its public entity
-state/attributes.
-
-**Global default, per-string override.** The discovery-and-scoring
-process above runs once to establish a **global default** baseline
-candidate, set up before any string is configured (§6) — the common case
-being one PV-forecast service for the whole installation. Any individual
-string can still override this with its own baseline candidate (e.g. a
-per-plane Solcast site for that specific string's orientation) if
-configured; if it does not, it uses the global default. This mirrors the
-same global-with-override shape already used for the temperature source
-(ADR-003 §2a).
-
-### 6 — Config flow shape
-
-Given §3 and §5, the config flow establishes global settings **first**,
-before any string exists — a person configures "how Shady should behave"
-once, then adds however many strings share that behavior, rather than
-being asked global questions only after already committing to a first
-string:
-
-```
-Step "settings" (first):
-  - Global default baseline candidate (dropdown, ranked by
-    providers/discovery.py per §5 — covering both `sensor.*` PV-forecast
-    candidates and `weather.*` sunshine-duration/cloud-coverage proxy
-    candidates alike; "None of these" → manual entity + attribute path
-    entry) — used by any string that does not override it
-  - "Does this baseline already account for temperature effects itself?"
-    (boolean, default false — ADR-003 §2c; presented right alongside the
-    baseline candidate above, since it is a property of *that* choice)
-  - Training window in days (default 28)
-  - Regression method: `wls2` (default) / `linear` / `kernel` / `wls3`
-    (global — applies to every configured string, see §2; chosen manually,
-    no auto-selection based on data volume)
-  - Smoothing radius in slots (default 1, global; see §3b — `0` disables
-    temporal smoothing)
-  - Neighbor-fitting cut-off (default 25%, global; see §3c/§3d — the
-    maximum median-ratio deviation a neighbor series may have before
-    being excluded from a slot's training pool; the sentinel `-1%`
-    switches to always-rescale instead of exclude, per §3d; not the same
-    field as ADR-006's intraday-correction cut-off, despite the similar
-    name)
-  - Default temperature source (optional; entity selector covering
-    sensor.* with device_class temperature and weather.* entities;
-    leave empty to disable derating correction by default for all
-    strings — ADR-003 §2a)
-  - Intraday deviation-correction mode: off / ramping / blending
-    (default off; see ADR-006 §1)
-  - Intraday deviation-correction cut-off (default 10%, applies whenever
-    the mode above is not "off"; see ADR-006 §2)
-  - Intraday deviation-correction rolling window, in slots (default 24 =
-    2h; see ADR-006 §3)
-  - Intraday deviation-correction ramp/blend duration, in slots (default
-    12 = 1h; see ADR-006 §3)
-
-Step "add_string" (repeated):
-  - Name (free text, e.g. "Dach Süd")
-  - Baseline candidate override (optional; same dropdown as the global
-    default above; leave empty to use the global default set in
-    "settings"). A string that *does* override is, by definition,
-    treated as temperature-aware (ADR-003 §2c) — no separate per-string
-    flag is offered, on the assumption that the realistic reason to
-    override per string at all is a per-plane setup on a dedicated
-    PV-forecast service (e.g. Solcast configured with one site per
-    string), which is exactly the kind of provider ADR-003 §2c's flag
-    is about in the first place.
-  - Actual-yield entity (standard HA entity selector, sensor domain,
-    power or energy device_class)
-  - "Configure advanced corrections (clipping/derating) for this string?"
-    (boolean, default off) → yes: "add_string_advanced", no:
-    "add_another"
-
-Step "add_string_advanced" (optional, per string):
-  - Converter/inverter AC power limit (optional number, W; leave empty
-    to disable clipping exclusion for this string — ADR-003 §1)
-  - Temperature source override (optional; leave empty to use the global
-    default; "none" disables derating for this string specifically even
-    if a global default is set — ADR-003 §2a)
-  - Temperature coefficient in %/°C (only shown/used if a temperature
-    source — global default or override — applies to this string;
-    default −0.4 — ADR-003 §2)
-
-Step "add_another":
-  - "Add another string?" (boolean) → back to "add_string" or finish
-```
-
-Note there is no latitude/longitude/elevation field: the regression needs
-no astronomical calculation (§1), so location is not collected anywhere
-in Shady's config flow.
-
-The options flow mirrors this to allow adding/editing strings and changing
-any global setting after initial setup, following the same pattern as
-Effy's `EffyOptionsFlow`.
+This ADR originally also specified baseline (unshaded) forecast sourcing
+and the config flow shape tying this model together with ADR-003 and
+ADR-006. Both were split out, on 2026-08-14, into their own documents —
+see the Revision note at the end of this ADR for why.
 
 ---
 
@@ -637,9 +488,6 @@ Effy's `EffyOptionsFlow`.
   inferred from data the user already has (forecast + recorder history),
   which is both easier to set up and self-correcting if the obstruction
   changes (tree grows, is trimmed, etc.) via the rolling window in §4.
-- **Pro:** The provider-discovery approach (§5) means Shady works with
-  whatever PV-forecast or weather integration the user already has,
-  without per-integration adapter code to maintain.
 - **Pro:** `wls2` (§2, default) has a plausible physical justification
   (diffuse vs. direct light) for capturing shading's own curvature, not
   just clipping's — `linear` (the method the original proof-of-concept
@@ -664,20 +512,10 @@ Effy's `EffyOptionsFlow`.
   alternative (`-1%` sentinel) gives a second option for installations
   that would rather keep every neighbor's data, corrected, than lose it
   outright.
-- **Pro:** Config flow ordering (§6) establishes every global setting
-  before a person configures their first string, so string-specific
-  questions (baseline override, converter limit, temperature override)
-  are answered with the relevant global defaults already visible, rather
-  than the reverse.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough per-slot samples
   accumulate — expected to take days to a few weeks.
-- **Con:** Attribute-shape discovery (§5) is inherently heuristic and reads
-  data across an unversioned surface (other integrations' attributes).
-  Mitigated by always requiring user confirmation and offering a manual
-  fallback, but a future HA core or integration update could still change
-  an attribute's shape without notice, same caveat as Effy's ADR-003.
 - **Con:** A 28-day rolling default (§4) means slots (§3a) that only ever
   see a narrow range of forecast values across the window (e.g. a slot
   that's rarely anything but heavily overcast in a given season) may have
@@ -693,9 +531,23 @@ Effy's `EffyOptionsFlow`.
   precisely because how sharp a "real" transition is expected to be varies
   by installation.
 - **Con:** §3c's default 25% deviation cut-off, while now config-flow
-  exposed (§6) rather than fixed, still ships with a default that is a
+  exposed (ADR-010) rather than fixed, still ships with a default that is a
   reasonable starting point, not a value validated against real
   installations yet. Set too low, it would exclude neighbors over
   ordinary weather variance, quietly shrinking the effective smoothing
   radius most of the time; set too high, it would let a genuine regime
   difference through.
+
+---
+
+## Revision note
+
+**2026-08-14 split:** this ADR originally also specified baseline
+(unshaded) forecast sourcing (formerly §5) and the config flow shape
+(formerly §6). Both were extracted into their own documents — ADR-009
+and ADR-010 respectively — because they are separable concerns from the
+regression model itself, and were already being referenced externally
+(ADR-003, ADR-004, ADR-005, ADR-006) as if they were independent
+documents. This was a pure documentation reorganization: no decision,
+default, or behavior changed. All cross-references throughout the ADR
+set were updated to point at the new documents directly.

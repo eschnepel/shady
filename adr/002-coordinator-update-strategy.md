@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
+**Amended:** 2026-07-05 — §3 and §4 updated to reflect the introduction
+of `cache.py` (ADR-007) and to cross-reference ADR-005's whole-day
+aggregate sensor.
 
 ---
 
@@ -90,7 +93,7 @@ happens:
 1. **A model recalibration completes** (§1, from either trigger) — the
    newly-fitted factors are applied to whatever baseline data is currently
    cached.
-2. **A configured baseline entity (ADR-001 §5) publishes new today/
+2. **A configured baseline entity (ADR-009) publishes new today/
    tomorrow data** — the coordinator has a listener on every string's
    baseline entity; each update re-applies the *current* (last-fitted, not
    necessarily just-refit) per-slot models to the new baseline series and

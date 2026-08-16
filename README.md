@@ -102,22 +102,20 @@ dependency diagram of the processing steps (string and aggregate level
 combined).
 
 See [`adr/000-coding-standards.md`](adr/000-coding-standards.md) for the
-module boundaries, [`adr/001-empirical-shading-model.md`](adr/001-empirical-shading-model.md)
-for the regression model, provider discovery, and the config flow,
-[`adr/002-coordinator-update-strategy.md`](adr/002-coordinator-update-strategy.md)
-for the recalibration and forecast-update triggers,
-[`adr/003-yield-corrections-clipping-derating.md`](adr/003-yield-corrections-clipping-derating.md)
-for the optional clipping/derating corrections,
-[`adr/004-diagnostics-switch-and-scatter-sensor.md`](adr/004-diagnostics-switch-and-scatter-sensor.md)
-for the optional diagnostics switch and the ApexCharts scatter-chart
-sensor, and
-[`adr/005-aggregate-sum-and-integral-sensors.md`](adr/005-aggregate-sum-and-integral-sensors.md)
-for the sum and integral sensors across all strings, and
-[`adr/006-intraday-deviation-correction.md`](adr/006-intraday-deviation-correction.md)
-for the optional remaining-day correction based on today's
-actual-vs-forecast deviation, and
-[`adr/007-coordinator-cache-split.md`](adr/007-coordinator-cache-split.md)
-for splitting `coordinator.py` into orchestration and a dedicated, pure
-`cache.py` module for all cached state.
+module boundaries.
 
-Further ADRs (008 onward) will be added as brainstorming continues.
+| ADR | Title |
+|---|---|
+| [000](adr/000-coding-standards.md) | Code Quality Standards, Programming Style & Core Concepts |
+| [001](adr/001-empirical-shading-model.md) | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, smoothing, rolling window |
+| [002](adr/002-coordinator-update-strategy.md) | Coordinator Update Strategy: Recalibration vs. Forecast Recompute |
+| [003](adr/003-yield-corrections-clipping-derating.md) | Optional Per-String Yield Corrections: Clipping and Derating |
+| [004](adr/004-diagnostics-switch-and-scatter-sensor.md) | Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed) |
+| [005](adr/005-aggregate-sum-and-integral-sensors.md) | Cross-String Aggregate Sensors: Sums and Daily Integrals |
+| [006](adr/006-intraday-deviation-correction.md) | Intraday Deviation Correction for the Remaining-Today Forecast |
+| [007](adr/007-coordinator-cache-split.md) | Splitting the Coordinator: A Dedicated Cache Module |
+| [008](adr/008-numpy-backend-and-cache-array-accessor.md) | Numeric Backend for `regression/`, and a Batched Cache Accessor |
+| [009](adr/009-baseline-forecast-sourcing.md) | Baseline (Unshaded) Forecast Sourcing: Generic Attribute Discovery *(split from ADR-001 §5)* |
+| [010](adr/010-config-flow-shape.md) | Config Flow Shape *(split from ADR-001 §6)* |
+
+Further ADRs (011 onward) will be added as brainstorming continues.

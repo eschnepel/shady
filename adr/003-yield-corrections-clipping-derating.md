@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
+**Amended:** 2026-07-05 — §3 (`forecast_adjust.py`'s described
+behavior) updated to reflect ADR-006's intraday deviation correction
+once accepted.
 
 ---
 
@@ -123,7 +126,7 @@ types are supported, in order of accuracy:
 | Global ambient temperature sensor (one sensor, shared across strings) | Good | Uplifted to an estimated cell temperature first (below) |
 | Weather-integration current temperature (a `weather.*` entity's current condition, not its forecast) | Weakest, but still better than no correction at all | Same uplift as the ambient case |
 
-Unlike the baseline-discovery heuristics in ADR-001 §5, no attribute-shape
+Unlike the baseline-discovery heuristics in ADR-009, no attribute-shape
 scoring is needed here: Home Assistant's `device_class: temperature` on
 `sensor.*` entities, and the `temperature` attribute on `weather.*`
 entities, are stable, versioned conventions — a plain entity selector
@@ -215,7 +218,7 @@ are unaware of.
 
 §2/§2a/§2b implicitly assumed every baseline is a "raw" signal with no
 temperature modeling of its own — true for a sunshine-duration- or
-cloud-coverage-derived weather fallback alike (ADR-001 §5; neither proxy
+cloud-coverage-derived weather fallback alike (ADR-009; neither proxy
 has any notion of module temperature, only expected irradiance), but
 **not** true for a dedicated PV-forecast service: Solcast, in particular,
 already applies its own temperature-coefficient modeling internally
@@ -249,13 +252,13 @@ in place) is a smaller error than silently double-counting one. A user
 who knows their specific provider already models temperature internally
 (Solcast being the concrete example motivating this) sets the flag to
 `true` explicitly; Shady has no reliable way to infer this on its own,
-since ADR-001 §5 deliberately discovers baselines by attribute shape
+since ADR-009 deliberately discovers baselines by attribute shape
 rather than by which integration or service published them, and
 attribute shape alone does not reveal whether temperature was already
 factored in upstream.
 
 **A per-string baseline override is temperature-aware by definition, no
-separate per-string flag.** ADR-001 §5/§6 let an individual string
+separate per-string flag.** ADR-009/ADR-010 let an individual string
 override the global default baseline candidate with its own (e.g. a
 per-plane Solcast site for that string's specific orientation). Rather
 than asking the same "does this provider model temperature?" question a
@@ -316,14 +319,14 @@ function returns the input series unchanged), so a string with no
 inverter limit or temperature sensor configured behaves exactly as
 specified in ADR-001, with zero overhead.
 
-### 4 — Config flow: see ADR-001 §6
+### 4 — Config flow: see ADR-010
 
-ADR-001 §6 is the single, authoritative config-flow specification —
+ADR-010 is the single, authoritative config-flow specification —
 including the fields this ADR introduces (default temperature source and
 the §2c provider-temperature flag, both in the global "settings" step;
 converter/inverter limit and temperature-source override/coefficient in
 the per-string "add_string_advanced" step). This ADR does not duplicate
-that listing; see ADR-001 §6 directly, and §2c above for the per-string
+that listing; see ADR-010 directly, and §2c above for the per-string
 override rule specifically.
 
 ---
@@ -402,7 +405,7 @@ override rule specifically.
 - **Con:** §2c's global flag reflects the *default* FC data provider,
   which is no longer a hard "exactly one provider per config entry"
   limitation now that a string can override its baseline candidate
-  (ADR-001 §5/§6) — mixing, say, a weather-based global default with one
+  (ADR-009/ADR-010) — mixing, say, a weather-based global default with one
   Solcast-sourced string is representable: the override is automatically
   treated as temperature-aware regardless of the global flag's value.
   The remaining gap is the *other* direction: a string that overrides

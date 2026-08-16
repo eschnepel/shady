@@ -26,7 +26,7 @@ entry, not per string):
 ### 1 — `ShadyPvSumSensor` — current actual yield, summed across strings
 
 Sums the **current state** of every configured string's actual-yield
-entity (ADR-001 §6). Unlike every other sensor in this ADR, this one has
+entity (ADR-010). Unlike every other sensor in this ADR, this one has
 nothing to do with the regression models or the coordinator's fit/recompute
 cycle (ADR-002) — it is a plain state-tracking aggregate, updating
 whenever *any* tracked actual-yield entity changes, independent of

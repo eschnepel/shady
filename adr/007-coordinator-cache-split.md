@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted
+**Amended:** 2026-08-13 — §1e partially superseded by ADR-008 §2 (see
+the inline amendment note at the end of §1e for specifics; `get_slot_pool`
+itself is unaffected).
 
 ---
 

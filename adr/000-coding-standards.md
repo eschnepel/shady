@@ -2,6 +2,11 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
+**Amended:** 2026-07-05 — §3 (module diagram/prose) and §5 updated to
+reflect `cache.py` (ADR-007) and `aggregation.py` (ADR-005) once
+accepted, and to cross-reference `ShadyDiagnosticsSwitch` (ADR-004 §1).
+**2026-08-14** — §3 (`providers/`, `config_flow.py` pointers) updated
+for ADR-001's split into ADR-009/ADR-010.
 
 ---
 
@@ -99,7 +104,7 @@ flowchart BT
 
 - **`providers/`** (`discovery.py`, `normalize.py`, `base.py`) — pure-ish:
   discovers + normalizes forecast/sunshine/cloud-coverage baseline series
-  from whatever HA entity exposes them; see ADR-001. Reads `hass.states`
+  from whatever HA entity exposes them; see ADR-009. Reads `hass.states`
   only — no writes, no coordinator/internal API access. Also broadcasts a
   source's native resolution (hourly/half-hourly/5-minute) across the
   5-minute slot grid.
@@ -129,8 +134,9 @@ flowchart BT
   instances get restart-persisted, pushes results to sensors — the only
   module that imports `cache.py`.
 - **`sensor.py` / `config_flow.py` / `switch.py` / `button.py`** — HA
-  entity glue. `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1);
-  `button.py` is `ShadyRecalculateButton` (ADR-002 §4).
+  entity glue. `config_flow.py` implements the flow shape in ADR-010;
+  `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1); `button.py` is
+  `ShadyRecalculateButton` (ADR-002 §4).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 There is deliberately no `sun_geometry.py`: the regression predictor is
@@ -197,7 +203,7 @@ baseline.
   real return values. This is only possible
   *because* of the module boundary in §3; it is the practical payoff of
   that design choice. `providers/discovery.py` is the one exception — it
-  reads `hass.states` by design (ADR-001 §5) and is tested against a real
+  reads `hass.states` by design (ADR-009) and is tested against a real
   `hass` fixture instead.
 - Tests are loaded via direct file-path import
   (`importlib.util.spec_from_file_location`) rather than package import,

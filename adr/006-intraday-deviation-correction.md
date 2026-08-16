@@ -2,6 +2,10 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted
+**Revision note:** an earlier-draft mechanism (hard minimum-sample gate,
+separate provider-update blend) was replaced in place, before
+acceptance, by the ramp/blend design below — see the Revision note at
+the end of this document for what changed and why.
 
 ---
 
@@ -53,9 +57,9 @@ one mechanism with three states:
   computed or retained.
 - **Ramping.** The correction factor ramps in smoothly starting at the
   first active slot of the day (§1a), rather than gating on a fixed
-  sample count as earlier versions of this design did. A provider update
-  discards the rolling window and restarts the same ramp from scratch,
-  keyed to the newly-published `FC` (§1b).
+  sample count (see the revision note at the end of this ADR). A
+  provider update discards the rolling window and restarts the same
+  ramp from scratch, keyed to the newly-published `FC` (§1b).
 - **Blending.** Identical to Ramping for a string's very first activation
   of the day — there is nothing yet to blend against (§1a). On every
   subsequent provider update, instead of discarding the pre-update state
@@ -114,10 +118,7 @@ needing to detect "the snow melted" as an event — and, per the Context
 above, it does so on each string's own timeline, not a blended one.
 
 **The correction factor ramps in, rather than switching on at a
-threshold.** Earlier designs for this ADR gated the correction behind a
-hard minimum-sample-size requirement (at least 12 active slots within the
-window) before trusting `ratio_string` at all. That gate is removed
-entirely: instead, a weight `w` ramps linearly from `0` to `1` over
+threshold.** A weight `w` ramps linearly from `0` to `1` over
 **`ramp_slots`** active slots (§3), counted from whichever **reset
 point** currently applies — a string's first active slot of the day, or
 its most recent provider update (§1b) — and the *effective* correction
@@ -134,15 +135,15 @@ corrected_value(t) = fc_value(t) × effective_factor(t)
 §2 otherwise applies continuously), matching how `ratio_string` itself
 only accumulates meaningful energy during active slots. At `w = 0`,
 `effective_factor` is exactly `1` — the plain, uncorrected `FC` value,
-with nothing yet applied — and at `w = 1` it is the full clamped ratio,
-same as this ADR's original always-on-past-the-gate behavior. This
-achieves what the old hard gate was for — right around a reset point,
-when the window may contain only one or two active slots and a computed
-`ratio_string` would be noise more than signal — without a step function:
-a single early sample's *influence* on the displayed value is small
-(scaled by a small `w`), not absent, and grows smoothly as more of the
-window fills with genuine same-day generation. This is a real trade, not
-a strict improvement — see Consequences.
+with nothing yet applied — and at `w = 1` it is the full clamped ratio.
+This achieves what a hard minimum-sample gate would be for — right
+around a reset point, when the window may contain only one or two
+active slots and a computed `ratio_string` would be noise more than
+signal — without a step function: a single early sample's *influence*
+on the displayed value is small (scaled by a small `w`), not absent,
+and grows smoothly as more of the window fills with genuine same-day
+generation. This is a real trade, not a strict improvement — see
+Consequences.
 
 ### 1b — Provider-update transitions: ramping resets, blending crossfades
 
@@ -215,11 +216,12 @@ crossfade restarts rather than resumes — an accepted gap per ADR-007,
 matching this design's existing trade-off for exactly this kind of state.
 
 **Ordering: one formula per side, an optional crossfade, then the output
-clamp, in that order.** §1a's `effective_factor` already folds what
-earlier versions of this design treated as two separate stages — a
-provider-update ramp, then a separate ratio correction — into one
-continuous function of `w`, so Ramping needs only ever evaluate it once
-per slot: `fc_value × effective_factor`, still *unclamped* at this point
+clamp, in that order.** *(This is the canonical statement of the
+clamp-ordering rule; ADR-001 §2 points here rather than restating it.)*
+§1a's `effective_factor` folds the provider-update ramp and the ratio
+correction into one continuous function of `w`, so Ramping needs only
+ever evaluate it once per slot: `fc_value × effective_factor`, still
+*unclamped* at this point
 (after the temperature reverse-transform, ADR-003 §2b, but before ADR-001
 §2's `[0, FC]`/inverter-limit clamp). Blending evaluates it twice — once
 for `old_prediction`, once for `new_prediction`, each independently
@@ -241,44 +243,40 @@ ramp/crossfade a given slot's value currently is.
 
 A single global, config-flow-configurable **cut-off** (a fraction) clamps
 each string's `ratio_string` from §1a to `[1 - cutoff, 1 + cutoff]` before
-it feeds into `effective_factor`. Unlike this ADR's earlier design,
-cutoff no longer doubles as the feature's enable switch — that job now
-belongs entirely to §1's three-state field — so its default changes from
-`0` (a value that only ever made sense as a disguised "off") to **`0.10`**
-(±10%), a real, non-degenerate bound that applies whenever §1's switch is
-not Disabled. A person who turns on Ramping or Blending without touching
-this field gets a correction that is actually allowed to do something,
-rather than one that is silently a no-op until they also remember to
-raise cutoff off of zero.
+it feeds into `effective_factor`. Cutoff does not double as the
+feature's enable switch — that job belongs entirely to §1's three-state
+field — so its default is a real, non-degenerate **`0.10`** (±10%)
+rather than `0` (a value that would only make sense as a disguised
+"off"), and applies whenever §1's switch is not Disabled. A person who
+turns on Ramping or Blending without touching this field gets a
+correction that is actually allowed to do something, rather than one
+that is silently a no-op until they also remember to raise cutoff off
+of zero.
 
 ### 3 — Two config-flow timespans: rolling window and ramp/blend duration
 
 Two further config-flow fields, both counted in **5-minute slots**
 (matching Shady's grid, ADR-001 §3a) rather than a fixed number of hours:
 
-- **`window_slots`** (default `24`, i.e. 2 hours — the length §1a's
-  rolling window always used before this became configurable) — how many
-  trailing slots `pv_energy_window`/`fc_energy_window` (§1a) are
-  accumulated over. Same reasoning as before: a short trailing window
-  lets a string's correction recover on its own from a temporary same-day
-  anomaly (snow melting, a transient sensor fault) as it ages out of the
-  window, without needing to detect the anomaly ending as an event.
-- **`ramp_slots`** (default `12`, i.e. 1 hour — matching both this ADR's
-  earlier 12-slot minimum-sample gate and its earlier 1-hour
-  provider-update blend) — how many active slots the `w` ramp (§1a) takes
-  to go from `0` to `1`, whether ramping in from a string's first active
-  slot of the day or from a provider update under either Ramping or
-  Blending (§1b). One field drives all of these, since they are the same
-  mechanism — a linear ramp from a reset point — applied at different
-  trigger moments, not several durations to reason about separately.
+- **`window_slots`** (default `24`, i.e. 2 hours) — how many trailing
+  slots `pv_energy_window`/`fc_energy_window` (§1a) are accumulated
+  over. A short trailing window lets a string's correction recover on
+  its own from a temporary same-day anomaly (snow melting, a transient
+  sensor fault) as it ages out of the window, without needing to detect
+  the anomaly ending as an event.
+- **`ramp_slots`** (default `12`, i.e. 1 hour) — how many active slots
+  the `w` ramp (§1a) takes to go from `0` to `1`, whether ramping in
+  from a string's first active slot of the day or from a provider
+  update under either Ramping or Blending (§1b). One field drives all
+  of these, since they are the same mechanism — a linear ramp from a
+  reset point — applied at different trigger moments, not several
+  durations to reason about separately.
 
 Both fields live in the same config-flow "settings" step as cutoff, the
-training window, regression method, and smoothing radius (ADR-001 §6).
-Their defaults, together with cutoff's own default, exist to keep the
-ramp/blend duration and window length matching this ADR's previously
-fixed values for anyone who does not touch these fields — what changes
-behavior is solely whether §1's three-state switch is turned on at all,
-and to which state.
+training window, regression method, and smoothing radius (ADR-010).
+What changes behavior is solely whether §1's three-state switch is
+turned on at all, and to which state — the defaults above apply
+whenever it is not Disabled.
 
 ### 4 — Application: per string, per future slot
 
@@ -318,9 +316,8 @@ module needed:
 
 - `intraday_correction_factor(pv_energy_window, fc_energy_window,
   ramp_weight, cutoff) -> float` — §1a's ratio-clamp-and-ramp math in one
-  function, folding what earlier versions of this ADR treated as two
-  separate stages into one. Called once per string under Ramping, and
-  twice per string (once per side) under Blending.
+  function. Called once per string under Ramping, and twice per string
+  (once per side) under Blending.
 - `ramp_weight(active_slots_since_reset, ramp_slots) -> float` — §1a's
   `w(t)`, a tiny pure function shared by both the ramp-in and
   provider-update-restart cases, and by Blending's own `w_blend`.
@@ -341,7 +338,7 @@ restart-persisted (there is no recorder-backed equivalent to read
 instead, since it concerns future values, or a superseded forecast run,
 neither of which exist in history). The three config-flow fields (§1, §2,
 §3) live in the same "settings" step as the training window, regression
-method, and smoothing radius (ADR-001 §6).
+method, and smoothing radius (ADR-010).
 
 ---
 
@@ -360,11 +357,11 @@ method, and smoothing radius (ADR-001 §6).
   correction recover on its own from a temporary same-day anomaly without
   needing to detect the anomaly ending as an event — it simply ages out
   of the window.
-- **Pro:** Replacing the earlier hard minimum-sample-size gate with a
-  smooth ramp (§1a) removes a step function's worth of behavior to
-  explain — trust in the correction now grows continuously from the same
-  reset point that starts the window, rather than snapping from "off" to
-  "on" at a fixed sample count.
+- **Pro:** A smooth ramp (§1a), rather than a hard minimum-sample-size
+  gate, removes a step function's worth of behavior to explain — trust
+  in the correction now grows continuously from the same reset point
+  that starts the window, rather than snapping from "off" to "on" at a
+  fixed sample count.
 - **Pro:** Blending (§1b) removes a real, visible UX problem — a
   dashboard number jumping the instant a weather model refreshes — by
   crossfading rather than switching, while still converging to exactly
@@ -384,13 +381,13 @@ method, and smoothing radius (ADR-001 §6).
   which is not always true. This is a deliberate, simple projection, not
   a weather-aware model — exactly why cutoff exists as a user-tunable
   clamp rather than an unclamped correction.
-- **Con:** Removing the hard minimum-sample-size gate (§1a) means a
+- **Con:** Not using a hard minimum-sample-size gate (§1a) means a
   `ratio_string` computed from a single noisy active slot right after any
   reset point can still influence the displayed value, just weakly (via a
-  small `w`) rather than not at all. This is a real trade against the
-  earlier gate's simplicity, not a strict improvement — "smoothly
-  down-weighted" is not the same guarantee as "excluded until an hour's
-  worth of data exists."
+  small `w`) rather than not at all. This is a real trade against a hard
+  gate's simplicity, not a strict improvement — "smoothly down-weighted"
+  is not the same guarantee as "excluded until an hour's worth of data
+  exists."
 - **Con:** Blending's per-string state (§1b) is strictly more than
   Ramping's: a frozen old-side snapshot must be retained, alongside the
   new side's own ramp counters, for the duration of every crossfade — all
@@ -406,3 +403,21 @@ method, and smoothing radius (ADR-001 §6).
   itself — one more thing to account for when a number looks "off",
   though the added attributes in §4 aim to keep that debuggable without
   needing to consult ADR-004's diagnostic sensor.
+
+---
+
+## Revision note
+
+Pre-acceptance drafts of this ADR gated the correction behind a hard
+minimum-sample-size requirement (at least 12 active slots within the
+window) before trusting `ratio_string` at all, and treated a
+provider-update transition as a separate, ungated ~1-hour blend rather
+than part of the same mechanism as the initial ramp. Both were replaced,
+in place, by §1a's smooth ramp and §1b's unified ordering — one
+continuous function of `w` covering both the first-activation case and
+every later provider update, rather than two separately-gated stages —
+before this ADR was accepted. `ramp_slots`' default (`12`, i.e. 1 hour)
+and `cutoff`'s default (`0.10`) preserve the rough magnitude of those
+earlier fixed values; nothing else about them carries forward, and neither
+default is validated against real installations yet (see the cutoff
+caveat inherited from ADR-001's Consequences).

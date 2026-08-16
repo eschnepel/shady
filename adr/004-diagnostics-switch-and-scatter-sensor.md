@@ -208,42 +208,31 @@ pin having to be re-issued.
 **Every diagnostic sensor's slot-pool series comes from one function,
 `get_pinned_slot_pool` (ADR-007 §1f) — whether currently pinned or
 auto-tracking.** There is no separate today-only call for the
-auto-tracking case: `get_pinned_slot_pool` resolves its own window
-internally, `[pinned_reference − window_days, pinned_reference]` if a
-pin is set to a date no later than today, else `[today − window_days,
-today]` — `window_days` sizing the window the same way either time. A
-pin to a **future** date is folded into that same `[today − window_days,
-today]` case rather than anchored to `pinned_reference`: recalibration
-(ADR-002 §1) never trains any slot's model on data newer than
-yesterday — not even today's own already-elapsed slots, let alone a
-future day, which has no recorded data to train on at all — so there is
-no future-anchored pool for a future pin to resolve to in the first
-place; a future-pinned slot's `"-1"`/`"0"`/`"1"` series show exactly
-what an auto-tracking sensor would already show for that same
-time-of-day, right now (ADR-007 §1f). Whether a given call needs a
-genuine new recorder fetch or is served entirely from cache depends on
-whether that resolved window happens to already be cached, not on
-whether a pin is active. While auto-tracking, or pinned to today or a
-future date, the resolved window is `[today − window_days, today]` —
-exactly what the same day's recalibration already fetched moments
-earlier to fit all 288 slots' models, so the call is served from
-already-validated cache entries with no new recorder query. **A pin to a
-*past* date outside the live window is different: its resolved window
-will typically not already be cached, so the same call does trigger a
-real fetch for the missing range** —
-`cache.py`'s validate-before-read (ADR-007 §1d) handles this the same
-as any other cache miss, on the spot. The one residual limitation is
-data that was already trimmed *before* the pin was set: `cache.trim()`
-(ADR-007 §1a/§1f) only extends its retained floor for a pin that already
-existed at trim time, so a timestamp pinned today whose data a
-*previous* day's trim already discarded cannot be recovered from the
-cache alone — `selected {method}`/`selected actual` still work for such
-a slot regardless, as long as the recorder itself still has that slot's
-raw `FC`/`PV` history, independent of the pool cache's own retained
-window. `selected {method}`/`selected actual` themselves are cheap
-either way, pinned or not: evaluating the four already-fitted models at
-a historical slot's own `FC` value, and reading that slot's own recorded
-`PV`, do not depend on the pool cache at all.
+auto-tracking case. See ADR-007 §1f for exactly how the function
+resolves its own window from `pinned_reference` — including why a pin to
+a **future** date falls back to the same window an auto-tracking sensor
+already uses, since recalibration (ADR-002 §1) never trains on data
+newer than yesterday, so there is no future-anchored pool for a future
+pin to resolve to in the first place. What that resolution means for
+this sensor specifically:
+
+- **Auto-tracking, or pinned to today or a future date** — free. The
+  resolved window is `[today − window_days, today]`, exactly what the
+  same day's recalibration already fetched moments earlier to fit all
+  288 slots' models, so the call is served from already-validated cache
+  entries with no new recorder query.
+- **Pinned to a past date outside the live window** — not free. The
+  resolved window will typically not already be cached, so the call
+  triggers a real recorder fetch for the missing range (`cache.py`'s
+  validate-before-read, ADR-007 §1d, handles this like any other cache
+  miss).
+- **Residual limitation:** data already trimmed *before* the pin was set
+  cannot be recovered from the cache alone — `cache.trim()` (ADR-007
+  §1a/§1f) only extends its retained floor for a pin that already
+  existed at trim time. `selected {method}`/`selected actual` still work
+  for such a slot regardless, as long as the recorder itself still has
+  that slot's raw `FC`/`PV` history — they don't depend on the pool
+  cache at all, and are cheap either way, pinned or not.
 
 **Pinning does not freeze the predictions themselves.** When
 recalibration (ADR-002 §1) next runs, the four models refit regardless of
@@ -481,7 +470,7 @@ small.
   or, better, ignore `series` names for programmatic use and read the
   plain `accuracy` attribute instead, which
   exists precisely to give a stable, unformatted alternative. This is the
-  same category of concern ADR-001 §5 raises about *other* integrations'
+  same category of concern ADR-009 raises about *other* integrations'
   attributes — except here it is Shady's own contract to keep predictable.
   A future-pinned slot (§2a) sharpens this further: `accuracy` is `{}`
   and the `"selected actual"` entry is absent from `series` altogether,
