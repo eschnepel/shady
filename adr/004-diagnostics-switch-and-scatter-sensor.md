@@ -106,27 +106,43 @@ its own scatter series/color:
 - **Selected-prediction series**, one per regression method, named
   `"selected {method} ({accuracy}%)"` (`linear`, `kernel`, `wls2`,
   `wls3`) — each a single-point series at `[FC_selected, predicted_i]`
-  for that method. Since the diagnosed slot is always already elapsed
-  (see below), `FC_selected` here is that slot's own recorded value —
-  the training-time `FC` role from ADR-001 §2, not the forward-looking,
-  not-yet-elapsed `FC` a live prediction would query. All four are always
-  included regardless of which method is the configured default
-  (ADR-001 §2) — the point of this sensor is comparing methods on the
-  user's own data, so showing only the active one would defeat it.
-  **Accuracy** is `1 - |predicted_i - PV_selected| / PV_selected`, clamped
-  to `[0, 1]` before formatting as a percentage (a predicted value more
-  than 100% off is displayed as `0%`, not a negative number that would
-  need explaining) — recomputed whenever the diagnosed slot changes
-  (§2a), since it depends on `PV_selected`, which only exists once that
-  slot is complete. The `accuracy` attribute carries the same four
-  numbers as plain `0.0`–`1.0` floats, keyed by method name, so the
-  series-name string is a display convenience, not the only place this
-  value lives. (Named `"selected"`, not `"today"` — see §2a: a manually
-  chosen slot need not be from today.)
+  for that method. `FC_selected` is that slot's own recorded value — the
+  training-time `FC` role from ADR-001 §2 — whenever the diagnosed slot
+  has already elapsed, true for auto-tracking by construction (see
+  below) and for most manually-pinned slots too. For a manually-pinned
+  slot that is still in the future (§2a), there is no recorded value yet,
+  so `FC_selected` is instead the same forward-looking, not-yet-elapsed
+  `FC` a live prediction for that slot would already query (ADR-002
+  §2/§3) — the four methods are simply evaluated against whichever `FC`
+  value actually exists for the slot. All four are always included
+  regardless of which method is the configured default (ADR-001 §2) —
+  the point of this sensor is comparing methods on the user's own data,
+  so showing only the active one would defeat it. **Accuracy** is `1 -
+  |predicted_i - PV_selected| / PV_selected`, clamped to `[0, 1]` before
+  formatting as a percentage (a predicted value more than 100% off is
+  displayed as `0%`, not a negative number that would need explaining)
+  — recomputed whenever the diagnosed slot changes (§2a), since it
+  depends on `PV_selected`, which only exists once that slot is
+  complete. For a future-pinned slot, `PV_selected` does not exist yet,
+  so accuracy cannot be computed at all: the series names drop the
+  `(...%)` suffix entirely (`"selected wls2"`, not `"selected wls2
+  (96%)"`), and the `accuracy` attribute is an empty `{}` rather than
+  carrying partial or placeholder numbers — see §2a. Otherwise, the
+  `accuracy` attribute carries the same four numbers as plain `0.0`–`1.0`
+  floats, keyed by method name, so the series-name string is a display
+  convenience, not the only place this value lives. (Named `"selected"`,
+  not `"today"` — see §2a: a manually chosen slot need not be from
+  today, in either direction.)
 - **Selected-actual series**, `"selected actual"` — a single-point series
   at `[FC_selected, PV_selected]`, the *real* measured yield for the
-  diagnosed slot. This is only possible because of the slot choice below:
-  it must already be over.
+  diagnosed slot. This depends entirely on the diagnosed slot already
+  being over: auto-tracking (below) always satisfies this by
+  construction, and so does most manual pinning (§2a). The one exception
+  is a manually-pinned slot still in the future — there is no `PV`
+  reading yet, so this series is simply **omitted from `series` entirely**
+  (not present with an empty `data`) rather than shown with a placeholder
+  point. See §2a for how a future pin is validated and what the rest of
+  the sensor shows in that case.
 
 **Which slot is "the diagnosed slot"** defaults, for a given moment, to
 the **last complete** 5-minute slot, not the next upcoming one. A
@@ -136,7 +152,8 @@ each other, never with reality. Using the most recently finished slot
 means `"selected actual"` above is always populated, letting a person
 directly see which method's prediction — made using the same historical
 pool shown alongside it — actually came closest. This default can be
-overridden to inspect a specific past slot instead — see §2a.
+overridden to inspect a specific past **or future** slot instead — see
+§2a.
 
 ### 2a — Manually selecting a specific slot via timestamp
 
@@ -149,12 +166,18 @@ takes a single optional parameter:
 - **`timestamp`** (optional, ISO-8601 datetime): pins the diagnosed slot
   to the slot containing this timestamp, rounded *down* to the nearest
   5-minute boundary (matching the slot grid, ADR-001 §3a). Rejected with
-  a validation error if the timestamp does not correspond to an
-  already-elapsed slot — the whole feature depends on `PV_selected`
-  existing (§2), so a future or still-in-progress slot has nothing to
-  show. Omitting `timestamp` entirely (or calling the service with no
-  parameters) **clears** the pin and returns to auto-tracking "last
-  complete slot".
+  a validation error if the resulting slot falls **beyond the available
+  `FC` data** — i.e. past ADR-002 §3's forecast horizon (the remainder of
+  today, plus tomorrow if and only if the baseline provider has published
+  that far) — since beyond that point there is no `FC` value of any kind,
+  not even a forecasted one, for the four methods to evaluate. A slot
+  that has not yet elapsed but *is* within that horizon is accepted:
+  `"selected {method}"` still renders (§2, evaluated against the
+  forward-looking `FC` for that slot), but `"selected actual"` is
+  omitted and `accuracy` is an empty `{}`, since there is no `PV` yet to
+  compare against — see §2 for the exact shape this takes. Omitting
+  `timestamp` entirely (or calling the service with no parameters)
+  **clears** the pin and returns to auto-tracking "last complete slot".
 
 **There is exactly one diagnosed-slot state per config entry — not one
 per sensor.** Every diagnostic sensor, the per-string
@@ -173,28 +196,41 @@ matches the motivating use case directly — "what did every string look
 like around 14:00 yesterday" is a cross-string comparison at one moment,
 not several strings each frozen at a different, unrelated one.
 
-While pinned, the 5-minute tick (§2's "Refresh cadence") does not advance
-the diagnosed slot, and effectively becomes a no-op for the diagnosed-
-slot choice itself: a manually-selected slot is, by construction, already
-fully elapsed, so nothing about its underlying data changes as time
-passes — there is nothing to advance to.
+While pinned, the 5-minute tick (§2's "Refresh cadence") never advances
+*which* slot is diagnosed — the pin, not the clock, decides that. For an
+already-elapsed pinned slot, nothing about its underlying data changes as
+time passes either, so the tick is a true no-op end to end, same as
+before. A pinned slot that is still in the future is the one exception —
+see "Refresh cadence" below for how that slot's own actual value and
+accuracy eventually appear once real time catches up to it, without the
+pin having to be re-issued.
 
 **Every diagnostic sensor's slot-pool series comes from one function,
 `get_pinned_slot_pool` (ADR-007 §1f) — whether currently pinned or
 auto-tracking.** There is no separate today-only call for the
 auto-tracking case: `get_pinned_slot_pool` resolves its own window
 internally, `[pinned_reference − window_days, pinned_reference]` if a
-pin is set, else `[today − window_days, today]` — `window_days` sizing
-the window the same way either time. Whether a given call needs a
+pin is set to a date no later than today, else `[today − window_days,
+today]` — `window_days` sizing the window the same way either time. A
+pin to a **future** date is folded into that same `[today − window_days,
+today]` case rather than anchored to `pinned_reference`: recalibration
+(ADR-002 §1) never trains any slot's model on data newer than
+yesterday — not even today's own already-elapsed slots, let alone a
+future day, which has no recorded data to train on at all — so there is
+no future-anchored pool for a future pin to resolve to in the first
+place; a future-pinned slot's `"-1"`/`"0"`/`"1"` series show exactly
+what an auto-tracking sensor would already show for that same
+time-of-day, right now (ADR-007 §1f). Whether a given call needs a
 genuine new recorder fetch or is served entirely from cache depends on
 whether that resolved window happens to already be cached, not on
-whether a pin is active. While auto-tracking, the resolved window is
-`[today − window_days, today]` — exactly what the same day's
-recalibration already fetched moments earlier to fit all 288 slots'
-models, so the call is served from already-validated cache entries with
-no new recorder query. **A pin to a date outside the live window is
-different: its resolved window will typically not already be cached, so
-the same call does trigger a real fetch for the missing range** —
+whether a pin is active. While auto-tracking, or pinned to today or a
+future date, the resolved window is `[today − window_days, today]` —
+exactly what the same day's recalibration already fetched moments
+earlier to fit all 288 slots' models, so the call is served from
+already-validated cache entries with no new recorder query. **A pin to a
+*past* date outside the live window is different: its resolved window
+will typically not already be cached, so the same call does trigger a
+real fetch for the missing range** —
 `cache.py`'s validate-before-read (ADR-007 §1d) handles this the same
 as any other cache miss, on the spot. The one residual limitation is
 data that was already trimmed *before* the pin was set: `cache.trim()`
@@ -225,18 +261,26 @@ provider-driven baseline-update trigger would keep it current on their
 own (a person could be looking at a diagnosed slot up to an hour stale,
 waiting for the next baseline update to happen to fire). Rather than add
 a third schedule, this reuses the 5-minute recorder-poll trigger ADR-006
-§1 already introduces (`async_track_time_interval(hass, ...,
+§1a already introduces (`async_track_time_interval(hass, ...,
 minutes=5)`) — advancing which slot is diagnosed, and refreshing
 `"selected actual"`/`"selected {method}"`/`accuracy` (all cheap: one
 PV/FC lookup plus four model evaluations per string, then a sum for
-§2b's sensor) on every tick, **while auto-tracking**. While pinned (§2a),
-none of this advances on this tick at all. The slot-pool series
-(`"-1"`/`"0"`/`"1"`) do **not** get re-queried on this same tick either
-way — see §3. The four fitted models behind the `"selected {method}"`
-points are unaffected by this faster tick and still only change at
-ADR-002 §1's cadence, exactly as §4 describes; only *which* slot's data
-is being displayed, and that slot's now-available actual value and
-accuracy, track the 5-minute tick.
+§2b's sensor) on every tick, **while auto-tracking**. While pinned
+(§2a), *which* slot is diagnosed never advances on this tick — but
+`"selected actual"`/`accuracy` still get re-evaluated on the same tick
+if the pinned slot has not elapsed yet. An already-elapsed pinned slot
+has nothing new to find (its `PV` was fixed the moment it happened), so
+the tick is a genuine no-op for it, same as before this ADR's change. A
+future-pinned slot's tick keeps checking whether it has elapsed yet, so
+`"selected actual"`/`accuracy` populate — and the series-name accuracy
+suffix appears — on the first tick after it does, without the pin
+needing to be re-issued. The slot-pool series (`"-1"`/`"0"`/`"1"`) do
+**not** get re-queried on this same tick either way — see §3. The four
+fitted models behind the `"selected {method}"` points are unaffected by
+this faster tick and still only change at ADR-002 §1's cadence, exactly
+as §4 describes; only *which* slot's data is being displayed, and that
+slot's now-available actual value and accuracy, track the 5-minute
+tick.
 
 ### 2b — A summed-up diagnostics sensor across all strings
 
@@ -324,7 +368,7 @@ diagnosed slot per string (not all 288), keeping the added cost bounded
 and opt-in: the three non-default methods are fitted alongside the
 active one at the same recalibration trigger (midnight or button, ADR-002
 §1). All four are then queried on the same 5-minute trigger that advances
-which slot is diagnosed (ADR-006 §1, per §2 above) — not ADR-002 §2's
+which slot is diagnosed (ADR-006 §1a, per §2 above) — not ADR-002 §2's
 irregular baseline-update trigger — so the four predictions always match
 whichever slot's pool and actual value are currently being displayed,
 rather than momentarily lagging behind it.
@@ -384,11 +428,14 @@ small.
 - **Pro:** Manually selecting a slot by timestamp (§2a) turns this from a
   "what does it look like right now" tool into one that can also answer
   "what did it look like at that specific moment" — useful precisely when
-  investigating a specific past event. This costs nothing extra when the
-  pinned date is recent enough to already be cached, and at most one
-  bounded, on-demand fetch (ADR-007 §1d/§1f) otherwise — not a new
-  per-tick query pattern, just an occasional one-time catch-up the first
-  time an older date is pinned.
+  investigating a specific past event — or "what does it look like at an
+  upcoming moment", e.g. previewing how the four methods currently
+  disagree on a slot later today or tomorrow, without waiting for it to
+  elapse. A past pin costs nothing extra when the pinned date is recent
+  enough to already be cached, and at most one bounded, on-demand fetch
+  (ADR-007 §1d/§1f) otherwise; a future pin is always free the same way
+  auto-tracking already is (§2a), since it resolves to the same
+  already-cached window.
 - **Pro:** Default-off plus the always-on entity / conditionally-computed
   content pattern (§1) keeps the cost at zero for installations that
   never enable it, consistent with ADR-003 §3's no-op philosophy for
@@ -436,3 +483,13 @@ small.
   exists precisely to give a stable, unformatted alternative. This is the
   same category of concern ADR-001 §5 raises about *other* integrations'
   attributes — except here it is Shady's own contract to keep predictable.
+  A future-pinned slot (§2a) sharpens this further: `accuracy` is `{}`
+  and the `"selected actual"` entry is absent from `series` altogether,
+  so a consumer needs to treat "not present yet" as a valid state, not
+  just anticipate different numbers.
+- **Con:** A future-pinned slot (§2a) is a genuinely incomplete view by
+  design — `"selected actual"` and `accuracy` are simply unavailable
+  until real time catches up to it, and the series-name accuracy suffix
+  disappears along with them (§2). Pinning a future slot to "see what the
+  forecast currently looks like there" gets exactly that, and nothing
+  that claims to have validated it yet.

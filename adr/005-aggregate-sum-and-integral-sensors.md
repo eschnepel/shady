@@ -70,11 +70,11 @@ slot; ADR-005 is where those get integrated into an energy total). The
 future portion of `slot_values` (entries not yet past) is where an
 optional intraday deviation correction can show up — but the correction
 itself is applied **per string, upstream of this sensor**, not to this
-sensor's own array: ADR-006 §1/§3 corrects each string's own
+sensor's own array: ADR-006 §1/§4 corrects each string's own
 `ShadyForecastSensor` values at the source, and this sensor's `slot_values`
 simply sums whatever those per-string values currently are, correction
 included when active. This sensor therefore needs no correction logic of
-its own (see ADR-006 §3) — it stays exactly the plain per-slot sum
+its own (see ADR-006 §4) — it stays exactly the plain per-slot sum
 described above regardless of whether the correction is active for any
 given string.
 
@@ -128,7 +128,7 @@ day.
   the previous day's last slot), a meter-style reset has no such
   settling concern — it should zero out right at the day boundary. This
   is a fourth, independent schedule `coordinator.py` registers alongside
-  ADR-002 §1's recalibration schedule and ADR-006 §1's 5-minute
+  ADR-002 §1's recalibration schedule and ADR-006 §1a's 5-minute
   recorder-poll schedule — `async_track_time_change(hass, ..., hour=0,
   minute=0, second=0)` — deliberately not reusing either of those
   triggers despite all being "periodic coordinator things", and on

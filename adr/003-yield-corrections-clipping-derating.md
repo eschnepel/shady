@@ -299,10 +299,12 @@ flowchart BT
 - **`forecast_adjust.py`** — calls back into `yield_correction.py`'s
   reverse transform per §2b (the dashed edge above) — converts a
   25°C-equivalent prediction back to the target slot's own expected
-  temperature — then runs ADR-006's two-stage adjustment (the
-  provider-update ramp, ADR-006 §1a, then the intraday deviation
-  correction, ADR-006 §1) on that unclamped value, and only then applies
-  §1a's output clamp — once, last.
+  temperature — then runs ADR-006's intraday deviation correction (§1)
+  on that unclamped value, in whichever shape the currently-configured
+  state calls for (a single ramped-and-clamped-ratio multiply under
+  Ramping, ADR-006 §1a; two independently-computed sides crossfaded
+  together under Blending, ADR-006 §1b; a no-op if disabled), and only
+  then applies §1a's output clamp — once, last.
 
 `yield_correction.py` itself stays a single, small, stateless module —
 the forward and reverse functions are two entry points into the same

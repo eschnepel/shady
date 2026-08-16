@@ -16,7 +16,7 @@ individual addition was a reasonable, small extension at the time:
 - Baseline-update listeners, triggering forecast recompute (ADR-002 §2)
 - Midnight energy-integral reset (ADR-005 §5/§6)
 - 5-minute recorder-poll, for the intraday-correction window (ADR-006
-  §1) — since reused by the diagnostics feature (ADR-004 §2) to advance
+  §1a) — since reused by the diagnostics feature (ADR-004 §2) to advance
   which slot is diagnosed
 
 **Retained state/cache** (five, independent):
@@ -26,8 +26,8 @@ individual addition was a reasonable, small extension at the time:
 - Two persisted running totals for the energy-integral sensors (ADR-005
   §5/§6) — the one cache here that genuinely must survive a restart
   intact, unlike the others below
-- Short-lived per-string ramp state, discarded once a ramp completes
-  (ADR-006 §1a)
+- Short-lived per-string ramp/crossfade state, discarded once a ramp or
+  blend completes (ADR-006 §1b)
 - Per-string historical `(FC, PV)` pool cache, refreshed at
   recalibration/system-start — backs both regression training (ADR-001
   §3a/§3b) and diagnostics (ADR-004 §3), the two consumers that read the
@@ -63,8 +63,9 @@ resolution time series per sensor, over a rolling window: the raw `FC`/
 diagnostics (ADR-004 §3), and the day-snapshot corrected-forecast array
 (ADR-002 §3). §1a–§1e give this one shared, index-addressable design
 rather than bespoke handling per cache. The other two — the fitted-model
-cache (objects, not floats) and the short-lived ramp state (ADR-006
-§1a) — stay simple `dict[key, value]` structures without that machinery;
+cache (objects, not floats) and the short-lived ramp/crossfade state
+(ADR-006 §1b) — stay simple `dict[key, value]` structures without that
+machinery;
 see the end of §1e for why they do not need it. The integral running
 totals (ADR-005 §5/§6) are simpler still — one persisted scalar each.
 
@@ -139,7 +140,7 @@ other piece of state that refers to an absolute index — in particular,
 the validated ranges in §1b stay meaningful across a trim without
 rewriting. `coordinator.py` calls `cache.trim()` exactly once, at the
 ADR-002 §1 recalibration trigger (midnight or button) — never as a side
-effect of the 5-minute tick (ADR-006 §1) or a baseline update (ADR-002
+effect of the 5-minute tick (ADR-006 §1a) or a baseline update (ADR-002
 §2). This matters beyond tidiness once §1f's pinned reference date
 exists: trimming needs to check whether it is currently set before
 discarding anything older than the live window, and tying that check to
@@ -192,7 +193,7 @@ fetch_fn: Callable[[sensor_id: str, start: datetime, end: datetime], list[float 
 tier (ADR-000 §6): tests construct a cache with a trivial fake `fetch_fn`
 returning canned data, no HA or recorder fixture needed. In the running
 integration, `coordinator.py` supplies a `fetch_fn` backed by
-`statistics_during_period` — the same call ADR-006 §1 already established
+`statistics_during_period` — the same call ADR-006 §1a already established
 as this project's recorder-read pattern.
 
 A **validation function**, given one or more sensor-ids (§1e) and a
@@ -239,9 +240,10 @@ parameterized to cover both:
   manually-pinned case.
 - **`get_time_range(sensor_ids, start, end, on_invalid: Literal["skip", "raw"] | float = 0.0, group_by="sensor"|"slot") -> dict | list[dict]`**
   — "every slot in a contiguous range": ADR-005 §3's whole-day array,
-  ADR-006 §1's trailing-2h window. `group_by="sensor"` returns
+  ADR-006 §1a's trailing rolling window (length configurable, ADR-006
+  §3). `group_by="sensor"` returns
   `{sensor_id: [v0, v1, ...]}` (one time series per sensor — what ADR-006
-  §1's per-string window sum wants); `group_by="slot"` returns one dict
+  §1a's per-string window sum wants); `group_by="slot"` returns one dict
   per slot instead, `[{sensor_id: v, ...}, ...]` (what ADR-005 §3's
   cross-string per-slot sum wants — "for this slot, every string's
   value", ready to sum directly without a second transpose step). Default
@@ -301,9 +303,9 @@ case of the same interface, not different enough to warrant a second
 method.
 
 The **model cache** (fitted model objects per string/slot) and the
-**ramp state** (ADR-006 §1a) do not fit this time-series shape — a
-fitted model is an object, not a float, and ramp state is a small,
-short-lived record, not a rolling window. Both stay as simple
+**ramp/crossfade state** (ADR-006 §1b) do not fit this time-series shape
+— a fitted model is an object, not a float, and ramp/crossfade state is a
+small, short-lived record, not a rolling window. Both stay as simple
 `dict[key, value]` structures elsewhere in `cache.py`, without the
 index/validation machinery above; only the genuinely time-series-shaped
 caches (raw `FC`/`PV` history, the day-snapshot array) use it.
@@ -333,9 +335,16 @@ argument (§1e): **`get_pinned_slot_pool(sensor_ids, slot_of_day,
 on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id,
 list[float]]`** — same shape as `get_slot_pool`, but its window is
 resolved from `pinned_reference` **internally**: `[pinned_reference −
-window_days, pinned_reference]` if a pin is currently set, otherwise
-falling back to today-anchored — `[today − window_days, today]`, `window_days`
-sizing the window identically either way. This is the **only** accessor
+window_days, pinned_reference]` if a pin is currently set to a date no
+later than today, otherwise falling back to today-anchored — `[today −
+window_days, today]`, `window_days` sizing the window identically either
+way. A pin to a **future** date takes that same today-anchored branch,
+not a `pinned_reference`-anchored one: recalibration (ADR-002 §1) never
+trains any slot's model on data newer than yesterday, so there is no
+future-anchored pool for a future pin to resolve to in the first place
+— a future-pinned slot's pool is, and can only ever be, the same one an
+auto-tracking sensor for that same time-of-day already sees (ADR-004
+§2a). This is the **only** accessor
 ADR-004's diagnostics feature ever calls, whether currently pinned or
 auto-tracking — there is no separate today-only diagnostics call to
 choose between; `coordinator.py` never branches on `pinned_reference`
@@ -351,13 +360,14 @@ anchor]` window and go through the same validate-before-read call
 (§1d), whether a given `get_pinned_slot_pool` call actually needs a new
 recorder fetch or is served entirely from cache depends on **whether
 that window is already cached** — not on which branch was taken. In the
-common auto-tracking case, the resolved window is `[today − window_days,
-today]`, exactly what the same day's recalibration already fetched
-moments earlier, so the call is served from already-validated entries
-with no new recorder query. An old pin's window will typically *not*
-already be cached, so that same call does trigger a genuine fetch for
-the missing range — the underlying mechanism is identical in both
-cases; only whether it happens to find its target already there differs.
+common auto-tracking case, and for any pin to today or a future date,
+the resolved window is `[today − window_days, today]`, exactly what the
+same day's recalibration already fetched moments earlier, so the call is
+served from already-validated entries with no new recorder query. A pin
+to an older *past* date will typically *not* already be cached, so that
+same call does trigger a genuine fetch for the missing range — the
+underlying mechanism is identical in both cases; only whether it happens
+to find its target already there differs.
 
 **Effect on trimming.** Because there is only one pinned date, not one
 per sensor, trimming does not need any per-sensor bookkeeping for this

@@ -12,11 +12,12 @@ forecast implied, in real time, reveals whether *today specifically* is
 running ahead of or behind what the model predicted — capturing same-day
 effects (an unmodeled event like snow cover, a sensor fault, an unusually
 persistent weather pattern) that the nightly model refit (ADR-002 §1) has
-no way to react to before tomorrow at the earliest. This ADR adds two
-related, optional mechanisms: one that projects today's already-observed
-deviation onto the future portion of a string's per-slot forecast (§1/§2),
-and one that smooths the visible jump whenever the baseline provider
-itself revises its forecast mid-day (§1a).
+no way to react to before tomorrow at the earliest. This ADR adds one
+mechanism, with three selectable states, that projects today's
+already-observed deviation onto the future portion of a string's per-slot
+forecast, and — as part of the same mechanism, not a separate one — also
+governs how that projection behaves whenever the baseline provider itself
+revises its forecast mid-day (§1b).
 
 **This operates per string, not on ADR-005's aggregate sensors.** Computing
 the deviation ratio from `ShadyPvEnergyIntegralSensor`/
@@ -28,36 +29,65 @@ heavily-shaded string melts later in the day than snow on an unshaded
 one, so the two strings' deviation ratios diverge for real, physical
 reasons through much of the day. Computing one combined ratio across
 strings would average a slowly-recovering shaded string together with an
-already-recovered unshaded one and get both wrong. Both §1 and §1a
-therefore run independently per string, using each
-string's own actual-yield entity and its own per-string corrected-forecast
-values — ADR-005's aggregate sensors remain purely a user-facing summary,
+already-recovered unshaded one and get both wrong. This mechanism
+therefore runs independently per string, using each string's own
+actual-yield entity and its own per-string corrected-forecast values —
+ADR-005's aggregate sensors remain purely a user-facing summary,
 downstream of this, not an input to it.
 
 ---
 
 ## Decision
 
-### 1 — Deviation ratio: a rolling 2-hour window, via the shared cache
+### 1 — Three-state config switch: off (default), ramping, or blending
+
+A single config-flow field controls the whole feature — there is no
+longer a separate enable gate for the ratio correction and a separately
+"unconditional" behavior for provider-update transitions; both are now
+one mechanism with three states:
+
+- **Disabled (default).** No intraday correction of any kind:
+  `ShadyForecastSensor` always shows the plain, uncorrected per-slot
+  value, and a provider update (ADR-002 §2's trigger) applies instantly —
+  exactly pre-ADR-006 behavior. No rolling window, no ramp state, nothing
+  computed or retained.
+- **Ramping.** The correction factor ramps in smoothly starting at the
+  first active slot of the day (§1a), rather than gating on a fixed
+  sample count as earlier versions of this design did. A provider update
+  discards the rolling window and restarts the same ramp from scratch,
+  keyed to the newly-published `FC` (§1b).
+- **Blending.** Identical to Ramping for a string's very first activation
+  of the day — there is nothing yet to blend against (§1a). On every
+  subsequent provider update, instead of discarding the pre-update state
+  outright, the displayed value crossfades between the *old* prediction
+  (frozen at the moment of the update) and a *new* prediction (built the
+  same way Ramping would build it, from a freshly restarted window) —
+  see §1b.
+
+Ramping and Blending share the same underlying rolling-window/ramp
+mechanics (§1a); they differ only in what happens at the moment of a
+provider update (§1b).
+
+### 1a — The correction factor: a rolling window, ramped from the first active slot
 
 ```
 ratio_string = pv_energy_window / fc_energy_window
 ```
 
 computed **per string**, where both quantities are the energy accumulated
-over the trailing **2 hours**, at 5-minute resolution. Both series come
-from `cache.py`'s `get_time_range(sensor_ids, start=now-2h, end=now,
-group_by="sensor")` accessor (ADR-007 §1e) — the string's actual-yield
-entity and its own `ShadyForecastSensor`. This is the same underlying
-`statistics_during_period` read pattern Effy's ADR-003 established
-(`mean` field, 5-minute `statistics_short_term` table) that `cache.py`'s
-injected `fetch_fn` uses (ADR-007 §1d), but Shady never calls it directly
-here — going through `cache.py` means this 2-hour read is validated and
-gap-filled the same way every other time-series access in this design
-is, rather than being a second, bespoke recorder-reading path. Unlike
-Effy, Shady never needs the internal `async_import_statistics` write path
-ADR-003 there had to fall back on, because these are ordinary sensor
-entities Home Assistant already records on its own (or, for
+over the trailing **`window_slots`** slots (§3 below) at 5-minute
+resolution. Both series come from `cache.py`'s `get_time_range(sensor_ids,
+start=now-window_slots*5m, end=now, group_by="sensor")` accessor (ADR-007
+§1e) — the string's actual-yield entity and its own `ShadyForecastSensor`.
+This is the same underlying `statistics_during_period` read pattern
+Effy's ADR-003 established (`mean` field, 5-minute `statistics_short_term`
+table) that `cache.py`'s injected `fetch_fn` uses (ADR-007 §1d), but Shady
+never calls it directly here — going through `cache.py` means this read
+is validated and gap-filled the same way every other time-series access
+in this design is, rather than being a second, bespoke recorder-reading
+path. Unlike Effy, Shady never needs the internal `async_import_statistics`
+write path ADR-003 there had to fall back on, because these are ordinary
+sensor entities Home Assistant already records on its own (or, for
 `ShadyForecastSensor`, values Shady itself already pushed into `cache.py`,
 ADR-007 §1c) — Shady only ever reads history it did nothing special to
 create.
@@ -72,136 +102,195 @@ than one slot. ADR-004 §2 reuses this same trigger to advance which slot
 its diagnostic sensor is showing, rather than introducing a third,
 near-identical schedule.
 
-**Why 2 hours, not since-midnight:** snow covering the panels for the
-first few hours of a morning, then melting by around noon, is exactly the
-situation a since-midnight ratio gets wrong for the rest of the day — it
-would keep dragging today's factor down long after the panels are clear
-again, because the morning's near-zero output is still baked into an
-ever-growing denominator-vs-numerator comparison. A 2-hour trailing window
-"forgets" that morning once it's more than 2 hours old, letting the
+**Why a trailing window, not since-midnight:** snow covering the panels
+for the first few hours of a morning, then melting by around noon, is
+exactly the situation a since-midnight ratio gets wrong for the rest of
+the day — it would keep dragging today's factor down long after the
+panels are clear again, because the morning's near-zero output is still
+baked into an ever-growing denominator-vs-numerator comparison. A
+trailing window "forgets" that morning once it's aged out, letting the
 correction recover on its own as conditions actually change, without
 needing to detect "the snow melted" as an event — and, per the Context
 above, it does so on each string's own timeline, not a blended one.
 
-The minimum-sample-size gate — at least 12 "active" slots, reusing
-ADR-001 §2's `FC_i == 0` boundary (a slot is active iff `FC_i ≠ 0`,
-equivalently `magnitude_weight_i > 0` — a plain binary read of the same
-boundary §2 otherwise applies continuously) — applies per string, scoped
-to the trailing window: at least 12 active
-slots must have occurred *within* the current window (for that string)
-before its ratio is trusted and applied. **Why 12:** at 5-minute
-resolution, 12 slots is exactly one hour — so the gate requires at least
-half of the 2-hour trailing window (§1 above) to have been genuine
-daylight generation, not merely "the window contains *some* data,
-however little." This matters most right around sunrise, when the window
-is freshly opening and could otherwise be mostly pre-dawn `FC_i == 0`
-slots plus one or two very early, barely-active ones — computing and
-trusting a ratio from a single active slot at that point would be noise,
-not signal. Requiring a full hour's worth before the correction engages
-means the ratio only ever reflects a meaningfully sized sample of actual
-same-day generation, at the cost of the correction staying off (falling
-back to the plain, uncorrected value per below) for roughly the first
-hour after each string's own sunrise. Before the gate is satisfied for a
-given string — whether because too little of the day has happened yet,
-or because its window temporarily contains too few active slots — that
-string's future slots are reported at their plain, uncorrected value
-regardless of the cutoff setting in §2, while another string that has
-already satisfied its own gate can be corrected at the same moment.
+**The correction factor ramps in, rather than switching on at a
+threshold.** Earlier designs for this ADR gated the correction behind a
+hard minimum-sample-size requirement (at least 12 active slots within the
+window) before trusting `ratio_string` at all. That gate is removed
+entirely: instead, a weight `w` ramps linearly from `0` to `1` over
+**`ramp_slots`** active slots (§3), counted from whichever **reset
+point** currently applies — a string's first active slot of the day, or
+its most recent provider update (§1b) — and the *effective* correction
+factor is:
 
-### 1a — Ramping across a provider forecast update, unconditionally
+```
+w(t) = min(1, active_slots_since_reset / ramp_slots)
+effective_factor(t) = 1 + w(t) × (clamp(ratio_string(t), 1-cutoff, 1+cutoff) - 1)
+corrected_value(t) = fc_value(t) × effective_factor(t)
+```
+
+`active_slots_since_reset` counts only slots where `FC_i ≠ 0` (ADR-001
+§2's `FC_i == 0` boundary, the same plain binary read of that boundary
+§2 otherwise applies continuously), matching how `ratio_string` itself
+only accumulates meaningful energy during active slots. At `w = 0`,
+`effective_factor` is exactly `1` — the plain, uncorrected `FC` value,
+with nothing yet applied — and at `w = 1` it is the full clamped ratio,
+same as this ADR's original always-on-past-the-gate behavior. This
+achieves what the old hard gate was for — right around a reset point,
+when the window may contain only one or two active slots and a computed
+`ratio_string` would be noise more than signal — without a step function:
+a single early sample's *influence* on the displayed value is small
+(scaled by a small `w`), not absent, and grows smoothly as more of the
+window fills with genuine same-day generation. This is a real trade, not
+a strict improvement — see Consequences.
+
+### 1b — Provider-update transitions: ramping resets, blending crossfades
 
 A baseline provider revising its forecast mid-day (ADR-002 §2's trigger)
-recomputes every future slot's corrected value using the newly-published
-raw `FC`. Applied instantly, this can produce a visible step in the
-remaining-day curve at the exact moment a weather model updates — the
-kind of discontinuity a person watching a dashboard notices and
-(reasonably) distrusts, especially since a single new model run is not
-necessarily more correct than the previous one, merely newer.
+recomputes every future slot's raw `FC`. What happens to the *correction*
+at that moment depends on which of §1's two active states is configured:
 
-Instead, for the **one hour following any update**, each future slot's
-value is a linear blend between what it would have been under the
-*previous* `FC` data and what it is under the *new* `FC` data:
+**Ramping** treats the update exactly like a new reset point: the
+rolling window (§1a) empties, `w` resets to `0`, and both the window and
+the ramp restart from scratch using only post-update data — functionally
+identical to the string's first ramp of the day, just triggered by a
+provider update instead of sunrise. The displayed value reverts to the
+plain, uncorrected new `FC` value at the instant of the update, then
+ramps back up to full correction strength over the next `ramp_slots`
+active slots. This can produce a visible dip on a dashboard at each
+update, which is exactly what **Blending** exists to avoid.
+
+**Blending** does not discard the pre-update state. Instead, it is frozen
+and kept as the *old* side of a crossfade, while a *new* side is built
+the same way Ramping's post-update restart would build it:
 
 ```
-blended_value(t) = (1 - w) × value_under_old_fc + w × value_under_new_fc
-w = min(1, (t - update_time) / 1h)
+old_prediction(t)  = old_fc_value(t) × effective_factor_frozen
+new_prediction(t)  = new_fc_value(t) × effective_factor_new(t)     [§1a, fresh window/ramp, reset at update_time]
+w_blend(t)         = min(1, active_slots_since_update / ramp_slots) [same counter, same duration as effective_factor_new's own w]
+displayed(t)        = (1 - w_blend(t)) × old_prediction(t) + w_blend(t) × new_prediction(t)
 ```
 
-`w` ramps from `0` at the moment of the update to `1` one hour later, at
-which point the blend is complete and the slot's value is simply
-`value_under_new_fc` — same as an instant switch would have given, just
-arrived at gradually. **This applies unconditionally, including a
-string's very first update of the day** — the first baseline publication
-of the morning is exactly as capable of producing a visible jump as any
-later revision is, so it ramps the same way.
+`effective_factor_frozen` is a fixed snapshot of §1a's formula taken the
+instant before the update fired — its window received its last new
+sample at that moment and never receives another, so it does not keep
+evolving; it is simply applied, unchanged, to each of the *old* `FC`
+series' still-remaining slots (itself now a stale, no-longer-updating
+series) for as long as the crossfade needs it. `effective_factor_new`,
+by contrast, is a live, still-ramping value exactly as Ramping's own
+post-update restart computes it — its own `w` grows from `0` under the
+same `ramp_slots` duration and the same start point as the outer
+`w_blend`, so the two ramps run in lockstep: the new side is *both*
+gaining trust *and* gaining visibility on the same timeline. This
+compounds — right after an update, `new_prediction` is barely corrected
+*and* barely visible; by the time `ramp_slots` have elapsed it is both
+fully corrected and fully visible, and `old_prediction` has faded out
+entirely, at which point `displayed(t)` equals exactly what Ramping would
+show for the same slot. Ramping and Blending therefore converge to the
+identical steady state once a transition completes — they differ only in
+the *shape* of the transition, not its destination: Ramping shows a
+visible dip back to "no correction" at every update and recovers from
+there; Blending never dips, since the still-valid old view keeps covering
+for the still-immature new one during the handoff.
 
-**Anchor point for the day's first ramp.** Before the day's first slot
-with real data, both `FC` and `PV` are null/zero (night) — there is
-nothing meaningful to ramp *from* there, and anchoring to midnight or to
-some flat placeholder would just be arbitrary. Instead, the first ramp of
-the day starts at **the first slot where both `PV` and `FC` are filled**
-(both have an actual, non-null value) — in practice, close to sunrise,
-whenever the first meaningful same-day forecast and the first non-zero
-actual output both exist. Every later provider update during the day
-ramps from whatever value was previously displayed, exactly as already
-described above; this rule only resolves what "previously displayed"
-means for the very first one.
+**The first activation of the day** — before a string's first active
+slot, both `FC` and `PV` are null/zero (night), so there is nothing
+meaningful to treat as an "old" side. Ramping and Blending are therefore
+identical at this one point: both simply start the §1a ramp at the first
+slot where both `FC` and `PV` are filled (in practice, close to sunrise).
+This is not a special case requiring separate handling — it is just the
+first of potentially several reset points a string can have in a day, the
+same starting rule applying uniformly whether the trigger is sunrise or a
+later provider update.
 
-This requires the coordinator to retain the previous update's future-slot
-values alongside the new ones, per string, for the duration of the ramp
-(a small, time-bounded piece of state, discarded once the ramp
-completes — unlike §1, this one genuinely has no recorder-backed
-equivalent to read instead, since it concerns values that haven't
-happened yet).
+This requires the coordinator to retain, per string, whichever ramp/window
+counters are currently active, and — under Blending, for the duration of
+an in-progress crossfade — the frozen old-side snapshot too. This is a
+small, time-bounded piece of state, discarded once it completes; unlike
+§1a's window itself (recorder-backed, restart-tolerant), none of this has
+a recorder-backed equivalent to read instead, since it concerns values
+that either haven't happened yet or belong to a forecast run the provider
+has already superseded. Losing it on a restart just means a ramp or
+crossfade restarts rather than resumes — an accepted gap per ADR-007,
+matching this design's existing trade-off for exactly this kind of state.
 
-**Ordering: a two-stage blend, then the output clamp, in that order.**
-`value_under_old_fc` and `value_under_new_fc` above are each the model's
-*raw* prediction (after the temperature reverse-transform, ADR-003 §2b,
-but before ADR-001 §2's `[0, FC]`/inverter-limit clamp). This ramp is
-**stage 1** of a two-stage adjustment: its output (still unclamped) feeds
-directly into §1's intraday deviation correction as **stage 2**, and only
-*after both stages* is ADR-001 §2's output clamp applied — once, to the
-final value, not in between the two stages and not separately to either
-stage's inputs. Clamping earlier would not guarantee the actual final
-number respects the bound: the ramp's two sides can have different `FC`
-bounds, and stage 2's ratio (itself already clamped to `[1-cutoff,
-1+cutoff]` in §2 — a smaller clamp on the *multiplier*, distinct from
-the output clamp) can still push an otherwise-fine value back out of
-bounds, e.g. a >1 ratio boosting a prediction that was already close to
-the inverter limit. One clamp, applied last, after everything else, is
-what actually guarantees correctness regardless of which of the two
-stages were active for a given slot at a given moment.
+**Ordering: one formula per side, an optional crossfade, then the output
+clamp, in that order.** §1a's `effective_factor` already folds what
+earlier versions of this design treated as two separate stages — a
+provider-update ramp, then a separate ratio correction — into one
+continuous function of `w`, so Ramping needs only ever evaluate it once
+per slot: `fc_value × effective_factor`, still *unclamped* at this point
+(after the temperature reverse-transform, ADR-003 §2b, but before ADR-001
+§2's `[0, FC]`/inverter-limit clamp). Blending evaluates it twice — once
+for `old_prediction`, once for `new_prediction`, each independently
+unclamped — and only *then* crossfades the two. Either way, ADR-001 §2's
+output clamp is applied exactly **once**, to the final value, after any
+crossfade — never in between, and never separately to either side of a
+Blending crossfade. Clamping either side beforehand would not guarantee
+the actual blended (or single, for Ramping) number respects the bound:
+the two sides of a crossfade can have different `FC` bounds, and either
+side's own ratio (already clamped to `[1-cutoff, 1+cutoff]` in §2 — a
+smaller clamp on the *multiplier*, distinct from the output clamp) can
+still push an otherwise-fine value back out of bounds, e.g. a >1 ratio
+boosting a prediction that was already close to the inverter limit. One
+clamp, applied last, after everything else, is what actually guarantees
+correctness regardless of which state is active or how far into a
+ramp/crossfade a given slot's value currently is.
 
-### 2 — Cut-off: one config-flow field, doubling as the enable switch
+### 2 — Cut-off: a config-flow field, now a pure magnitude clamp
 
-A single global, config-flow-configurable **cut-off** (a fraction, e.g.
-`0.0`–`0.5`) clamps each string's `ratio_string` from §1 to `[1 - cutoff,
-1 + cutoff]` before it is applied. The **default is `0`**, which collapses
-that clamp range to exactly `[1, 1]` — i.e. the correction factor is
-always exactly `1` (no-op) — functionally disabling the entire mechanism
-using the same numeric field that, at any positive value, both enables
-and bounds it, for every string alike (this field is global, not
-per-string, even though §1/§1a's computation itself is per-string). This
-was chosen over a separate boolean "enable intraday correction" toggle
-plus a magnitude field: one field with a meaningful zero is one fewer
-setting to explain, and `0` is the safest possible default for a feature
-that changes same-day forecast behavior.
+A single global, config-flow-configurable **cut-off** (a fraction) clamps
+each string's `ratio_string` from §1a to `[1 - cutoff, 1 + cutoff]` before
+it feeds into `effective_factor`. Unlike this ADR's earlier design,
+cutoff no longer doubles as the feature's enable switch — that job now
+belongs entirely to §1's three-state field — so its default changes from
+`0` (a value that only ever made sense as a disguised "off") to **`0.10`**
+(±10%), a real, non-degenerate bound that applies whenever §1's switch is
+not Disabled. A person who turns on Ramping or Blending without touching
+this field gets a correction that is actually allowed to do something,
+rather than one that is silently a no-op until they also remember to
+raise cutoff off of zero.
 
-### 3 — Application: per string, per future slot
+### 3 — Two config-flow timespans: rolling window and ramp/blend duration
 
-Once both gates (§1's sample-size minimum for that string, and §2's
-cutoff being non-zero) are satisfied, the correction is applied to **each
+Two further config-flow fields, both counted in **5-minute slots**
+(matching Shady's grid, ADR-001 §3a) rather than a fixed number of hours:
+
+- **`window_slots`** (default `24`, i.e. 2 hours — the length §1a's
+  rolling window always used before this became configurable) — how many
+  trailing slots `pv_energy_window`/`fc_energy_window` (§1a) are
+  accumulated over. Same reasoning as before: a short trailing window
+  lets a string's correction recover on its own from a temporary same-day
+  anomaly (snow melting, a transient sensor fault) as it ages out of the
+  window, without needing to detect the anomaly ending as an event.
+- **`ramp_slots`** (default `12`, i.e. 1 hour — matching both this ADR's
+  earlier 12-slot minimum-sample gate and its earlier 1-hour
+  provider-update blend) — how many active slots the `w` ramp (§1a) takes
+  to go from `0` to `1`, whether ramping in from a string's first active
+  slot of the day or from a provider update under either Ramping or
+  Blending (§1b). One field drives all of these, since they are the same
+  mechanism — a linear ramp from a reset point — applied at different
+  trigger moments, not several durations to reason about separately.
+
+Both fields live in the same config-flow "settings" step as cutoff, the
+training window, regression method, and smoothing radius (ADR-001 §6).
+Their defaults, together with cutoff's own default, exist to keep the
+ramp/blend duration and window length matching this ADR's previously
+fixed values for anyone who does not touch these fields — what changes
+behavior is solely whether §1's three-state switch is turned on at all,
+and to which state.
+
+### 4 — Application: per string, per future slot
+
+Once §1's switch is not Disabled, the correction is applied to **each
 individual future slot of that string** — every one of the string's own
 future per-slot values (the same per-string, per-slot values ADR-005 §3's
 `ShadyFcDaySumSensor` sums across strings to build its cross-string
-array) is replaced by `value × clamp(ratio_string, 1-cutoff, 1+cutoff)`.
-The `clamp(...)` here bounds only the *ratio* (§2) — the result of this
-multiplication then still passes through ADR-001 §2's separate, final
-output clamp (`[0, FC]`/inverter limit), per the ordering established in
-§1a above; this section's multiplication is stage 2 of that two-stage
-pipeline, not the pipeline's last step. Already-past values are never
-touched, matching ADR-002 §3's rule that past slots are frozen once
-their time has passed.
+array) is replaced by `corrected_value` (Ramping, §1a) or `displayed`
+(Blending, §1b). Either result then still passes through ADR-001 §2's
+separate, final output clamp (`[0, FC]`/inverter limit), per the ordering
+established in §1b above. Already-past values are never touched, matching
+ADR-002 §3's rule that past slots are frozen once their time has passed.
 
 Because the correction happens at the per-string source, `ShadyFcDaySumSensor`
 (ADR-005 §3) and `ShadyFcRemainingTodaySensor` (ADR-005 §4) need **no
@@ -215,37 +304,44 @@ adjustment layered on top.
 
 Each string's `ShadyForecastSensor` gains attributes for transparency
 (consistent with the diagnostic philosophy in ADR-004): `intraday_ratio`
-(that string's raw, unclamped §1 value), `intraday_correction_active`
-(boolean, per string), `values_raw` (that string's pre-correction future
-values), and `fc_update_ramp_active` (boolean, per string — is §1a's
-one-hour blend currently in progress for this string).
+(that string's raw, unclamped §1a `ratio_string`), `intraday_state`
+(`"off"` / `"ramping"` / `"blending"`, mirroring §1's config value),
+`intraday_ramp_weight` (that string's current `w`, `0`–`1`), `values_raw`
+(that string's pre-correction future values), and, only while Blending
+and a crossfade is in progress, `intraday_blend_active` (boolean, per
+string).
 
-### 4 — Module placement
+### 5 — Module placement
 
-Two pure functions are added to `aggregation.py` (ADR-005) — no new
+Three pure functions are added to `aggregation.py` (ADR-005) — no new
 module needed:
 
 - `intraday_correction_factor(pv_energy_window, fc_energy_window,
-  active_slot_count, cutoff) -> float` — §1/§2's ratio-and-clamp math,
-  called once per string.
-- `apply_fc_update_ramp(old_values, new_values, update_time, now) ->
-  list[float]` — §1a's linear blend, called once per string.
+  ramp_weight, cutoff) -> float` — §1a's ratio-clamp-and-ramp math in one
+  function, folding what earlier versions of this ADR treated as two
+  separate stages into one. Called once per string under Ramping, and
+  twice per string (once per side) under Blending.
+- `ramp_weight(active_slots_since_reset, ramp_slots) -> float` — §1a's
+  `w(t)`, a tiny pure function shared by both the ramp-in and
+  provider-update-restart cases, and by Blending's own `w_blend`.
+- `crossfade(old_prediction, new_prediction, ramp_weight) -> float` —
+  §1b's Blending-only linear blend, called only when §1's switch is set
+  to Blending.
 
-The trailing-window read itself (§1) goes through `cache.py`'s
+The trailing-window read itself (§1a) goes through `cache.py`'s
 `get_time_range` accessor (ADR-007 §1e), which in turn sources any
 not-yet-cached portion via `statistics_during_period` (the same public
 recorder API access point Effy's ADR-003 reads with, ADR-007 §1d) —
 `coordinator.py` calls `cache.py`, it does not call
-`statistics_during_period` itself. §1a's small, short-lived per-string
-ramp state lives in `cache.py` (ADR-007) too, as a simple dict store
-rather than the time-series shape §1's window uses — it is discarded
-once each ramp completes and is not restart-persisted (unlike §1, there
-is no recorder-backed equivalent to read instead, since a ramp concerns
-future values that don't exist in history yet, but losing it on a
-restart just means a ramp restarts rather than resumes, an accepted gap
-per ADR-007). The config-flow field lives in the same "settings" step
-as the training window, regression method, and smoothing radius (ADR-001
-§6).
+`statistics_during_period` itself. The small, short-lived per-string
+ramp/crossfade state from §1b lives in `cache.py` (ADR-007) too, as a
+simple dict store rather than the time-series shape §1a's window uses —
+it is discarded once each ramp or crossfade completes and is not
+restart-persisted (there is no recorder-backed equivalent to read
+instead, since it concerns future values, or a superseded forecast run,
+neither of which exist in history). The three config-flow fields (§1, §2,
+§3) live in the same "settings" step as the training window, regression
+method, and smoothing radius (ADR-001 §6).
 
 ---
 
@@ -253,48 +349,60 @@ as the training window, regression method, and smoothing radius (ADR-001
 
 - **Pro:** Reacts same-day to real deviations the nightly-refit model
   cannot see until the next recalibration (ADR-002 §1), using data the
-  recorder already has — no new fitting step, and (per §1) no new
-  coordinator-side history-tracking either.
-- **Pro:** Running §1/§1a per string, not on ADR-005's aggregate sensors,
+  recorder already has — no new fitting step, and no new coordinator-side
+  history-tracking either (§1a).
+- **Pro:** Running this per string, not on ADR-005's aggregate sensors,
   correctly handles same-day events whose timeline itself depends on
   shading (snow melting later under a shaded string than an unshaded
   one) — an aggregate-level correction structurally cannot represent this
   since it has already discarded which string an anomaly belongs to.
-- **Pro:** The 2-hour rolling window (§1) lets each string's correction
-  recover on its own from a temporary same-day anomaly without needing to
-  detect the anomaly ending as an event — it simply ages out of the
-  window.
-- **Pro:** The provider-update ramp (§1a), now applying uniformly
-  including a string's first update of the day (anchored at the first
-  slot with real `PV`/`FC` data, not an arbitrary midnight placeholder),
-  removes a real, visible UX problem (a dashboard number jumping the
-  instant a weather model refreshes, at any time of day) with a mechanism
-  that needs no judgment about which forecast run is "more correct" — it
-  just blends smoothly and finishes trusting the new one within an hour
-  regardless.
-- **Pro:** A single numeric field serving as both enable-flag and safety
-  clamp means the default (`0`) is simultaneously "off" and the most
-  conservative possible value — a person who never touches this setting
-  gets exactly today's status quo behavior.
-- **Pro:** Reading §1's window from the recorder rather than maintaining
+- **Pro:** The configurable rolling window (§1a/§3) lets each string's
+  correction recover on its own from a temporary same-day anomaly without
+  needing to detect the anomaly ending as an event — it simply ages out
+  of the window.
+- **Pro:** Replacing the earlier hard minimum-sample-size gate with a
+  smooth ramp (§1a) removes a step function's worth of behavior to
+  explain — trust in the correction now grows continuously from the same
+  reset point that starts the window, rather than snapping from "off" to
+  "on" at a fixed sample count.
+- **Pro:** Blending (§1b) removes a real, visible UX problem — a
+  dashboard number jumping the instant a weather model refreshes — by
+  crossfading rather than switching, while still converging to exactly
+  the same steady-state value Ramping would reach for the same slot, just
+  without the dip along the way.
+- **Pro:** Decoupling cutoff from the enable switch (§1/§2) means the
+  three-state field alone answers "is this on", and cutoff alone answers
+  "how strong" — a person turning the feature on gets a cutoff that
+  actually does something (default `0.10`) rather than a field they also
+  have to remember to raise off of zero.
+- **Pro:** Reading §1a's window from the recorder rather than maintaining
   a coordinator-side cache means it is naturally restart-tolerant with no
-  extra persistence code — the data was going to be there regardless of
-  whether Shady itself stays running continuously.
+  extra persistence code for that part — the data was going to be there
+  regardless of whether Shady itself stays running continuously.
 - **Con:** This assumes each string's already-observed deviation (within
   its trailing window) is likely to continue into its own near future,
   which is not always true. This is a deliberate, simple projection, not
-  a weather-aware model — exactly why the cutoff exists as a user-tunable
+  a weather-aware model — exactly why cutoff exists as a user-tunable
   clamp rather than an unclamped correction.
-- **Con:** §1a's ramp state is still coordinator-side, short-lived, and
-  not recorder-backed (future values have no history to read) — genuinely
-  new bookkeeping, per string, even though §1 no longer needs any.
-- **Con:** During an active §1a ramp, a string's `values_raw` and its
-  final corrected value can both differ from what a naive "just
-  recomputed with the latest FC" figure would show, for up to an hour
-  after any update — including, now, the first update of the day, not
-  only later revisions.
+- **Con:** Removing the hard minimum-sample-size gate (§1a) means a
+  `ratio_string` computed from a single noisy active slot right after any
+  reset point can still influence the displayed value, just weakly (via a
+  small `w`) rather than not at all. This is a real trade against the
+  earlier gate's simplicity, not a strict improvement — "smoothly
+  down-weighted" is not the same guarantee as "excluded until an hour's
+  worth of data exists."
+- **Con:** Blending's per-string state (§1b) is strictly more than
+  Ramping's: a frozen old-side snapshot must be retained, alongside the
+  new side's own ramp counters, for the duration of every crossfade — all
+  coordinator-side, short-lived, and not recorder-backed, on top of the
+  bookkeeping Ramping alone would already need.
+- **Con:** During an active ramp or crossfade, a string's `values_raw`
+  and its final corrected value can both differ from what a naive "just
+  recomputed with the latest FC" figure would show, for up to
+  `ramp_slots` after any reset point — including a string's first
+  activation of the day, not only later provider updates.
 - **Con:** Adds one more correction layer, per string, on top of
   shading/clipping/derating (ADR-001/ADR-003) and the per-slot model
   itself — one more thing to account for when a number looks "off",
-  though the added attributes in §3 aim to keep that debuggable without
+  though the added attributes in §4 aim to keep that debuggable without
   needing to consult ADR-004's diagnostic sensor.

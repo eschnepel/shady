@@ -154,20 +154,23 @@ clamp applied to this same output — see ADR-003 §1a for why this must
 apply to the corrected output too, not just to training.
 
 **Ordering relative to ADR-006.** This clamp is the *final* step of the
-per-slot pipeline, applied once, after both of ADR-006's stages have
-already run on the raw (unclamped) value: first the FC-update ramp
-(§1a, blending old- and new-`FC`-based predictions over one hour), then
-the intraday deviation correction (§1, multiplying by a ratio that is
-itself separately clamped to `[1-cutoff, 1+cutoff]` in §2 — a different,
-smaller clamp bounding the *multiplier*, not the *output*). Running this
-output clamp any earlier would not guarantee the *final* value respects
-the bound: the ramp's two sides can carry different `FC` bounds, and the
+per-slot pipeline, applied once, after ADR-006's correction (§1) has
+already run on the raw (unclamped) value — whatever shape that takes for
+the currently-configured state: under Ramping (ADR-006 §1a), a single
+ramped-and-clamped-ratio multiply; under Blending (ADR-006 §1b), two
+independently-computed sides (old and new) crossfaded together; under
+Disabled, no correction at all, the value passing through unchanged.
+Either correction's own ratio is itself separately clamped to
+`[1-cutoff, 1+cutoff]` in ADR-006 §2 — a different, smaller clamp
+bounding the *multiplier*, not the *output*. Running this output clamp
+any earlier would not guarantee the *final* value respects the bound: a
+Blending crossfade's two sides can carry different `FC` bounds, and the
 intraday correction can itself push a value that was fine beforehand back
 above or below the limit (e.g. a >1 ratio boosting an already near-limit
 prediction). Clamping only once, last, after everything else has already
 been applied, is what actually guarantees the number Shady outputs never
-violates a physical bound, regardless of which upstream corrections were
-active.
+violates a physical bound, regardless of which state ADR-006's switch is
+currently in.
 
 Regardless of method, `magnitude_weight_i` downweights samples where
 `FC_i` is near zero, because a near-zero forecast slot (sunrise/sunset,
@@ -182,14 +185,15 @@ smoothly approaches, but is only ever exactly `0` at, `FC_i == 0` itself
 full night). A slot with a small but nonzero `FC_i` (deep dawn/dusk, or a
 heavily overcast midday reading) is downweighted, not excluded — it still
 contributes to the fit, just with little influence. This `FC_i == 0`
-boundary is also, separately, the exact definition ADR-006 §1 reuses for
+boundary is also, separately, the exact definition ADR-006 §1a reuses for
 its "active slot" count: a slot is **active** if and only if `FC_i ≠ 0`
 (equivalently, `magnitude_weight_i > 0`) — a plain binary yes/no read of
 the same boundary defined here, not a second, independently-tuned
 near-zero threshold. §2's own regression weighting stays continuous
-throughout; ADR-006 §1's sample-size gate is the one place elsewhere in
-this design that needs a binary answer instead, and it gets that answer
-from this same boundary rather than inventing another one.
+throughout; ADR-006 §1a's rolling-window and ramp-weight calculations are
+the one place elsewhere in this design that needs a binary answer
+instead, and it gets that answer from this same boundary rather than
+inventing another one.
 
 ### 2a — What "good" means here: daily total, not individual slots
 
@@ -377,12 +381,10 @@ systematically different, which is the actual shading-regime signal.
 and the various clamps throughout this design favor robust statistics —
 a handful of weather-driven outlier days should not by themselves trigger
 an exclusion. `neighbor_fitting_cutoff` is a **global**, config-flow-
-exposed setting (§6, default `25%`) — unlike the fixed constants
-elsewhere in this design (e.g. the `12`-active-slot gate in ADR-006 §1),
-this one is user-tunable from the start, since how much regime difference
-counts as "a real boundary" plausibly varies by installation (canopy
-density, obstruction sharpness) in a way the 12-slot gate's underlying
-concept does not.
+exposed setting (§6, default `25%`), user-tunable from the start, since
+how much regime difference counts as "a real boundary" plausibly varies
+by installation (canopy density, obstruction sharpness) in a way a single
+fixed, one-size-fits-all threshold could not capture.
 
 This is a **hard exclusion** (`time_weight_i` effectively forced to `0`
 for every sample in that neighbor series for this slot), not a further
@@ -420,10 +422,9 @@ sweeping through within the window), that shape survives the correction
 too — this is a single multiplicative adjustment, not a point-by-point
 overwrite. `-1%` was chosen as the sentinel because it is not a value a
 real percentage deviation could ever take (deviation is defined as an
-absolute value, §3c), the same kind of "reuse an otherwise-impossible
-value as a mode switch" trick ADR-006 §2 already uses for its own
-cut-off field (`0` there means "disabled" rather than a literal
-zero-width clamp).
+absolute value, §3c) — an otherwise-impossible value repurposed as a
+marker, the same general pattern `regression/base.py` uses `NaN` for, as
+both "invalid sample" and "pad" (ADR-008).
 
 This inherits the same near-zero-`FC` instability §2's `magnitude_weight_i`
 already exists to dampen: if `neighbor_median` is itself very small
@@ -580,8 +581,14 @@ Step "settings" (first):
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all
     strings — ADR-003 §2a)
-  - Intraday deviation-correction cut-off (default 0 = disabled; see
-    ADR-006)
+  - Intraday deviation-correction mode: off / ramping / blending
+    (default off; see ADR-006 §1)
+  - Intraday deviation-correction cut-off (default 10%, applies whenever
+    the mode above is not "off"; see ADR-006 §2)
+  - Intraday deviation-correction rolling window, in slots (default 24 =
+    2h; see ADR-006 §3)
+  - Intraday deviation-correction ramp/blend duration, in slots (default
+    12 = 1h; see ADR-006 §3)
 
 Step "add_string" (repeated):
   - Name (free text, e.g. "Dach Süd")
