@@ -107,7 +107,7 @@ module boundaries.
 | ADR | Title |
 |---|---|
 | [000](adr/000-coding-standards.md) | Code Quality Standards, Programming Style & Core Concepts |
-| [001](adr/001-empirical-shading-model.md) | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, smoothing, rolling window |
+| [001](adr/001-empirical-shading-model.md) | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, rolling window |
 | [002](adr/002-coordinator-update-strategy.md) | Coordinator Update Strategy: Recalibration vs. Forecast Recompute |
 | [003](adr/003-yield-corrections-clipping-derating.md) | Optional Per-String Yield Corrections: Clipping and Derating |
 | [004](adr/004-diagnostics-switch-and-scatter-sensor.md) | Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed) |
@@ -117,5 +117,6 @@ module boundaries.
 | [008](adr/008-numpy-backend-and-cache-array-accessor.md) | Numeric Backend for `regression/`, and a Batched Cache Accessor |
 | [009](adr/009-baseline-forecast-sourcing.md) | Baseline (Unshaded) Forecast Sourcing: Generic Attribute Discovery *(split from ADR-001 §5)* |
 | [010](adr/010-config-flow-shape.md) | Config Flow Shape *(split from ADR-001 §6)* |
+| [011](adr/011-temporal-smoothing-and-neighbor-exclusion.md) | Temporal Smoothing and Neighbor-Regime Exclusion for Slot Training Pools *(split from ADR-001 §3b/§3c/§3d)* |
 
-Further ADRs (011 onward) will be added as brainstorming continues.
+Further ADRs (012 onward) will be added as brainstorming continues.

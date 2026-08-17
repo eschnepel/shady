@@ -126,7 +126,7 @@ factor is:
 
 ```
 w(t) = min(1, active_slots_since_reset / ramp_slots)
-effective_factor(t) = 1 + w(t) × (clamp(ratio_string(t), 1-cutoff, 1+cutoff) - 1)
+effective_factor(t) = 1 + w(t) × (clamp(ratio_string(t), 1-intraday_correction_cutoff, 1+intraday_correction_cutoff) - 1)
 corrected_value(t) = fc_value(t) × effective_factor(t)
 ```
 
@@ -231,7 +231,8 @@ crossfade — never in between, and never separately to either side of a
 Blending crossfade. Clamping either side beforehand would not guarantee
 the actual blended (or single, for Ramping) number respects the bound:
 the two sides of a crossfade can have different `FC` bounds, and either
-side's own ratio (already clamped to `[1-cutoff, 1+cutoff]` in §2 — a
+side's own ratio (already clamped to
+`[1-intraday_correction_cutoff, 1+intraday_correction_cutoff]` in §2 — a
 smaller clamp on the *multiplier*, distinct from the output clamp) can
 still push an otherwise-fine value back out of bounds, e.g. a >1 ratio
 boosting a prediction that was already close to the inverter limit. One
@@ -239,19 +240,23 @@ clamp, applied last, after everything else, is what actually guarantees
 correctness regardless of which state is active or how far into a
 ramp/crossfade a given slot's value currently is.
 
-### 2 — Cut-off: a config-flow field, now a pure magnitude clamp
+### 2 — `intraday_correction_cutoff`: a config-flow field, now a pure magnitude clamp
 
-A single global, config-flow-configurable **cut-off** (a fraction) clamps
-each string's `ratio_string` from §1a to `[1 - cutoff, 1 + cutoff]` before
-it feeds into `effective_factor`. Cutoff does not double as the
-feature's enable switch — that job belongs entirely to §1's three-state
-field — so its default is a real, non-degenerate **`0.10`** (±10%)
-rather than `0` (a value that would only make sense as a disguised
-"off"), and applies whenever §1's switch is not Disabled. A person who
-turns on Ramping or Blending without touching this field gets a
-correction that is actually allowed to do something, rather than one
-that is silently a no-op until they also remember to raise cutoff off
-of zero.
+A single global, config-flow-configurable field, **`intraday_correction_cutoff`**
+(a fraction — named apart from ADR-011 §2's similarly-shaped
+`neighbor_fitting_cutoff`, since the two clamp unrelated things and a
+shared name invited confusion between them), clamps each string's
+`ratio_string` from §1a to
+`[1 - intraday_correction_cutoff, 1 + intraday_correction_cutoff]` before
+it feeds into `effective_factor`. `intraday_correction_cutoff` does not
+double as the feature's enable switch — that job belongs entirely to
+§1's three-state field — so its default is a real, non-degenerate
+**`0.10`** (±10%) rather than `0` (a value that would only make sense as
+a disguised "off"), and applies whenever §1's switch is not Disabled. A
+person who turns on Ramping or Blending without touching this field gets
+a correction that is actually allowed to do something, rather than one
+that is silently a no-op until they also remember to raise
+`intraday_correction_cutoff` off of zero.
 
 ### 3 — Two config-flow timespans: rolling window and ramp/blend duration
 
@@ -272,8 +277,9 @@ Two further config-flow fields, both counted in **5-minute slots**
   reset point — applied at different trigger moments, not several
   durations to reason about separately.
 
-Both fields live in the same config-flow "settings" step as cutoff, the
-training window, regression method, and smoothing radius (ADR-010).
+Both fields live in the same config-flow "settings" step as
+`intraday_correction_cutoff`, the training window, regression method, and
+smoothing radius (ADR-010).
 What changes behavior is solely whether §1's three-state switch is
 turned on at all, and to which state — the defaults above apply
 whenever it is not Disabled.
@@ -315,9 +321,9 @@ Three pure functions are added to `aggregation.py` (ADR-005) — no new
 module needed:
 
 - `intraday_correction_factor(pv_energy_window, fc_energy_window,
-  ramp_weight, cutoff) -> float` — §1a's ratio-clamp-and-ramp math in one
-  function. Called once per string under Ramping, and twice per string
-  (once per side) under Blending.
+  ramp_weight, intraday_correction_cutoff) -> float` — §1a's
+  ratio-clamp-and-ramp math in one function. Called once per string under
+  Ramping, and twice per string (once per side) under Blending.
 - `ramp_weight(active_slots_since_reset, ramp_slots) -> float` — §1a's
   `w(t)`, a tiny pure function shared by both the ramp-in and
   provider-update-restart cases, and by Blending's own `w_blend`.
@@ -367,11 +373,12 @@ method, and smoothing radius (ADR-010).
   crossfading rather than switching, while still converging to exactly
   the same steady-state value Ramping would reach for the same slot, just
   without the dip along the way.
-- **Pro:** Decoupling cutoff from the enable switch (§1/§2) means the
-  three-state field alone answers "is this on", and cutoff alone answers
-  "how strong" — a person turning the feature on gets a cutoff that
-  actually does something (default `0.10`) rather than a field they also
-  have to remember to raise off of zero.
+- **Pro:** Decoupling `intraday_correction_cutoff` from the enable switch
+  (§1/§2) means the three-state field alone answers "is this on", and
+  `intraday_correction_cutoff` alone answers "how strong" — a person
+  turning the feature on gets a cutoff that actually does something
+  (default `0.10`) rather than a field they also have to remember to
+  raise off of zero.
 - **Pro:** Reading §1a's window from the recorder rather than maintaining
   a coordinator-side cache means it is naturally restart-tolerant with no
   extra persistence code for that part — the data was going to be there
@@ -379,8 +386,8 @@ method, and smoothing radius (ADR-010).
 - **Con:** This assumes each string's already-observed deviation (within
   its trailing window) is likely to continue into its own near future,
   which is not always true. This is a deliberate, simple projection, not
-  a weather-aware model — exactly why cutoff exists as a user-tunable
-  clamp rather than an unclamped correction.
+  a weather-aware model — exactly why `intraday_correction_cutoff` exists
+  as a user-tunable clamp rather than an unclamped correction.
 - **Con:** Not using a hard minimum-sample-size gate (§1a) means a
   `ratio_string` computed from a single noisy active slot right after any
   reset point can still influence the displayed value, just weakly (via a
@@ -417,7 +424,9 @@ in place, by §1a's smooth ramp and §1b's unified ordering — one
 continuous function of `w` covering both the first-activation case and
 every later provider update, rather than two separately-gated stages —
 before this ADR was accepted. `ramp_slots`' default (`12`, i.e. 1 hour)
-and `cutoff`'s default (`0.10`) preserve the rough magnitude of those
-earlier fixed values; nothing else about them carries forward, and neither
-default is validated against real installations yet (see the cutoff
-caveat inherited from ADR-001's Consequences).
+and `intraday_correction_cutoff`'s default (`0.10`) preserve the rough
+magnitude of those earlier fixed values; nothing else about them carries
+forward, and neither default is validated against real installations yet
+— the same caveat ADR-011's Consequences already raises about
+`neighbor_fitting_cutoff`'s own (unrelated) default applies here too, for
+`intraday_correction_cutoff`.

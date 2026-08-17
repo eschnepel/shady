@@ -2,9 +2,11 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted
-**Amended:** 2026-08-13 — §1e partially superseded by ADR-008 §2 (see
-the inline amendment note at the end of §1e for specifics; `get_slot_pool`
-itself is unaffected).
+**Amended:** 2026-08-13 — §1e revised: `get_slot_pool` removed (no
+remaining caller — see ADR-008 §2, which added a dedicated batched
+accessor for the full sweep, while diagnostics already had its own
+accessor in §1f). §1e and §1f reworded accordingly; no other behavior
+changes.
 
 ---
 
@@ -33,9 +35,9 @@ individual addition was a reasonable, small extension at the time:
   blend completes (ADR-006 §1b)
 - Per-string historical `(FC, PV)` pool cache, refreshed at
   recalibration/system-start — backs both regression training (ADR-001
-  §3a/§3b) and diagnostics (ADR-004 §3), the two consumers that read the
-  same underlying slot-indexed history rather than each keeping its own
-  copy
+  §3a, ADR-011) and diagnostics (ADR-004 §3), the two consumers that read
+  the same underlying slot-indexed history rather than each keeping its
+  own copy
 
 This is exactly the situation ADR-000 §3 already warns about: "a module
 that starts doing two unrelated things is a signal to split it." It also
@@ -62,7 +64,7 @@ one that requires a fake `hass` to exercise.
 
 Two of the five are genuinely the same *shape* of thing — a 5-minute-
 resolution time series per sensor, over a rolling window: the raw `FC`/
-`PV` history backing both regression training (ADR-001 §3a/§3b) and
+`PV` history backing both regression training (ADR-001 §3a, ADR-011) and
 diagnostics (ADR-004 §3), and the day-snapshot corrected-forecast array
 (ADR-002 §3). §1a–§1e give this one shared, index-addressable design
 rather than bespoke handling per cache. The other two — the fitted-model
@@ -225,22 +227,9 @@ before any accessor reads from it:
 
 ### 1e — Accessor methods
 
-Two genuinely different access shapes are needed by different consumers,
-so `cache.py` offers two purpose-built methods rather than one
-parameterized to cover both:
+`cache.py` exposes one generically-shaped accessor for the "contiguous
+range" pattern, shared across its callers:
 
-- **`get_slot_pool(sensor_ids, slot_of_day, on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id, list[float]]`**
-  — "the same slot, across many days": exactly ADR-001 §3a/§3b/§3c/§3d's
-  training pool shape. Grouped by sensor (one list per sensor-id) since
-  that is what `regression/base.py`'s pool construction consumes directly
-  per string. Default `on_invalid="skip"` — a fit should simply not see
-  an invalid sample, not be corrupted by a placeholder value standing in
-  for one. `window_days` is not a parameter here — it is read from the
-  cache's own construction-time setting (§1) instead. This method is
-  always **today-anchored** — regression fitting (ADR-001 §2) and an
-  auto-tracking diagnostics sensor (ADR-004 §2) both want the live
-  window, never a pinned one; see §1f's `get_pinned_slot_pool` for the
-  manually-pinned case.
 - **`get_time_range(sensor_ids, start, end, on_invalid: Literal["skip", "raw"] | float = 0.0, group_by="sensor"|"slot") -> dict | list[dict]`**
   — "every slot in a contiguous range": ADR-005 §3's whole-day array,
   ADR-006 §1a's trailing rolling window (length configurable, ADR-006
@@ -255,11 +244,23 @@ parameterized to cover both:
   fixed length matters more than it does for a training pool, and `0` is
   a reasonable stand-in for "no data" in a power series.
 
+The other shape this module needs — "the same slot, across many days",
+exactly ADR-001 §3a's / ADR-011's training pool — is **not** given a
+shared, generic accessor. It has exactly two callers, and they turned out
+to need different enough outputs — diagnostics (§1f) wants a pin-aware
+date anchor resolved internally and a plain `list[float]`; regression
+fitting wants a batched `numpy` array across the full 288-slot sweep and
+never a pin — that a single parameterized method would need a branch for
+a concern only one caller actually has. Each gets its own purpose-built
+accessor instead, defined alongside its one caller: `get_pinned_slot_pool`
+for diagnostics, next in §1f; `get_regression_pools` for regression
+fitting, in ADR-008 §2.
+
 **What the third mode, `"raw"`, is for.** `"skip"` and a numeric default
 both
 already discard the difference between "never queried"/"invalidated"
 (`None`) and "queried, definitively unavailable" (`str`, §1a) — the right
-choice for a consumer like `regression/base.py`'s pool construction or
+choice for a consumer like `get_pinned_slot_pool`'s diagnostics caller or
 ADR-005/ADR-006's summed windows, which only ever want a clean
 `list[float]` and have no use for the reason a gap exists. `"raw"` skips
 that shaping step entirely and returns each entry exactly as `cache.py`
@@ -269,34 +270,28 @@ one call, from `list[float]` to `list[float | None | str]`; a consumer
 choosing `"raw"` takes on the same responsibility for handling all three
 states that reading `cache.py`'s `values` store (§1a) directly would
 require, the one difference being that it still goes through §1d's
-validate-before-read step below rather than bypassing it. Neither
-consumer described elsewhere in this design (`get_slot_pool`'s regression
-callers, `get_time_range`'s aggregation/window callers) uses `"raw"`
-today — both genuinely want the cleaned shape their own default already
-gives them — but the accessor design does not foreclose it: a future
+validate-before-read step below rather than bypassing it. No consumer
+described elsewhere in this design uses `"raw"` today — every current
+caller genuinely wants the cleaned shape their own default already gives
+them — but the accessor design does not foreclose it: a future
 diagnostic or data-quality consumer (e.g. surfacing *which* sensors are
 stuck on a stable `"unavailable"` versus merely not-yet-queried) can
 request it from either method without `cache.py` needing a new method or
 a bespoke escape hatch added later.
 
-Both methods **validate before reading**: each call first runs §1d's
-validation function for the requested sensor-ids and range, fetching
-on-demand anything not already fresh, then reads and shapes the result —
-a consumer never has to separately remember to validate first. This
+Both accessors — `get_time_range` above and `get_pinned_slot_pool` in
+§1f — **validate before reading**: each call first runs §1d's validation
+function for the requested sensor-ids and range, fetching on-demand
+anything not already fresh, then reads and shapes the result — a
+consumer never has to separately remember to validate first. This
 applies identically regardless of which `on_invalid` mode is chosen —
 `"raw"` changes how a gap is *reported*, not whether the cache was
 brought up to date before reporting it.
 
 Both **return** a fully-materialized `dict`/`list`, not a generator. Data
 volumes here are small (at most a few thousand floats per call, a
-handful of sensors) — a generator would add interface complexity
-(consumers of `get_slot_pool` want a concrete list to hand to `numpy`/the
-fit routines anyway, ADR-001 §2) for no real memory or latency benefit at
-this scale. *(Amended by ADR-008 §2: the full-sweep consumer now uses a
-dedicated `numpy`-array-returning accessor, `get_regression_pools`,
-instead of converting `get_slot_pool`'s lists itself — see ADR-008 for
-the rationale and the accessor's shape. `get_slot_pool` itself is
-unchanged.)*
+handful of sensors) — a generator would add interface complexity for no
+real memory or latency benefit at this scale.
 
 `sensor_ids` always accepts a **list**, even for a single sensor (a
 one-element list) — the common real callers (ADR-005's cross-string
@@ -332,18 +327,21 @@ reads whether `pinned_reference` is currently set each time it needs to
 know which slot to show: `cache.py`'s one scalar is the *complete*
 answer, not one input alongside separate per-entity state.
 
-A dedicated accessor keeps this out of `get_slot_pool`'s signature
-entirely, consistent with `window_days` also not being a per-call
-argument (§1e): **`get_pinned_slot_pool(sensor_ids, slot_of_day,
-on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id,
-list[float]]`** — same shape as `get_slot_pool`, but its window is
-resolved from `pinned_reference` **internally**: `[pinned_reference −
-window_days, pinned_reference]` if a pin is currently set to a date no
-later than today, otherwise falling back to today-anchored — `[today −
-window_days, today]`, `window_days` sizing the window identically either
-way. A pin to a **future** date takes that same today-anchored branch,
-not a `pinned_reference`-anchored one: recalibration (ADR-002 §1) never
-trains any slot's model on data newer than yesterday, so there is no
+Diagnostics gets its own dedicated accessor for this — rather than a
+`pinned: bool` flag bolted onto a shared method — because pin-resolution
+below is a concern unique to this one caller, consistent with
+`window_days` also not being a per-call argument (§1e):
+**`get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid: Literal["skip",
+"raw"] | float = "skip") -> dict[sensor_id, list[float]]`** — "the same
+slot, across many days" shape (ADR-001 §3a's / ADR-011's training pool),
+scoped to this one caller. Its window is resolved from
+`pinned_reference` **internally**: `[pinned_reference − window_days,
+pinned_reference]` if a pin is currently set to a date no later than
+today, otherwise falling back to today-anchored — `[today − window_days,
+today]`, `window_days` sizing the window identically either way. A pin to
+a **future** date takes that same today-anchored branch, not a
+`pinned_reference`-anchored one: recalibration (ADR-002 §1) never trains
+any slot's model on data newer than yesterday, so there is no
 future-anchored pool for a future pin to resolve to in the first place
 — a future-pinned slot's pool is, and can only ever be, the same one an
 auto-tracking sensor for that same time-of-day already sees (ADR-004
@@ -352,11 +350,12 @@ ADR-004's diagnostics feature ever calls, whether currently pinned or
 auto-tracking — there is no separate today-only diagnostics call to
 choose between; `coordinator.py` never branches on `pinned_reference`
 itself to decide which function to call, it just always calls this one
-and lets it resolve its own anchor. `get_slot_pool` (§1e) remains
-today-anchored only, but is no longer used by diagnostics at all — its
-one remaining caller is regression fitting during recalibration (ADR-001
-§3a/§3b/§3c/§3d), which needs "today", full stop, regardless of any
-diagnostic pin.
+and lets it resolve its own anchor. Regression fitting during
+recalibration needs "today", full stop, regardless of any diagnostic pin
+— it has its own accessor entirely, `get_regression_pools` (ADR-008 §2),
+serving a different caller with a different output shape (a batched
+`numpy` array for the full sweep, rather than this method's
+per-diagnostic-call `list[float]`); the two never share a code path.
 
 Because both branches resolve to the same-shaped `[anchor − window_days,
 anchor]` window and go through the same validate-before-read call
@@ -439,6 +438,8 @@ flowchart BT
   restart-persisted, pushes results to sensors — the only module that
   imports `cache.py`.
 - **`sensor.py` / `config_flow.py` / `switch.py`** — HA entity glue.
+  (`button.py` is omitted from this node's label — unchanged by this
+  ADR, not removed; see ADR-000 §3 or ADR-002 §1 for it.)
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 This slots in exactly where `coordinator.py` already sat in the overall
@@ -497,10 +498,11 @@ only what sits directly beneath it.
   range (§1b) on every rollover, but it is still a piece of bookkeeping
   that has to be gotten right (an off-by-one in `list_offset` silently
   misaligns every subsequent read for that sensor).
-- **Con:** `get_slot_pool`/`get_time_range` (§1e) are two separate
-  methods with different defaults (`on_invalid="skip"` vs. `0.0`, out of
-  the three modes — `"skip"`, a numeric default, or `"raw"` — either
-  accessor accepts) rather than one uniform interface — a deliberate
-  choice given how differently their consumers need to treat a gap, but
-  it means there are two accessor shapes to learn instead of one, each
-  with its own default out of three possible `on_invalid` behaviors.
+- **Con:** `get_time_range` (§1e) and `get_pinned_slot_pool` (§1f) are
+  two separate methods with different defaults (`on_invalid=0.0` vs.
+  `"skip"`, out of the three modes — `"skip"`, a numeric default, or
+  `"raw"` — either accessor accepts) rather than one uniform interface —
+  a deliberate choice given how differently their consumers need to treat
+  a gap, but it means there are two accessor shapes to learn instead of
+  one, each with its own default out of three possible `on_invalid`
+  behaviors.

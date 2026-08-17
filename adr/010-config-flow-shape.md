@@ -47,22 +47,27 @@ Step "settings" (first):
   - Regression method: `wls2` (default) / `linear` / `kernel` / `wls3`
     (global — applies to every configured string, see ADR-001 §2;
     chosen manually, no auto-selection based on data volume)
-  - Smoothing radius in slots (default 1, global; see ADR-001 §3b — `0`
+  - Smoothing radius in slots (default 1, global; see ADR-011 §1 — `0`
     disables temporal smoothing)
-  - Neighbor-fitting cut-off (default 25%, global; see ADR-001 §3c/§3d —
-    the maximum median-ratio deviation a neighbor series may have before
-    being excluded from a slot's training pool; the sentinel `-1%`
-    switches to always-rescale instead of exclude, per ADR-001 §3d; not
-    the same field as ADR-006's intraday-correction cut-off, despite the
-    similar name)
+  - Neighbor-fitting cut-off, `neighbor_fitting_cutoff` (default 25%,
+    global; see ADR-011 §2/§3 — the maximum median-ratio deviation a
+    neighbor series may have before being excluded from a slot's training
+    pool; the sentinel `-1%` switches to always-rescale instead of
+    exclude, per ADR-011 §3)
+  - Clipping threshold, % of inverter limit (default 98%, global; see
+    ADR-003 §1 — applies to every string that has a converter/inverter AC
+    power limit configured in "add_string_advanced" below; a string
+    without a limit configured is never clipping-excluded, but the
+    threshold fraction itself has no per-string override)
   - Default temperature source (optional; entity selector covering
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all
     strings — ADR-003 §2a)
-  - Intraday deviation-correction mode: off / ramping / blending
-    (default off; see ADR-006 §1)
-  - Intraday deviation-correction cut-off (default 10%, applies whenever
-    the mode above is not "off"; see ADR-006 §2)
+  - Intraday deviation-correction mode `intraday_correction_mode`:
+    off / ramping / blending (default off; see ADR-006 §1)
+  - Intraday deviation-correction cut-off, `intraday_correction_cutoff`
+    (default 10%, applies whenever the mode above is not "off"; see
+    ADR-006 §2)
   - Intraday deviation-correction rolling window, in slots (default 24 =
     2h; see ADR-006 §3)
   - Intraday deviation-correction ramp/blend duration, in slots (default

@@ -12,8 +12,9 @@ tier, but that classification is about framework independence, not about
 staying stdlib-only — `numpy` has no Home Assistant dependency and does not
 compromise it. Whether `regression/`'s four strategies (`linear`, `kernel`,
 `wls2`, `wls3`; ADR-001 §2) should actually be *implemented* with `numpy`
-was left open, since ADR-007 §1e only assumed a consumer "wants a concrete
-list to hand to numpy/the fit routines anyway" without committing to it.
+was left open — ADR-007 defined `cache.py`'s storage and access patterns
+without committing to how a caller would turn a training pool into
+something `numpy`/the fit routines consume.
 
 Three implementations of the same math were benchmarked — pure Python
 (closed-form normal equations for the polynomial strategies; a plain loop
@@ -79,18 +80,20 @@ numpy."
 integration) and `pyproject.toml`'s `[project.dependencies]` (so it's
 present for local dev, mypy, and tests too).
 
-### 2 — Amending ADR-007 §1e: a batched, `numpy`-returning accessor for the full sweep
+### 2 — Regression fitting's accessor: a batched, `numpy`-returning method for the full sweep
 
-ADR-007 §1e's `get_slot_pool(sensor_ids, slot_of_day, on_invalid) ->
-dict[sensor_id, list[float]]` takes a single `slot_of_day` and returns a
-plain list. Building one target slot's pool already costs
-`2 × smoothing_radius + 1` calls once the neighbor-slot pooling of ADR-001
-§3b is folded in by the caller; building the full 288-slot sweep costs
-`288 × (2 × smoothing_radius + 1)` calls — 864 with the default radius of
-1 — each returning a small list that a caller would then convert to
-`numpy` itself. That is structurally the naive-per-slot pattern §1 just
-rejected, hiding inside the cache's own call shape rather than in
-`regression/base.py`'s code.
+Building one target slot's training pool one call at a time — the same
+per-slot access pattern `get_pinned_slot_pool` (ADR-007 §1f) uses for its
+one-slot-at-a-time diagnostics caller — already costs
+`2 × smoothing_radius + 1` calls once the neighbor-slot pooling of
+ADR-011 §1 is folded in by the caller; doing that for the full 288-slot
+sweep
+would cost `288 × (2 × smoothing_radius + 1)` calls — 864 with the
+default radius of 1 — each returning a small list that a caller would
+then convert to `numpy` itself. That is structurally the naive-per-slot
+pattern §1 just rejected, so regression fitting's own accessor is never
+built that way in the first place — it gets a dedicated, batched method
+instead of reusing a per-slot one.
 
 A new accessor is added specifically for the full-sweep case:
 
@@ -121,31 +124,35 @@ flowchart LR
     push["cache.push() / cache.invalidate() (§1c)"]
     list3["three-state list\n(float | None | str, §1a)\nsystem of record"]
     shadow["shadow float64 array\n(NaN for gap/unavailable)\nkept in sync incrementally"]
-    slotpool["get_slot_pool()\nsingle slot, list[float]\nunchanged"]
+    pinnedpool["get_pinned_slot_pool()\nsingle slot, list[float]\nADR-007 §1f, unchanged"]
     regpools["get_regression_pools()\nfull sweep, np.ndarray\nnew, §2"]
 
     push --> list3
     push --> shadow
-    list3 --> slotpool
+    list3 --> pinnedpool
     shadow --> regpools
 ```
 
 **`NaN` doubles as both "invalid sample" and "pad."** `regression/base.py`
 already needs a zero-weight-for-padding mechanism regardless — pools are
 ragged whenever the training window hasn't yet reached 28 full days, or a
-neighbor slot was excluded (ADR-001 §3c), or a clipping exclusion applies
+neighbor slot was excluded (ADR-011 §2), or a clipping exclusion applies
 (ADR-003 §1). Deriving that mask as `~np.isnan(pool)` means an invalid
 sample and a padding slot are the same case to the batched fit/predict
 code — no separate invalid-sample handling path is needed on top of the
 padding one that already has to exist.
 
-`get_slot_pool` itself is **unchanged** — it remains the right tool for
-single-slot consumers that have no batching to do, chiefly ADR-004 §2/§3's
-diagnostics recompute, which operates on one pinned slot at a time.
+`get_pinned_slot_pool` (ADR-007 §1f) is **unaffected** by this change —
+it remains the right tool for the one single-slot consumer that has no
+batching to do: ADR-004 §2/§3's diagnostics recompute, which operates on
+one pinned (or auto-tracked) slot at a time. Regression fitting has no
+per-slot accessor of its own to fall back to; `get_regression_pools`
+above is the only way it reads training pools.
 
 **Weight computation stays in `regression/base.py`, not `cache.py`.**
 `get_regression_pools` returns raw `FC`/`PV` pools only; the
-magnitude/time/neighbor-distance weighting of ADR-001 §2/§3b remains
+magnitude/time/neighbor-distance weighting of ADR-001 §2 / ADR-011 §1
+remains
 domain logic living outside the storage layer, consistent with `cache.py`
 staying pure storage rather than acquiring shading-specific
 interpretation (ADR-007's framing). The only change is that this weighting
@@ -161,21 +168,29 @@ dict (ADR-007 §1e's closing paragraph). `predict()` — the hot path, called
 on every recompute (ADR-002 §2) — reads those already-cached arrays
 directly; it never re-touches the time-series cache.
 
-`get_time_range` (ADR-007 §1e's other accessor, serving ADR-005's
-whole-day arrays and ADR-006's trailing-window sums) is **out of scope**
-for this change. Its consumers do simple summation, not a matrix solve or
+`get_time_range` (ADR-007 §1e's contiguous-range accessor, serving
+ADR-005's whole-day arrays and ADR-006's trailing-window sums) is **out
+of scope** for this change. Its consumers do simple summation, not a matrix solve or
 a per-query locally-weighted average, and no batching problem analogous
 to §1's was demonstrated for it. It can receive the same treatment later
 if that changes; nothing here forecloses it.
 
-### 3 — Supersedes one sentence of ADR-007 §1e
+### 3 — How `cache.py`'s three accessors now divide up
 
-ADR-007 §1e's line — *"consumers of `get_slot_pool` want a concrete list
-to hand to `numpy`/the fit routines anyway"* — is superseded by §2 above:
-the full-sweep consumer (`regression/base.py`) now gets a `numpy` array
-directly from `get_regression_pools`, not a list it converts itself.
-`get_slot_pool`'s own list-returning contract is unaffected, for the
-single-slot callers described above.
+Between this ADR and ADR-007, `cache.py` ends up with three accessors,
+each scoped to exactly the consumer(s) that need its shape — no shared,
+generically-parameterized method covers more than one of them:
+
+- **`get_time_range`** (ADR-007 §1e) — contiguous ranges, for
+  ADR-005/ADR-006's summed windows.
+- **`get_pinned_slot_pool`** (ADR-007 §1f) — one slot, pin-aware,
+  `list[float]`, for ADR-004's diagnostics recompute.
+- **`get_regression_pools`** (§2 above) — the full 288-slot sweep,
+  batched, `numpy.ndarray`, for regression fitting alone.
+
+No method here is a generalization of another; each was sized to its one
+caller's actual access pattern rather than to a hypothetical shared
+interface.
 
 ---
 

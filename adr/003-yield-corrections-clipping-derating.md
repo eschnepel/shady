@@ -45,26 +45,36 @@ This ADR is Shady's own.
 Both corrections are optional, so neither adds friction for an
 installation where it doesn't apply — surfaced through an advanced,
 opt-in step in the config flow, since not every installation is clipped
-or thermally exposed to the same degree. Their scope differs, though:
-clipping (§1/§1a) is entirely **per-string** (an inverter limit is a
-property of that specific string's hardware), while derating (§2/§2a/
-§2b) is a **mix** — the temperature source default and the §2c
-provider-already-corrects flag are global (one FC data provider per
-config entry, §2c), the temperature coefficient and an optional
-temperature-source override are per-string. This mirrors the same
-global-vs-per-string split already established elsewhere (ADR-001 §2's
-regression method and §3b's smoothing radius are global; ADR-001 §3's
-models are per-string) rather than following one uniform rule for every
-setting in this ADR.
+or thermally exposed to the same degree. Both are also a **mix** of
+global and per-string scope, rather than falling cleanly on one side:
+for clipping (§1/§1a), *whether it applies at all* is per-string (an
+inverter AC power limit is a property of that specific string's
+hardware — a string without one configured is never clipping-excluded),
+but the threshold fraction itself is a single **global** setting shared
+by every string that has a limit configured; for derating (§2/§2a/§2b),
+the temperature source default and the §2c provider-already-corrects
+flag are global (one FC data provider per config entry, §2c), while the
+temperature coefficient and an optional temperature-source override are
+per-string. This mirrors the same global-vs-per-string split already
+established elsewhere (ADR-001 §2's regression method and ADR-011 §1's
+smoothing radius are global; ADR-001 §3's models are per-string) rather
+than following one uniform rule for every setting in this ADR.
 
 ### 1 — Clipping: exclude, don't downweight
 
 If the user configures an **inverter AC power limit** for a string, any
 historical sample whose actual yield is at or above a threshold fraction
-of that limit (default 98%) is **excluded entirely** from that string's
-training data — not downweighted, unlike the existing
-`magnitude_weight_i` treatment of near-zero baseline samples (ADR-001
-§2).
+of that limit is **excluded entirely** from that string's training data —
+not downweighted, unlike the existing `magnitude_weight_i` treatment of
+near-zero baseline samples (ADR-001 §2). The threshold fraction itself
+(default 98%) is **not** a per-string setting — it is a single global
+value, config-flow-exposed (ADR-010), applied uniformly to every string
+that has an inverter AC power limit configured. Splitting it out
+per-string would let a user tune it to one specific inverter's clipping
+curve slightly more precisely, but the fraction is not sensitive enough
+hardware-to-hardware to justify a second per-string field on top of the
+limit itself — one global value, close to correct everywhere, is judged
+the better trade.
 
 The distinction matters: a near-zero baseline sample is merely *noisy*
 (the true ratio is still meaningful, just unreliable), whereas a clipped
@@ -151,7 +161,8 @@ summer midday" effect that motivates §2 in the first place, without
 requiring a wind sensor most users won't have either.
 
 The temperature *source* is configured **globally** (like the regression
-method and smoothing radius, ADR-001 §2/§3b) — one default for the whole
+method, ADR-001 §2, and smoothing radius, ADR-011 §1) — one default for
+the whole
 integration — but can be **overridden per string** if a particular string
 has its own module sensor (see §4). The temperature *coefficient* remains
 per-string (§4 unchanged), since different strings can use different
@@ -278,7 +289,9 @@ case — see the Consequences below.
 Both corrections live in a new pure module, `yield_correction.py`. Unlike
 `providers/` → `regression/`'s single upward flow, `yield_correction.py`
 is now used at **two** points in the pipeline — once forward, preparing
-training data, and once in reverse, finishing a prediction:
+training data, and once in reverse, finishing a prediction. *(Zoomed-in
+view of this one module's own edges, including the reverse one — see
+ADR-000 §3 for the full, current module graph.)*
 
 ```mermaid
 flowchart BT

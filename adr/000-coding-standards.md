@@ -68,14 +68,12 @@ ignore[misc]`), and `untyped-decorator` errors are attached to the
 `@callback` line itself, not the `def` line below it — mypy's reported line
 number is authoritative and should never be guessed at.
 
-Every module in `providers/normalize.py`, `yield_correction.py`,
-`regression/`, `forecast_adjust.py`, `aggregation.py`, and `cache.py` has
-zero Home Assistant imports and is held to the full, unsuppressed strict
-standard — they are pure, framework-independent Python and are tested as
-such (see §6). This list is deliberately kept identical to §6's — a module
-belongs to this tier if and only if it is also in the zero-mocking test
-tier; the two lists describe the same boundary from two different angles
-and must be updated together whenever a new module is added to either.
+The modules held to this full, unsuppressed strict standard are exactly
+the zero-Home-Assistant-import, pure-Python tier — see §6 for the
+canonical list. A module belongs to this typing tier if and only if it
+is also in §6's zero-mocking test tier; the two are the same boundary
+described from two different angles, so the list itself is kept in one
+place (§6) rather than duplicated here.
 
 ### 3 — Module boundaries and dependency direction
 

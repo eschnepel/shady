@@ -58,7 +58,7 @@ series: [
   },
   {
     name: '-1',
-    data: [ /* same shape, this slot's -1 neighbor (ADR-001 §3b) */ ],
+    data: [ /* same shape, this slot's -1 neighbor (ADR-011 §1) */ ],
   },
   {
     name: '1',
@@ -98,7 +98,7 @@ its own scatter series/color:
 
 - **Slot-pool series**, named by signed slot offset relative to the
   diagnosed slot (`"-1"`, `"0"`, `"1"`, … up to ±`smoothing_radius` from
-  ADR-001 §3b) — each point is one historical day's `[FC_i, PV_i]` pair
+  ADR-011 §1) — each point is one historical day's `[FC_i, PV_i]` pair
   for that slot, i.e. exactly the training data ADR-001 §2's regression
   actually sees for the diagnosed slot's pool. This is the same data a
   person would otherwise have to pull from the recorder by hand to
@@ -304,7 +304,7 @@ the same `ShadyDiagnosticsSwitch` (§1).
 
 Re-querying the recorder for a slot's full rolling-window history
 (`window_days` samples, ADR-001 §4, times up to `2·smoothing_radius + 1`
-slots, ADR-001 §3b) on every 5-minute tick — just to redraw the same
+slots, ADR-011 §1) on every 5-minute tick — just to redraw the same
 `"-1"`/`"0"`/`"1"` series with one slot's worth of difference — would be
 wasteful: that data only meaningfully changes once a day, when the
 rolling window advances by one calendar day.

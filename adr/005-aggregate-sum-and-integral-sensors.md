@@ -155,6 +155,9 @@ day.
 
 ### Module: a new pure aggregation layer
 
+*(Partial view, upstream/downstream context only — see ADR-000 §3 for
+the full, current module graph.)*
+
 ```mermaid
 flowchart BT
     forecast_adjust["forecast_adjust.py"]
