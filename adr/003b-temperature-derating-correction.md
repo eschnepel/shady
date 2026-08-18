@@ -12,6 +12,11 @@ corrections are independently optional, independently configured, and
 share no decision-relevant logic beyond both living in
 `yield_correction.py`. No behavior changed by this split — see ADR-003's
 Revision note.
+**Amended:** 2026-08-18 — §1a/§1b updated: the cell/ambient-tier
+prediction-time fallback is no longer naive persistence, but a learned
+per-slot forecast (ADR-003c), with the forward+reverse correction now
+skipped together, not just the reverse half, when no forecast-capable
+predictor is available. See ADR-003c for the full mechanism.
 
 ---
 
@@ -74,6 +79,15 @@ thing (shading), rather than "shading plus whatever thermal effect wasn't
 otherwise accounted for", and keeps `regression/` itself unaware of a
 concern that belongs one layer below it.
 
+**This forward step does not run on its own for the module/cell-sensor
+or ambient-sensor tiers.** For those two tiers (§1a), this correction
+only applies if a weather forecast entity for temperature prediction is
+also configured (ADR-003c §3) — without one, ADR-003c §5 skips this
+forward normalization *and* §1b's reverse transform together, not just
+the reverse half. A string on the weather-integration tier is
+unaffected by this coupling, since that tier already forecasts natively
+and never depends on ADR-003c's mechanism.
+
 ### 1a — Temperature source: a hierarchy, not one fixed sensor type
 
 A dedicated per-module/per-string temperature sensor is the most accurate
@@ -97,7 +111,9 @@ this source is actually resolved and fetched at runtime — a second
 concrete provider alongside baseline discovery, reusing `cache.py`
 unchanged — is specified in ADR-012, which is the source of truth for
 that connective architecture; this section stays scoped to which sources
-are supported and the formulas below.)*
+are supported and the formulas below. How the module/cell and ambient
+tiers obtain a genuine forecast rather than a live reading is specified
+in ADR-003c — see §1b below.)*
 
 **Ambient → cell temperature uplift**, used whenever the configured source
 is ambient or weather-based rather than a direct module reading:
@@ -163,18 +179,17 @@ prediction time, specifically for the ambient/weather tier:
   integrations expose both; §1a's restriction to current-condition-only
   is a training-time concern only — this is a separate, prediction-time-only
   use of the same configured entity.
-- **Plain ambient or module sensor source** (no forecast capability):
-  falls back to a naive persistence assumption — the most recently known
-  reading is used as the expected temperature for every future slot being
-  predicted, rather than leaving the reverse step unapplied. ADR-012 §3
-  specifies how this is implemented (reusing `cache.py`'s existing
-  time-series accessor, no new persistence mechanism) — this is a real
-  approximation with no claim to accuracy beyond "better than assuming
-  exactly 25 °C for every future hour regardless of season or time of
-  day" — a user who wants better accuracy here should point the
-  temperature source at a forecast-capable `weather.*` entity for this
-  purpose specifically, even if a more accurate module sensor is
-  configured for the training side in §1a.
+- **Module/cell sensor or ambient sensor source** (no forecast
+  capability of their own): ADR-003c specifies a learned per-slot model
+  that forecasts this tier's expected reading from a weather entity's
+  own temperature forecast — reusing the same slot-partitioned,
+  rolling-window machinery ADR-001 already applies to the shading model
+  itself. If no forecast-capable weather entity is available to train
+  that model against, this correction — both this forward step and this
+  reverse step — is skipped entirely for the string in question, rather
+  than falling back to a cruder approximation; see ADR-003c §5 for why a
+  training-time-only correction with no matching reversal is worse than
+  no correction at all.
 
 Like §1's forward transform, this reverse step is a pre/post-processing
 concern, not something `regression/` (ADR-001 §2) knows about — it is
@@ -290,7 +305,13 @@ flowchart BT
 `yield_correction.py` itself stays a single, small, stateless module —
 the forward and reverse functions are two entry points into the same
 pure logic (one is exactly the algebraic inverse of the other), not two
-separately-maintained implementations of the correction.
+separately-maintained implementations of the correction. `regression/`
+is used a second time here, independently of its shading-model role
+above: ADR-003c's learned per-slot temperature forecast (for the
+cell/ambient tiers only) reuses the same fitting strategies for a
+different pair of series — see ADR-003c §2 for that second use, not
+reflected as a separate node in the diagram above since it reuses
+`regression/` as-is rather than adding a module.
 
 Derating is a no-op when not configured for a string (the function
 returns the input series unchanged), so a string with no temperature
@@ -341,16 +362,12 @@ override rule specifically.
   (systematic over/under-prediction by temperature) with no duplicated
   logic to keep in sync.
 - **Con:** §1b's reverse transform needs a genuine *forecast* of
-  temperature for the target slot, not merely a current reading — only
-  available if the configured source is a `weather.*` entity exposing a
-  forecast attribute. A plain ambient or module sensor falls back to
-  persisting its latest known reading for every future slot (ADR-012
-  §3), which is a materially cruder approximation the further ahead the
-  prediction is (tomorrow's forecast persisting today's temperature is a
-  weaker assumption than the next hour doing so) — a user who wants
-  accurate derating correction specifically benefits from pointing the
-  source at a forecast-capable entity, even if a more precise module
-  sensor is configured for the training side.
+  temperature for the target slot, not merely a current reading. For the
+  weather-integration tier this is native; for the cell/ambient tiers,
+  ADR-003c's learned model supplies it when a forecast-capable weather
+  entity is available anywhere in the configuration, and the correction
+  is skipped entirely (not degraded) when one is not — see ADR-003c §5
+  for the trade-off this represents.
 - **Con:** The default temperature coefficient (−0.4%/°C) is a
   reasonable industry-typical default, not a measured value for the
   user's specific hardware — a user who leaves it at default gets an

@@ -125,9 +125,11 @@ flowchart BT
   per-slot model to its raw baseline series.
 - **`aggregation.py`** — pure logic: cross-string sums, whole-day arrays,
   trapezoidal energy-increment calculation; see ADR-005.
-- **`cache.py`** — pure logic: index-addressable time-series store for
-  FC/PV history and the day-snapshot array, plus simple dict stores for
-  the model cache and ramp state, and the persisted integral totals; no
+- **`cache.py`** — pure logic: index-addressable time-series store,
+  generic over any `sensor_id` (used for FC/PV history and the
+  day-snapshot array, and, per ADR-003c, weather-forecast/cell-or-ambient
+  temperature pairs), plus simple dict stores for the model cache and
+  ramp state, and the persisted integral totals; no
   HA imports, constructed with an injected `fetch_fn` so it never imports
   the recorder API itself; see ADR-007.
 - **`coordinator.py`** — orchestrates: registers all scheduling triggers,

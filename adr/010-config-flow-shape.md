@@ -8,6 +8,8 @@ fields introduced by several other ADRs, and was already being
 referenced externally (ADR-003a/ADR-003b, ADR-005, ADR-006) as if it
 were its own document. No behavior changed by this split — see ADR-001's
 Revision note.
+**Amended:** 2026-08-18 — added the weather forecast entity and
+temperature regression method fields introduced by ADR-003c.
 
 ---
 
@@ -16,10 +18,10 @@ Revision note.
 Shady's config flow collects settings introduced across several ADRs:
 the regression model and its granularity/smoothing/window (ADR-001
 §2/§3/§4), baseline sourcing (ADR-009), yield corrections (ADR-003a,
-ADR-003b), and the intraday deviation correction (ADR-006). This ADR is the single,
-authoritative specification of the resulting flow's shape and step
-ordering — other ADRs that add a config-flow field point here rather
-than each describing their own step placement.
+ADR-003b, ADR-003c), and the intraday deviation correction (ADR-006).
+This ADR is the single, authoritative specification of the resulting
+flow's shape and step ordering — other ADRs that add a config-flow
+field point here rather than each describing their own step placement.
 
 ---
 
@@ -63,6 +65,22 @@ Step "settings" (first):
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all
     strings — ADR-003b §1a)
+  - Weather forecast entity for temperature prediction (optional; entity
+    selector covering weather.* entities; used to forecast the expected
+    module/cell or ambient temperature for the module/cell-sensor and
+    ambient-sensor tiers above — see ADR-003c §3. Global, not
+    per-string, and independent of the baseline candidate above even if
+    that candidate also happens to be a weather.* entity. Leave empty to
+    disable ADR-003c's forecast mechanism: any string using the
+    module/cell or ambient temperature tier then gets no derating
+    correction at all, forward or backward — see ADR-003c §5. Not shown
+    or relevant if the weather-integration tier is the only temperature
+    source in use, since that tier already forecasts natively)
+  - Temperature regression method: `wls2` (default) / `linear` /
+    `kernel` / `wls3` (global; only relevant if the field above is set —
+    see ADR-003c §2. Independent of the shading-model regression method
+    above: the two fit unrelated physical relationships and are not
+    forced to share one method choice)
   - Intraday deviation-correction mode `intraday_correction_mode`:
     off / ramping / blending (default off; see ADR-006 §1)
   - Intraday deviation-correction cut-off, `intraday_correction_cutoff`

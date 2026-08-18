@@ -33,11 +33,15 @@ individual addition was a reasonable, small extension at the time:
   intact, unlike the others below
 - Short-lived per-string ramp/crossfade state, discarded once a ramp or
   blend completes (ADR-006 §1b)
-- Per-string historical `(FC, PV)` pool cache, refreshed at
-  recalibration/system-start — backs both regression training (ADR-001
-  §3a, ADR-011) and diagnostics (ADR-004 §3), the two consumers that read
-  the same underlying slot-indexed history rather than each keeping its
-  own copy
+- Per-string historical two-series pool cache, generic over any pair of
+  `sensor_id`s, refreshed at recalibration/system-start — backs both
+  regression training (ADR-001 §3a, ADR-011) and diagnostics (ADR-004
+  §3) for the `(FC, PV)` pair specifically, the two consumers that read
+  the *same* underlying slot-indexed history rather than each keeping
+  its own copy. Per ADR-003c, the same mechanism (not the same stored
+  data) also backs a second, unrelated pair — `(weather-forecast
+  temperature, cell-or-ambient temperature)` — for the learned
+  temperature forecast.
 
 This is exactly the situation ADR-000 §3 already warns about: "a module
 that starts doing two unrelated things is a signal to split it." It also
@@ -63,11 +67,15 @@ not-yet-populated slot behave sensibly) is now a pure-logic question, not
 one that requires a fake `hass` to exercise.
 
 Two of the five are genuinely the same *shape* of thing — a 5-minute-
-resolution time series per sensor, over a rolling window: the raw `FC`/
-`PV` history backing both regression training (ADR-001 §3a, ADR-011) and
-diagnostics (ADR-004 §3), and the day-snapshot corrected-forecast array
-(ADR-002 §3). §1a–§1e give this one shared, index-addressable design
-rather than bespoke handling per cache. The other two — the fitted-model
+resolution time series per sensor, over a rolling window, generic over
+`sensor_id` rather than tied to any specific pair of series: the raw
+`FC`/`PV` history backing both regression training (ADR-001 §3a,
+ADR-011) and diagnostics (ADR-004 §3), and the day-snapshot
+corrected-forecast array (ADR-002 §3). §1a–§1e give this one shared,
+index-addressable design rather than bespoke handling per cache — a
+design that pays off again in ADR-003c, which reuses this same
+accessor, unmodified, for a pair of series with nothing to do with
+shading. The other two — the fitted-model
 cache (objects, not floats) and the short-lived ramp/crossfade state
 (ADR-006 §1b) — stay simple `dict[key, value]` structures without that
 machinery;
@@ -463,9 +471,10 @@ only what sits directly beneath it.
   (ADR-000 §3) instead of introducing a third category that's neither.
 - **Pro:** The index-addressable time-series design (§1a-§1e) is one
   shared implementation backing multiple caches (raw `FC`/`PV` history
-  for both training and diagnostics, the day-snapshot array) instead of
-  bespoke handling per consumer — a bug fixed or an optimization made in
-  the validation/fetch logic (§1d) benefits all of them at once.
+  for both training and diagnostics, the day-snapshot array — and, per
+  ADR-003c, a second and unrelated series pair) instead of bespoke
+  handling per consumer — a bug fixed or an optimization made in the
+  validation/fetch logic (§1d) benefits all of them at once.
 - **Pro:** The three-state value model (`float`/`None`/`str`, §1a)
   distinguishes "not yet known" from "known to be unavailable" — without
   it, an entity with genuine recorder gaps would be re-queried forever,

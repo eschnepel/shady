@@ -115,6 +115,7 @@ module boundaries.
 | [003](adr/003-yield-corrections-clipping-derating.md) | *Superseded — split into ADR-003a and ADR-003b (2026-08-18)* |
 | [003a](adr/003a-inverter-clipping-exclusion.md) | Optional Per-String Yield Correction: Inverter Clipping Exclusion *(split from ADR-003 §1/§1a)* |
 | [003b](adr/003b-temperature-derating-correction.md) | Optional Per-String Yield Correction: Temperature Derating *(split from ADR-003 §2/§2a/§2b/§2c/§3)* |
+| [003c](adr/003c-temperature-forecast-via-learned-model.md) | Temperature Derating: Forecasting the Target-Slot Temperature via a Learned Per-Slot Model *(amends ADR-003b §1a/§1b, ADR-012 §3, ADR-010)* |
 | [004](adr/004-diagnostics-switch-and-scatter-sensor.md) | Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed) |
 | [005](adr/005-aggregate-sum-and-integral-sensors.md) | Cross-String Aggregate Sensors: Sums and Daily Integrals |
 | [006](adr/006-intraday-deviation-correction.md) | Intraday Deviation Correction for the Remaining-Today Forecast |

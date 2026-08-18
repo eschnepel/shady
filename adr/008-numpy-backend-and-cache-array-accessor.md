@@ -150,7 +150,11 @@ per-slot accessor of its own to fall back to; `get_regression_pools`
 above is the only way it reads training pools.
 
 **Weight computation stays in `regression/base.py`, not `cache.py`.**
-`get_regression_pools` returns raw `FC`/`PV` pools only; the
+`get_regression_pools` returns raw, padded pools for whatever
+`sensor_ids` it is given — `FC`/`PV` for the shading model, and, per
+ADR-003c, a weather-forecast-temperature/cell-or-ambient-temperature
+pair for the learned temperature forecast; its signature (`sensor_ids:
+list[str]`) was already generic before that second use existed. The
 magnitude/time/neighbor-distance weighting of ADR-001 §2 / ADR-011 §1
 remains
 domain logic living outside the storage layer, consistent with `cache.py`

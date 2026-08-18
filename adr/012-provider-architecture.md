@@ -95,20 +95,23 @@ Temperature series reuse `cache.py`'s existing time-series storage and
 `get_time_range` accessor (ADR-007 §1a/§1b/§1e) exactly as baseline and
 actual-yield already do — additional `sensor_id` entries in the same
 `values`/`validated` dicts, nothing about `cache.py`'s internal design
-changes.
+changes. ADR-003c's learned per-slot temperature forecast reuses this
+same accessor for both its predictor and target series, and reuses
+ADR-008's batched pool accessor for the fit itself — the pattern below
+extends the same way it already did before that ADR existed.
 
-The one temperature-specific behavior ADR-003b §1b calls for — "the most
-recently known reading is used as the expected temperature for every
-future slot" for a plain sensor with no forecast capability — needs no
-new persistence mechanism either. It is ordinary post-processing done by
-the caller (`yield_correction.py`'s reverse transform, via
-`forecast_adjust.py`): fetch a short trailing window ending "now" through
-the same `get_time_range` accessor, take its last valid entry, and reuse
-that single scalar as a constant across every future slot's
-`target_cell_temperature` calculation. `cache.py` itself does not need to
-know this value is being held constant — it only ever answers "what was
-this sensor's value in this range," the same question it already answers
-for every other series.
+**Superseded by ADR-003c (2026-08-18):** the paragraph that originally
+followed here described implementing ADR-003b §1b's now-superseded
+naive-persistence fallback ("hold the most recently known reading
+constant for every future slot") as ordinary post-processing over this
+same accessor, with no new cache mechanism. That fallback no longer
+exists — ADR-003c §5 replaced it with either a genuine learned forecast
+or no correction at all, for the reasons given there. The point this
+paragraph existed to make — that whatever temperature-adjacent behavior
+is needed, `cache.py` itself does not need to change to support it — is
+still correct, and is reaffirmed by ADR-003c's own reuse of this same
+accessor for its predictor and target series above, and its reuse of
+ADR-008's pool accessor for the fit.
 
 ### 4 — Module boundary is unchanged
 
