@@ -222,7 +222,7 @@ clamp-ordering rule; ADR-001 §2 points here rather than restating it.)*
 correction into one continuous function of `w`, so Ramping needs only
 ever evaluate it once per slot: `fc_value × effective_factor`, still
 *unclamped* at this point
-(after the temperature reverse-transform, ADR-003 §2b, but before ADR-001
+(after the temperature reverse-transform, ADR-003b §1b, but before ADR-001
 §2's `[0, FC]`/inverter-limit clamp). Blending evaluates it twice — once
 for `old_prediction`, once for `new_prediction`, each independently
 unclamped — and only *then* crossfades the two. Either way, ADR-001 §2's
@@ -406,7 +406,7 @@ method, and smoothing radius (ADR-010).
   `ramp_slots` after any reset point — including a string's first
   activation of the day, not only later provider updates.
 - **Con:** Adds one more correction layer, per string, on top of
-  shading/clipping/derating (ADR-001/ADR-003) and the per-slot model
+  shading/clipping/derating (ADR-001/ADR-003a/ADR-003b) and the per-slot model
   itself — one more thing to account for when a number looks "off",
   though the added attributes in §4 aim to keep that debuggable without
   needing to consult ADR-004's diagnostic sensor.

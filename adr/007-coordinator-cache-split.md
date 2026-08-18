@@ -403,10 +403,10 @@ mind five different caches' internal shapes while doing so.
 
 Picking up from `regression/` in ADR-000 §3's full diagram: `providers/`
 and `regression/` are unchanged and omitted below. `yield_correction.py`
-is also omitted here — not because it is unchanged (ADR-003 §3 gave it a
+is also omitted here — not because it is unchanged (ADR-003b §2 gave it a
 second, reverse edge from `forecast_adjust.py`, reflected in ADR-000 §3's
 diagram), but because nothing in *this* ADR touches it; see ADR-000 §3 or
-ADR-003 §3 for `yield_correction.py`'s own up-to-date diagram, including
+ADR-003b §2 for `yield_correction.py`'s own up-to-date diagram, including
 that reverse edge from `forecast_adjust.py` below.
 
 ```mermaid

@@ -97,22 +97,25 @@ flowchart BT
     coordinator --> cache
     entity_glue --> coordinator
     init --> entity_glue
-    forecast_adjust -.->|"reverse transform, ADR-003 §2b/§3"| yield_correction
+    forecast_adjust -.->|"reverse transform, ADR-003b §1b/§2"| yield_correction
 ```
 
-- **`providers/`** (`discovery.py`, `normalize.py`, `base.py`) — pure-ish:
-  discovers + normalizes forecast/sunshine/cloud-coverage baseline series
-  from whatever HA entity exposes them; see ADR-009. Reads `hass.states`
-  only — no writes, no coordinator/internal API access. Also broadcasts a
-  source's native resolution (hourly/half-hourly/5-minute) across the
-  5-minute slot grid.
+- **`providers/`** (`discovery.py`, `normalize.py`, `base.py`,
+  `temperature.py`) — pure-ish: reads external time series from whatever
+  HA entity exposes them, behind the shared `base.py` protocol defined in
+  ADR-012 — that document is the source of truth for what `providers/`
+  contains and why. `discovery.py` + `normalize.py` discover and
+  normalize the forecast/sunshine/cloud-coverage baseline series (ADR-009);
+  `temperature.py` resolves the config-flow-selected temperature source
+  (ADR-003b §1a). Both read `hass.states` only — no writes, no
+  coordinator/internal API access.
 - **`yield_correction.py`** — pure logic: optional per-string clipping
-  exclusion + temperature derating correction, no-op if not configured.
-  Used at two points in the pipeline, not only the one upward edge above:
-  `regression/` calls it forward to prepare training data, and
-  `forecast_adjust.py` calls back into it in reverse (the dashed edge
-  above) to finish a prediction — see ADR-003, especially §3's diagram
-  for the detailed view of this module alone.
+  exclusion (ADR-003a) + temperature derating correction (ADR-003b),
+  no-op if not configured. Used at two points in the pipeline, not only
+  the one upward edge above: `regression/` calls it forward to prepare
+  training data, and `forecast_adjust.py` calls back into it in reverse
+  (the dashed edge above) to finish a prediction — see ADR-003b §2 for
+  the detailed view of this module alone.
 - **`regression/`** (`base.py`, `kernel.py`, `linear.py`, `wls2.py`,
   `wls3.py`) — pure logic: pluggable per-string, per-5-minute-slot
   regression strategy — linear/kernel/wls2/wls3, fitting actual yield as
@@ -136,10 +139,6 @@ flowchart BT
   `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1); `button.py` is
   `ShadyRecalculateButton` (ADR-002 §4).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
-
-There is deliberately no `sun_geometry.py`: the regression predictor is
-the raw forecast value itself (ADR-001 §1), fit per 5-minute slot, and no
-module in the architecture needs astronomical calculations.
 
 Dependencies point upward only. `providers/normalize.py`,
 `yield_correction.py`, `regression/`, `forecast_adjust.py`,
@@ -168,8 +167,8 @@ baseline.
   it does to public HA-facing methods — `mypy --strict` does not
   distinguish, and a single unannotated parameter triggers `no-untyped-def`
   just as an entirely bare signature does.
-- `@dataclass` is used for plain data containers (`SunPosition`,
-  `WeightedSample`, `FittedModel`) instead of dicts or named tuples — gives
+- `@dataclass` is used for plain data containers (`WeightedSample`,
+  `FittedModel`) instead of dicts or named tuples — gives
   attribute access, auto-generated `__init__`/`__repr__`/`__eq__`, and a
   single place to add validation later if needed.
 
@@ -230,7 +229,7 @@ baseline.
   without having to re-derive it from the numbers alone.
 - Invariant checks (e.g. `0.0 <= corrected_output <= FC` — or `<=
   min(FC, inverter_limit)` when a clipping limit is configured, per
-  ADR-001 §2 / ADR-003 §1a — for every sample) are asserted explicitly in
+  ADR-001 §2 / ADR-003a §1a — for every sample) are asserted explicitly in
   tests, not just spot-checked values — these are the most important
   correctness guarantees of the whole system and are tested as
   first-class assertions in every scenario class. Each of the four

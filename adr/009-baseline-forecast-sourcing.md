@@ -5,7 +5,7 @@
 **Split from:** ADR-001 §5. Originally part of the shading-model ADR;
 extracted because baseline sourcing is a separable concern from the
 regression model itself, and was already being referenced externally
-(ADR-003, ADR-004) as if it were its own document. No behavior changed
+(ADR-003a/ADR-003b, ADR-004) as if it were its own document. No behavior changed
 by this split — see ADR-001's Revision note.
 
 ---
@@ -94,7 +94,10 @@ identically.
 directly among the "pure-ish" layer (see the module diagram in ADR-000
 §3) — it still never writes state and never reaches into another
 integration's internal coordinator or `hass.data`, only its public
-entity state/attributes.
+entity state/attributes. `providers/discovery.py` is one of two concrete
+providers this rule applies to; see ADR-012 §4 for the module boundary
+as it applies to `providers/` as a whole, including the temperature
+provider this ADR does not otherwise discuss.
 
 ### 5 — Global default, per-string override
 
@@ -105,7 +108,10 @@ for the whole installation. Any individual string can still override
 this with its own baseline candidate (e.g. a per-plane Solcast site for
 that specific string's orientation) if configured; if it does not, it
 uses the global default. This mirrors the same global-with-override
-shape already used for the temperature source (ADR-003 §2a).
+shape already used for the temperature source (ADR-003b §1a) — see
+ADR-012 §1, which is the source of truth for the shared `providers/`
+protocol both this discovery/normalize pair and the temperature provider
+implement.
 
 ---
 

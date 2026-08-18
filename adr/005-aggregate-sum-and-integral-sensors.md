@@ -36,7 +36,7 @@ baseline updates or recalibration. State: current summed power (W).
 
 Sums every configured string's **corrected forecast for the current
 slot** (ADR-001 §2, after the clamps in ADR-001 §2 and, where configured,
-ADR-003 §1a). Updates on the same trigger as the per-string
+ADR-003a §1a). Updates on the same trigger as the per-string
 corrected-forecast sensors (ADR-002 §2 — model update or baseline update),
 not independently. State: current summed corrected power (W).
 

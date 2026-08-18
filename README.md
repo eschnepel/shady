@@ -81,19 +81,22 @@ value, not against time or sun position:
    energy and corrected-forecast energy, both resetting at midnight) for
    a direct actual-vs-forecast comparison in kWh over the course of the
    day.
-8. Optional, **per string**: the remaining-day forecast reacts to the
-   actual-vs-forecast deviation observed over the last 2 hours (read
-   directly from recorder history, once at least 12 active slots exist in
-   that window), bounded by a configurable cutoff (default `0` =
-   disabled). Per string, because e.g. snow under a shaded string melts
-   later than under an unshaded one — an aggregated value would blend the
-   two. After every provider forecast update, there is also a one-hour
-   linear crossfade between the old and new FC value, so weather-model
-   updates don't appear as a jump on the dashboard.
+8. Optional, **per string**, three-state (`off` / `ramping` / `blending`,
+   default `off`): the remaining-day forecast can react to the
+   actual-vs-forecast deviation observed over a rolling window (default
+   24 slots = 2h, read from recorder history), bounded by a configurable
+   cutoff (default 10%). Per string, because e.g. snow under a shaded
+   string melts later than under an unshaded one — an aggregated value
+   would blend the two. **Ramping** smoothly phases the correction factor
+   in over a configurable duration (default 12 slots = 1h) after any
+   reset point, including a string's first activation of the day.
+   **Blending** instead crossfades between the old and new prediction
+   over that same duration after a provider forecast update, so
+   weather-model updates don't appear as a jump on the dashboard.
 
 ## Open questions for further brainstorming
 
-- Validate the smoothing-radius default (§3b) against real data.
+- Validate the smoothing-radius default (ADR-011 §1) against real data.
 
 ## Structure
 
@@ -109,7 +112,9 @@ module boundaries.
 | [000](adr/000-coding-standards.md) | Code Quality Standards, Programming Style & Core Concepts |
 | [001](adr/001-empirical-shading-model.md) | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, rolling window |
 | [002](adr/002-coordinator-update-strategy.md) | Coordinator Update Strategy: Recalibration vs. Forecast Recompute |
-| [003](adr/003-yield-corrections-clipping-derating.md) | Optional Per-String Yield Corrections: Clipping and Derating |
+| [003](adr/003-yield-corrections-clipping-derating.md) | *Superseded — split into ADR-003a and ADR-003b (2026-08-18)* |
+| [003a](adr/003a-inverter-clipping-exclusion.md) | Optional Per-String Yield Correction: Inverter Clipping Exclusion *(split from ADR-003 §1/§1a)* |
+| [003b](adr/003b-temperature-derating-correction.md) | Optional Per-String Yield Correction: Temperature Derating *(split from ADR-003 §2/§2a/§2b/§2c/§3)* |
 | [004](adr/004-diagnostics-switch-and-scatter-sensor.md) | Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed) |
 | [005](adr/005-aggregate-sum-and-integral-sensors.md) | Cross-String Aggregate Sensors: Sums and Daily Integrals |
 | [006](adr/006-intraday-deviation-correction.md) | Intraday Deviation Correction for the Remaining-Today Forecast |
@@ -118,5 +123,6 @@ module boundaries.
 | [009](adr/009-baseline-forecast-sourcing.md) | Baseline (Unshaded) Forecast Sourcing: Generic Attribute Discovery *(split from ADR-001 §5)* |
 | [010](adr/010-config-flow-shape.md) | Config Flow Shape *(split from ADR-001 §6)* |
 | [011](adr/011-temporal-smoothing-and-neighbor-exclusion.md) | Temporal Smoothing and Neighbor-Regime Exclusion for Slot Training Pools *(split from ADR-001 §3b/§3c/§3d)* |
+| [012](adr/012-provider-architecture.md) | Provider Architecture: Shared Base Class and Cache Reuse for External Series |
 
-Further ADRs (012 onward) will be added as brainstorming continues.
+Further ADRs (013 onward) will be added as brainstorming continues.

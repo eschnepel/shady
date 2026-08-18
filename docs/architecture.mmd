@@ -3,8 +3,7 @@ flowchart TB
 
   subgraph String["Per string (for each configured string)"]
     TEMPBACK[Temperature back-conversion<br/>to target-slot temperature]
-    RAMP[Stage 1: FC update ramp<br/>1h linear]
-    INTRA[Stage 2: intraday correction<br/>2h window from recorder]
+    INTRADAY[Intraday deviation correction<br/>off / ramping / blending]
     CLAMP[Clamp 0..FC<br/>or inverter limit<br/>final step]
     PVSensor([Sensor: actual yield<br/>per string])
     CLIP[Clipping exclusion<br/>training]
@@ -44,11 +43,11 @@ flowchart TB
     FC --> FIT
     FIT --> PRED
     FCLive --> PRED
-    PRED --> TEMPBACK --> RAMP --> INTRA
-    PVSensor --> INTRA
-    INTRA --> CLAMP --> FCSensor
+    PRED --> TEMPBACK --> INTRADAY
+    PVSensor --> INTRADAY
+    INTRADAY --> CLAMP --> FCSensor
 
-    RAMP ~~~~~~ SWITCH
+    INTRADAY ~~~~~~ SWITCH
   FCSensor --> DAYSUM
     DAYSUM --> REST
     SUMPV --> INTPV

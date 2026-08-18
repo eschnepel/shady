@@ -13,6 +13,14 @@ to ADR-011; no behavioral change — see the Revision note.
 
 ---
 
+**This ADR still covers:** predictor space (§1), regression method
+(§2/§2a), per-string/per-slot granularity (§3/§3a), rolling training
+window (§4).
+**Moved out:** baseline forecast sourcing → ADR-009; config flow shape →
+ADR-010; temporal smoothing and neighbor-regime exclusion → ADR-011.
+
+---
+
 ## Context
 
 The original idea for Shady was to have the user manually describe the
@@ -35,7 +43,7 @@ empirical model** that learns the shading pattern directly from recorder
 history, and defines the regression model itself: the predictor,
 fitting strategy, per-string/per-slot granularity, and rolling training
 window. Baseline (unshaded) forecast sourcing and the config flow shape
-that ties this model together with ADR-003 and ADR-006 are split out
+that ties this model together with ADR-003a/ADR-003b and ADR-006 are split out
 into ADR-009 and ADR-010 respectively (originally §5 and §6 of this
 ADR).
 
@@ -63,12 +71,17 @@ one remaining variable that is (a) genuinely informative about the
 future prediction is the raw forecast value itself — not a geometric
 quantity that would need computing from scratch via `sun_geometry.py`.
 
-This also means Shady needs **no astronomical calculation at all** (see
-the module diagram in ADR-000 §3) — nothing in the design depends on sun
-azimuth/elevation, and latitude/longitude/elevation are not needed as
-regression inputs (they may still be useful for other purposes, e.g.
-determining sunrise/sunset for UI purposes, but are not required by the
-model itself).
+This also means Shady needs **no astronomical calculation at all**.
+Sun position (azimuth/elevation) and location (latitude/longitude/
+elevation) were both evaluated as possible predictor-space candidates
+early in the project's design and rejected for the reasons above —
+slot partitioning already carries the "is this moment typically shaded"
+information more directly and without the accuracy/maintenance cost a
+geometric calculation would add. Nothing in the current architecture
+depends on either: there is deliberately no `sun_geometry.py` module
+(see the module diagram in ADR-000 §3), and no location field anywhere
+in the config flow (ADR-010). This is the only place in the ADR set that
+discusses this; it is not revisited elsewhere.
 
 ### 2 — Regression method: a pluggable, globally-selected strategy
 
@@ -79,7 +92,7 @@ ways:
 - **Training-time `FC`** — the string's raw `FC` *history* (via
   `providers/`, ADR-009, and the recorder), read for every historical
   sample in a slot's pool (§3a, ADR-011 §1). Paired with that same sample's
-  (clipped-and-normalized, per ADR-003 §1/§2) actual yield, this is what
+  (clipped-and-normalized, per ADR-003a §1/ADR-003b §1) actual yield, this is what
   `fit(samples)` below trains on.
 - **Prediction-time `FC`** — the slot's *current/live* raw `FC` value for
   today or tomorrow (the same value `providers/` exposes going forward,
@@ -161,8 +174,8 @@ The predicted output is clamped to `[0, FC]` before being used (never
 negative, never more than the slot's own raw forecast value) — this
 mirrors the defensive-clamping philosophy in Effy's ADR-005 (never let a
 degenerate input propagate raw). If a string has an inverter AC power
-limit configured (ADR-003 §1), that limit is a *second*, tighter upper
-clamp applied to this same output — see ADR-003 §1a for why this must
+limit configured (ADR-003a §1), that limit is a *second*, tighter upper
+clamp applied to this same output — see ADR-003a §1a for why this must
 apply to the corrected output too, not just to training.
 
 **Ordering relative to ADR-006.** This clamp is the *final* step of the
@@ -313,8 +326,8 @@ fitting cost already accepted in §3a.
 ### 5, 6 — Baseline sourcing and config flow: see ADR-009, ADR-010
 
 This ADR originally also specified baseline (unshaded) forecast sourcing
-and the config flow shape tying this model together with ADR-003 and
-ADR-006. Both were split out, on 2026-08-14, into their own documents —
+and the config flow shape tying this model together with ADR-003a/
+ADR-003b and ADR-006. Both were split out, on 2026-08-14, into their own documents —
 see the Revision note at the end of this ADR for why.
 
 ---
@@ -363,7 +376,7 @@ smoothing and neighbor-regime exclusion (formerly this document's
 (formerly §6). Both were extracted into their own documents — ADR-009
 and ADR-010 respectively — because they are separable concerns from the
 regression model itself, and were already being referenced externally
-(ADR-003, ADR-004, ADR-005, ADR-006) as if they were independent
+(ADR-003a/ADR-003b, ADR-004, ADR-005, ADR-006) as if they were independent
 documents. This was a pure documentation reorganization: no decision,
 default, or behavior changed. All cross-references throughout the ADR
 set were updated to point at the new documents directly.

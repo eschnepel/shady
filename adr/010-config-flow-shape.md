@@ -5,9 +5,9 @@
 **Split from:** ADR-001 §6. Originally part of the shading-model ADR;
 extracted because it is a cross-cutting specification that collects
 fields introduced by several other ADRs, and was already being
-referenced externally (ADR-003, ADR-005, ADR-006) as if it were its own
-document. No behavior changed by this split — see ADR-001's Revision
-note.
+referenced externally (ADR-003a/ADR-003b, ADR-005, ADR-006) as if it
+were its own document. No behavior changed by this split — see ADR-001's
+Revision note.
 
 ---
 
@@ -15,8 +15,8 @@ note.
 
 Shady's config flow collects settings introduced across several ADRs:
 the regression model and its granularity/smoothing/window (ADR-001
-§2/§3/§4), baseline sourcing (ADR-009), yield corrections (ADR-003), and
-the intraday deviation correction (ADR-006). This ADR is the single,
+§2/§3/§4), baseline sourcing (ADR-009), yield corrections (ADR-003a,
+ADR-003b), and the intraday deviation correction (ADR-006). This ADR is the single,
 authoritative specification of the resulting flow's shape and step
 ordering — other ADRs that add a config-flow field point here rather
 than each describing their own step placement.
@@ -41,7 +41,7 @@ Step "settings" (first):
     entity + attribute path entry) — used by any string that does not
     override it
   - "Does this baseline already account for temperature effects itself?"
-    (boolean, default false — ADR-003 §2c; presented right alongside the
+    (boolean, default false — ADR-003b §1c; presented right alongside the
     baseline candidate above, since it is a property of *that* choice)
   - Training window in days (default 28)
   - Regression method: `wls2` (default) / `linear` / `kernel` / `wls3`
@@ -55,14 +55,14 @@ Step "settings" (first):
     pool; the sentinel `-1%` switches to always-rescale instead of
     exclude, per ADR-011 §3)
   - Clipping threshold, % of inverter limit (default 98%, global; see
-    ADR-003 §1 — applies to every string that has a converter/inverter AC
+    ADR-003a §1 — applies to every string that has a converter/inverter AC
     power limit configured in "add_string_advanced" below; a string
     without a limit configured is never clipping-excluded, but the
     threshold fraction itself has no per-string override)
   - Default temperature source (optional; entity selector covering
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all
-    strings — ADR-003 §2a)
+    strings — ADR-003b §1a)
   - Intraday deviation-correction mode `intraday_correction_mode`:
     off / ramping / blending (default off; see ADR-006 §1)
   - Intraday deviation-correction cut-off, `intraday_correction_cutoff`
@@ -78,11 +78,11 @@ Step "add_string" (repeated):
   - Baseline candidate override (optional; same dropdown as the global
     default above; leave empty to use the global default set in
     "settings"). A string that *does* override is, by definition,
-    treated as temperature-aware (ADR-003 §2c) — no separate per-string
+    treated as temperature-aware (ADR-003b §1c) — no separate per-string
     flag is offered, on the assumption that the realistic reason to
     override per string at all is a per-plane setup on a dedicated
     PV-forecast service (e.g. Solcast configured with one site per
-    string), which is exactly the kind of provider ADR-003 §2c's flag
+    string), which is exactly the kind of provider ADR-003b §1c's flag
     is about in the first place.
   - Actual-yield entity (standard HA entity selector, sensor domain,
     power or energy device_class)
@@ -92,21 +92,20 @@ Step "add_string" (repeated):
 
 Step "add_string_advanced" (optional, per string):
   - Converter/inverter AC power limit (optional number, W; leave empty
-    to disable clipping exclusion for this string — ADR-003 §1)
+    to disable clipping exclusion for this string — ADR-003a §1)
   - Temperature source override (optional; leave empty to use the global
     default; "none" disables derating for this string specifically even
-    if a global default is set — ADR-003 §2a)
+    if a global default is set — ADR-003b §1a)
   - Temperature coefficient in %/°C (only shown/used if a temperature
     source — global default or override — applies to this string;
-    default −0.4 — ADR-003 §2)
+    default −0.4 — ADR-003b §1)
 
 Step "add_another":
   - "Add another string?" (boolean) → back to "add_string" or finish
 ```
 
-Note there is no latitude/longitude/elevation field: the regression
-needs no astronomical calculation (ADR-001 §1), so location is not
-collected anywhere in Shady's config flow.
+Note there is no latitude/longitude/elevation field anywhere in this
+flow — see ADR-001 §1 for why.
 
 The options flow mirrors this to allow adding/editing strings and
 changing any global setting after initial setup, following the same

@@ -32,7 +32,7 @@ importantly — the coordinator does **not** do the extra fitting work
 described in §4 while the switch is off. This keeps the cost of
 diagnostics at zero for the common case of a user who never turns it on,
 following the same "no-op when not configured" pattern already
-established for the corrections in ADR-003 §3.
+established for the corrections in ADR-003a §2 / ADR-003b §2.
 
 ### 2 — One scatter-series sensor per configured PV string
 
@@ -133,6 +133,17 @@ its own scatter series/color:
   convenience, not the only place this value lives. (Named `"selected"`,
   not `"today"` — see §2a: a manually chosen slot need not be from
   today, in either direction.)
+
+  **Not to be confused with `confidence` (ADR-001 §2/§2a):** confidence
+  is forward-looking and always available — it measures how much
+  training evidence backs a slot's fit, independent of whether any
+  particular prediction turned out to be right. `accuracy` is
+  backward-looking and diagnostics-only — it measures how close a
+  specific prediction actually landed, and only exists once the slot has
+  elapsed (or, for a future-pinned slot, not at all — see above). A
+  well-supported slot (high confidence) can still have a bad individual
+  prediction (low accuracy), and vice versa; the two are deliberately
+  independent numbers, not two views of the same thing.
 - **Selected-actual series**, `"selected actual"` — a single-point series
   at `[FC_selected, PV_selected]`, the *real* measured yield for the
   diagnosed slot. This depends entirely on the diagnosed slot already
@@ -427,8 +438,8 @@ small.
   already-cached window.
 - **Pro:** Default-off plus the always-on entity / conditionally-computed
   content pattern (§1) keeps the cost at zero for installations that
-  never enable it, consistent with ADR-003 §3's no-op philosophy for
-  optional features.
+  never enable it, consistent with ADR-003a §2 / ADR-003b §2's no-op
+  philosophy for optional features.
 - **Pro:** Embedding accuracy directly in each series name (`"selected
   wls2 (96%)"`) means the comparison is visible on the chart itself — no
   separate legend, tooltip, or lookup needed — while the plain-number

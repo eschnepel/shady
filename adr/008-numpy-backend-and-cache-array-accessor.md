@@ -137,7 +137,7 @@ flowchart LR
 already needs a zero-weight-for-padding mechanism regardless — pools are
 ragged whenever the training window hasn't yet reached 28 full days, or a
 neighbor slot was excluded (ADR-011 §2), or a clipping exclusion applies
-(ADR-003 §1). Deriving that mask as `~np.isnan(pool)` means an invalid
+(ADR-003a §1). Deriving that mask as `~np.isnan(pool)` means an invalid
 sample and a padding slot are the same case to the batched fit/predict
 code — no separate invalid-sample handling path is needed on top of the
 padding one that already has to exist.
