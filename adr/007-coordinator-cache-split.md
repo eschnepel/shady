@@ -33,15 +33,25 @@ individual addition was a reasonable, small extension at the time:
   intact, unlike the others below
 - Short-lived per-string ramp/crossfade state, discarded once a ramp or
   blend completes (ADR-006 §1b)
-- Per-string historical two-series pool cache, generic over any pair of
+- Historical two-series pool cache, generic over any pair of
   `sensor_id`s, refreshed at recalibration/system-start — backs both
   regression training (ADR-001 §3a, ADR-011) and diagnostics (ADR-004
-  §3) for the `(FC, PV)` pair specifically, the two consumers that read
-  the *same* underlying slot-indexed history rather than each keeping
-  its own copy. Per ADR-003c, the same mechanism (not the same stored
-  data) also backs a second, unrelated pair — `(weather-forecast
+  §3). **Not per-string storage**: the cache is flat, keyed by
+  `sensor_id` alone (§1a below) — it has no notion of "string" at all,
+  and no built-in FC/PV pairing. `PV` (actual yield) genuinely is
+  distinct per string, but `FC` (baseline forecast) very often is not:
+  most strings use the same global default baseline candidate (ADR-009
+  §5), so their `FC` history is the *same* `sensor_id`, stored and
+  fetched exactly once regardless of how many strings reference it —
+  only a string that explicitly overrides its baseline gets a distinct
+  `FC` entry. Which `sensor_id` is a given string's `FC` and which is
+  its `PV` is a mapping `coordinator.py` holds (from each string's
+  config), not something this cache represents. Per ADR-003c, the same
+  mechanism (not the same stored data, and not the same pairing
+  concept) also backs a second, unrelated pair — `(weather-forecast
   temperature, cell-or-ambient temperature)` — for the learned
-  temperature forecast.
+  temperature forecast, where the predictor side is *global* (ADR-003c
+  §3) and only the target side varies by string.
 
 This is exactly the situation ADR-000 §3 already warns about: "a module
 that starts doing two unrelated things is a signal to split it." It also
@@ -306,7 +316,15 @@ one-element list) — the common real callers (ADR-005's cross-string
 sums, ADR-001's per-string fits run across every configured string) need
 several sensors at once, and a single-sensor call is just the trivial
 case of the same interface, not different enough to warrant a second
-method.
+method. This is also what makes a combined `FC`+`PV` fetch for an entire
+regression sweep a single call rather than one per string: the caller
+passes every string's `PV` `sensor_id` plus every *distinct* `FC`
+`sensor_id` actually in use (naturally fewer than the string count
+whenever strings share the global default baseline, ADR-009 §5) in one
+list, and `get_regression_pools`'/`get_time_range`'s `dict[sensor_id,
+...]` return shape means a shared `FC` entry is present exactly once in
+the result regardless of how many strings reference it — no separate
+call, and no duplicate storage, per string that happens to share it.
 
 The **model cache** (fitted model objects per string/slot) and the
 **ramp/crossfade state** (ADR-006 §1b) do not fit this time-series shape
