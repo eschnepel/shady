@@ -12,6 +12,15 @@ with any structural change to the ADR set; §3's `cache.py` bullet
 updated for ADR-007's split into ADR-007/ADR-007a; §3's dependency-
 direction paragraph now points to §6's module list instead of
 re-enumerating it, matching §2's existing single-source-of-truth note.
+**2026-08-20** — §6's zero-mocking module list updated: `providers/base.py`
+added (holds ADR-012 §1a's two shared helpers as of the same date), and
+`providers/temperature.py` added as a second `hass`-fixture exception
+alongside `providers/discovery.py`, matching what ADR-012 §5 already
+assumed this section said. §2's typing-tier scope is unchanged in
+wording but now resolves correctly for both modules, since §2 already
+points here rather than re-enumerating. §3's `coordinator.py` bullet
+updated to note the provider-push listeners ADR-012 §4 added, alongside
+its existing scheduling triggers.
 
 ---
 
@@ -139,9 +148,11 @@ flowchart BT
   the recorder API itself; see ADR-007 for why the module exists,
   ADR-007a for its storage/accessor design.
 - **`coordinator.py`** — orchestrates: registers all scheduling triggers,
-  calls the pure layer including `cache.py`, decides which cache
-  instances get restart-persisted, pushes results to sensors — the only
-  module that imports `cache.py`.
+  plus, per ADR-012 §4, one generic listener per `forward()`-implementing
+  provider (push-only — a second, distinct kind of registration from the
+  scheduling triggers, see ADR-012 §4), calls the pure layer including
+  `cache.py`, decides which cache instances get restart-persisted, pushes
+  results to sensors — the only module that imports `cache.py`.
 - **`sensor.py` / `config_flow.py` / `switch.py` / `button.py`** — HA
   entity glue. `config_flow.py` implements the flow shape in ADR-010;
   `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1); `button.py` is
@@ -199,16 +210,17 @@ baseline.
 
 ### 6 — Testing philosophy
 
-- Every module in `providers/normalize.py`, `yield_correction.py`,
-  `regression/`, `forecast_adjust.py`, `aggregation.py`, and `cache.py`
-  is unit-tested with **zero mocking** — no `unittest.mock`, no fake
-  `hass` object. Because they have no Home Assistant dependency, tests
-  call the real functions with real dataclass instances and assert on
-  real return values. This is only possible
-  *because* of the module boundary in §3; it is the practical payoff of
-  that design choice. `providers/discovery.py` is the one exception — it
-  reads `hass.states` by design (ADR-009) and is tested against a real
-  `hass` fixture instead.
+- Every module in `providers/base.py`, `providers/normalize.py`,
+  `yield_correction.py`, `regression/`, `forecast_adjust.py`,
+  `aggregation.py`, and `cache.py` is unit-tested with **zero mocking**
+  — no `unittest.mock`, no fake `hass` object. Because they have no
+  Home Assistant dependency, tests call the real functions with real
+  dataclass instances and assert on real return values. This is only
+  possible *because* of the module boundary in §3; it is the practical
+  payoff of that design choice. Two modules are the exception, both for
+  the same reason — each reads `hass.states` directly by design (ADR-009
+  §4, ADR-012 §5): `providers/discovery.py` and `providers/temperature.py`.
+  Both are tested against a real `hass` fixture instead.
 - Tests are loaded via direct file-path import
   (`importlib.util.spec_from_file_location`) rather than package import,
   specifically to avoid pulling in `custom_components/shady/__init__.py`

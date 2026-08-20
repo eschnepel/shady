@@ -20,6 +20,11 @@ predictor is available. See ADR-003c for the full mechanism.
 **2026-08-19** — §2's `forecast_adjust.py` bullet trimmed to point at
 ADR-006 §1b for the clamp-ordering rationale instead of restating the
 Ramping/Blending mechanics inline; no behavior changed.
+**2026-08-20** — §1a: new paragraph states where `max_uplift_c` and
+`baseline_rated_capacity` actually come from (ADR-010 config-flow
+fields, one global and one per-string) and what happens when the
+per-string one is left unset — previously used in the uplift formula
+without either being specified anywhere.
 
 ---
 
@@ -135,6 +140,26 @@ simple approximation (no wind-speed term, unlike e.g. the Sandia/PVWatts
 cell-temperature models) — accurate enough to catch the dominant "hot
 summer midday" effect that motivates §1 in the first place, without
 requiring a wind sensor most users won't have either.
+
+**Where these two figures come from.** `max_uplift_c` is a single
+**global** config-flow field (ADR-010's "settings" step, default `25`) —
+one property-wide rule-of-thumb, not tuned per string, the same global
+scope this section's own temperature-source default already has below.
+`baseline_rated_capacity`, by contrast, is a genuine per-string physical
+property (a 6 kWp string and a 3 kWp string heat differently under the
+same irradiance) and is a **per-string** field in ADR-010's
+`add_string_advanced` step ("Rated DC capacity, Wp") — shown and used
+only for a string actually resolving to this tier, since a module/cell-
+sensor string reads cell temperature directly and never evaluates this
+formula at all (§1a's source hierarchy). Left empty for a string that
+does need it, this uplift step — and, with it, §1's forward correction
+and §1b's reverse transform in their entirety — is skipped for that
+string: the same "skip both sides rather than degrade one" rule §1c
+already applies to the provider-temperature flag, and ADR-003c §5
+applies to a missing forecast-capable predictor, applied here to a
+missing rated-capacity input instead of a missing forecast. Falling back
+to an assumed capacity instead would risk silently misleading more than
+skipping the correction entirely.
 
 The temperature *source* is configured **globally** (like the regression
 method, ADR-001 §2, and smoothing radius, ADR-011 §1) — one default for
@@ -379,6 +404,11 @@ override rule specifically.
   module/ambient temperature sensor in Home Assistant, or a
   weather integration — not universally available, hence the setting
   being optional rather than a blocking requirement.
+- **Con:** The ambient/weather tier additionally requires the user to
+  know their string's rated DC capacity (§1a) — one more piece of
+  hardware knowledge alongside the temperature coefficient (§1), though,
+  like every other optional field in this correction, it defaults to
+  being skipped rather than blocking configuration when left unset.
 - **Con:** The ambient → cell temperature uplift (§1a) is a deliberately
   simple approximation (no wind term, a fixed default maximum uplift) —
   it corrects the dominant effect (hot, sunny midday) but is less

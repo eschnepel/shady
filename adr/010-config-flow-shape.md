@@ -10,6 +10,12 @@ were its own document. No behavior changed by this split — see ADR-001's
 Revision note.
 **Amended:** 2026-08-18 — added the weather forecast entity and
 temperature regression method fields introduced by ADR-003c.
+**2026-08-20** — added two fields ADR-003b §1a's ambient→cell uplift
+formula depends on but which this document had never actually listed:
+a global "ambient-to-cell max uplift" field in "settings", and a
+per-string "rated DC capacity" field in "add_string_advanced". Closes a
+gap where ADR-003b called the first of these "configurable" with no
+matching field here, and the second had no config-flow source at all.
 
 ---
 
@@ -65,6 +71,12 @@ Step "settings" (first):
     sensor.* with device_class temperature and weather.* entities;
     leave empty to disable derating correction by default for all
     strings — ADR-003b §1a)
+  - Ambient-to-cell max uplift, °C (default 25; global; only relevant
+    when the resolved temperature source — global default or a
+    per-string override — is the ambient-sensor or weather-integration
+    tier, since the module/cell-sensor tier reads cell temperature
+    directly and never evaluates this formula at all; see ADR-003b §1a
+    for the uplift formula this feeds)
   - Weather forecast entity for temperature prediction (optional; entity
     selector covering weather.* entities; used to forecast the expected
     module/cell or ambient temperature for the module/cell-sensor and
@@ -117,6 +129,18 @@ Step "add_string_advanced" (optional, per string):
   - Temperature coefficient in %/°C (only shown/used if a temperature
     source — global default or override — applies to this string;
     default −0.4 — ADR-003b §1)
+  - Rated DC capacity, Wp (optional number; only shown/used if this
+    string's resolved temperature source — global default or override —
+    is the ambient-sensor or weather-integration tier; not shown for the
+    module/cell-sensor tier, which needs no uplift step at all. Leave
+    empty to skip derating correction for this string when it would
+    otherwise need this value — same skip-both-sides rule ADR-003c §5
+    already applies to a missing forecast-capable predictor, applied
+    here to a missing rated-capacity input instead. Used as the
+    denominator in ADR-003b §1a's ambient→cell uplift formula — the
+    string's own baseline series already serves as the irradiance-proxy
+    numerator, but the array's own rated output has no other source in
+    this design)
 
 Step "add_another":
   - "Add another string?" (boolean) → back to "add_string" or finish

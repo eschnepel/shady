@@ -13,6 +13,14 @@ over `forward()`-implementing providers, rather than one hand-rolled
 listener per provider. No change to what gets pushed, when, or the
 `not_before_index` guard — only to how the mechanism is shared across
 providers.
+**2026-08-20** — new §1a: two small, HA-agnostic helpers (an
+HA-state-to-three-state-value mapper, and a series-tuple assembly
+primitive) moved into `providers/base.py`, previously reimplemented
+independently inside `providers/normalize.py` and
+`providers/temperature.py`. §5 updated to match — `base.py` is no
+longer just the bare class definition. No change to either concrete
+provider's own `fetch()`/`identify()`/`forward()` behavior or output
+shape.
 
 ---
 
@@ -116,6 +124,47 @@ Two concrete providers exist behind this one base class:
   resolves to a second instance of this same class, one whose `forward()`
   is always meaningful because it is only ever pointed at a `weather.*`
   entity in the first place.
+
+### 1a — Two shared helpers in `providers/base.py`, not reimplemented per provider
+
+Both concrete providers' `fetch()`/`forward()` implementations independently
+need two pieces of plumbing that have nothing to do with *which* provider is
+asking, and were at risk of being written twice (once for baseline, once for
+temperature) with no ADR saying they should be the same code. Both now live
+as plain functions on `providers/base.py` itself, called by both concrete
+providers rather than reimplemented in each:
+
+- **State-value mapping** — translating whatever a `hass.states` read for a
+  given entity/attribute actually returns (a numeric value; an HA "unknown"
+  state; an HA "unavailable" state; an attribute that is simply absent) into
+  exactly one of `cache.py`'s three storage states — `float`, `None`, or
+  `str` (ADR-007a §1). This is the same translation both
+  `providers/discovery.py` (via `providers/normalize.py`) and
+  `providers/temperature.py` need to perform before a value is fit to hand
+  to `cache.py`'s `fetch_fn`/`push` (this document's `fetch()`/`forward()`
+  contracts, §1 above), and neither provider has any provider-specific
+  reason to handle it differently — an "unavailable" reading means the same
+  thing to `cache.py` regardless of which entity produced it.
+- **Series-tuple assembly** — given a set of already-resolved timestamp/value
+  pairs (dict entries or list-of-dicts, whichever the source shape turns out
+  to be), zipping them into the canonical `list[tuple[datetime, float]]`
+  shape ADR-009 §2 established for baseline's normalized series. This is
+  deliberately scoped to the low-level assembly step only, **not** the
+  alias-guessing/candidate-scoring logic around it — `providers/normalize.py`
+  still owns the key-name alias table and scoring (ADR-009 §1/§2/§3) and
+  simply calls into this helper once it has already resolved which keys to
+  read; `providers/temperature.py` calls the same helper directly, since it
+  never has ambiguous keys to resolve in the first place (ADR-003b §1a: "a
+  plain entity selector... is sufficient, with no candidate-ranking step").
+  Sharing this one small primitive does not pull temperature into
+  `normalize.py`'s scoring machinery, and does not require `normalize.py`'s
+  alias table to grow a temperature-specific entry it would otherwise have
+  no reason to carry.
+
+Both helpers are pure functions of their inputs — no `hass` access, no
+provider-specific branching inside either one — so they stay in the
+zero-mocking pure tier alongside the rest of `providers/base.py` (ADR-000
+§6, amended alongside this document; see that ADR's own amendment note).
 
 ### 2 — Not every external entity needs a provider
 
@@ -222,9 +271,9 @@ code, and no new ADR needed to wire it in.
 config-flow-selected entity, under the same rule ADR-009 §4 already
 establishes for `providers/discovery.py`: reads only, no writes, no
 reaching into another integration's coordinator or `hass.data`.
-`providers/base.py` itself needs none of that — it is just the shared
-base class definition, and stays in the zero-mocking pure tier (ADR-000
-§6) alongside `providers/normalize.py`.
+`providers/base.py` itself needs none of that — it holds the shared base
+class definition plus §1a's two small, HA-agnostic helpers, and stays in
+the zero-mocking pure tier (ADR-000 §6) alongside `providers/normalize.py`.
 
 ---
 
@@ -246,6 +295,12 @@ base class definition, and stays in the zero-mocking pure tier (ADR-000
   behind one shared interface. A reader of `providers/` needs to check
   which concrete provider they're looking at rather than assuming
   uniform behavior across the package.
+- **Pro:** §1a's two shared helpers remove what would otherwise be two
+  independent reimplementations of the same HA-state-to-cache-value
+  translation and the same timestamp/value tuple assembly — a bug fixed
+  or a new HA state variant handled in either helper benefits both
+  providers at once, the same payoff ADR-007a §1's Consequences already
+  claims for `cache.py`'s own shared time-series design.
 - **Con:** Like ADR-009's baseline discovery, `providers/temperature.py`
   reads another integration's attribute shape (a weather entity's
   `forecast` attribute) across an unversioned surface. Same caveat
