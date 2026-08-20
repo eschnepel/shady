@@ -95,7 +95,7 @@ directly among the "pure-ish" layer (see the module diagram in ADR-000
 §3) — it still never writes state and never reaches into another
 integration's internal coordinator or `hass.data`, only its public
 entity state/attributes. `providers/discovery.py` is one of two concrete
-providers this rule applies to; see ADR-012 §4 for the module boundary
+providers this rule applies to; see ADR-012 §5 for the module boundary
 as it applies to `providers/` as a whole, including the temperature
 provider this ADR does not otherwise discuss.
 
@@ -110,8 +110,8 @@ that specific string's orientation) if configured; if it does not, it
 uses the global default. This mirrors the same global-with-override
 shape already used for the temperature source (ADR-003b §1a) — see
 ADR-012 §1, which is the source of truth for the shared `providers/`
-protocol both this discovery/normalize pair and the temperature provider
-implement.
+base class both this discovery/normalize pair and the temperature
+provider subclass.
 
 ---
 

@@ -8,6 +8,13 @@ storage scheme and accessor API are a separable, and independently
 heavily cross-referenced, concern from the *decision to extract
 `cache.py` as its own module* in the first place — see ADR-007's
 Revision note. No behavior changed by this split.
+**Amended:** 2026-08-19 — §2/§3: any provider-backed predictor series
+(baseline `FC`; temperature) is now a hybrid push/query sensor, not
+purely query-based; `push` generalized to a bulk `dict[index, value]`
+call with a `not_before_index` guard. See ADR-012 §4 for the generic
+policy, ADR-002 §4 / ADR-003c §7 for `FC`'s and temperature's own
+triggers, and ADR-001 §2 for the updated "Training-time `FC`" definition
+this enables.
 
 ---
 
@@ -118,20 +125,58 @@ up to date for that sensor. `to_index = None` has a specific meaning:
 this sensor's values are **calculated by Shady and actively pushed**
 (e.g. `ShadyForecastSensor`'s own corrected values, ADR-002 §2), so there
 is no fixed upper edge to track — new values arrive by push (§3), not by
-query, and are always current the moment they're written. Only sensors
-sourced from *outside* Shady (raw actual-yield, raw `FC` history) have a
-concrete `to_index` bounded by "the last slot known to be complete" —
-these are the ones the validation function (§4) may need to query
-forward for.
+query, and are always current the moment they're written. Raw
+actual-yield has a concrete `to_index` bounded by "the last slot known to
+be complete", filled purely by query (§4) — there is no provider
+publishing a prediction for it to push ahead of. **Any provider-backed
+predictor series is a third, hybrid case** (ADR-012 §4 generically;
+ADR-002 §4 for baseline `FC`, ADR-003c §7 for the temperature predictor
+— the only two today): its already-elapsed portion behaves exactly like
+actual-yield — `to_index` bounded by the last complete slot, filled by
+query (§4) — but its not-yet-elapsed portion (whatever forward horizon
+that provider currently publishes) is filled by push, refreshed every
+time that provider updates, extending `to_index` *forward*, into the
+future, rather than only forward with elapsed wall-clock time the way a
+pure-query sensor's does. Once a slot
+passes from the pushed portion into the elapsed one, it is not
+re-queried or re-validated against the recorder — the pushed value *is*
+the training-time record of what was predicted, and query is only ever
+needed for a slot no push ever reached (cold-start backfill before Shady
+was first configured, or a gap from downtime). See §3's push guard for
+how these two portions of the same sensor's list never collide, ADR-001
+§2 for why this is the more precise source for "Training-time `FC`" than
+recorder query alone, and ADR-003c §7 for the identical reasoning applied
+to the temperature predictor.
 
 ### 3 — Writing: push (by Shady) and invalidate (by anyone)
 
 `coordinator.py` (the only caller of `cache.py`, per ADR-007 §2) can:
 
-- **Push** a calculated value directly into a sensor's list at a given
-  index, extending `validated`'s `to_index` for `to_index = None`
-  sensors — this is how `ShadyForecastSensor`'s own output ends up in the
-  cache without ever being queried back from the recorder.
+- **Push** one or more calculated values directly into a sensor's list in
+  a single call — `push(sensor_id, values: dict[index, value])`, not a
+  one-index-at-a-time call — extending `validated`'s `to_index` for
+  `to_index = None` sensors, or moving it forward for the not-yet-elapsed
+  portion of a hybrid sensor (§2's provider-backed-predictor case),
+  whichever applies. This is how `ShadyForecastSensor`'s own output, and
+  every provider-backed predictor's not-yet-elapsed portion (ADR-012
+  §4), end up in the cache without being queried back from the recorder
+  — one call per push-triggering event (ADR-002 §2/§4, ADR-003c §7)
+  covering every slot that event produced, rather than one call per
+  slot.
+  **`push` never writes an index older than a caller-supplied
+  `not_before_index`.** Any entry in the given `dict` below that boundary
+  is silently dropped rather than written — `cache.py` itself enforces
+  this, not just caller discipline, the same way `window_days` (Context)
+  is a value `cache.py` is handed rather than one it derives from a
+  wall-clock read of its own: the caller (`coordinator.py`) already knows
+  "the next upcoming slot after now" from the same horizon logic
+  (ADR-002 §3, or whatever the triggering provider currently publishes)
+  that produced the values in the first place, and passes that same
+  boundary through. This is what keeps a slot's value **frozen** the
+  moment it elapses — nothing pushed after the fact, whether a later,
+  revised provider reading or a stray out-of-order call, can silently
+  rewrite training-time history once it exists, for either the always-push
+  case or the hybrid one.
 - **Invalidate** a sensor's values over a given index range — sets those
   entries back to `None` and shrinks `validated` accordingly, forcing the
   next access to re-fetch (or, for a push-based sensor, to wait for the
@@ -366,6 +411,17 @@ window" case, just narrower in scope now.
 - **Pro:** `fetch_fn` injection (§4) keeps `cache.py` fully testable
   without a real or mocked recorder — a test constructs a cache with a
   trivial fake function returning canned data.
+- **Pro:** Every provider-backed predictor's hybrid push/query behavior
+  (§2/§3, ADR-012 §4) captures each slot's prediction at the moment it
+  is known, once, rather than relying on a later recorder query to
+  reconstruct what a forecast attribute believed at some past moment —
+  an attribute that, unlike a plain sensor's state, is not itself a
+  queryable historical record. The `not_before_index` guard (§3) means
+  this is strictly additive to the existing query path, not a
+  replacement for it: query still backfills everything push never had a
+  chance to see (cold start, downtime gaps) — and one cache mechanism
+  now serves both of today's predictors (`FC`, temperature) without
+  either needing bespoke handling.
 - **Pro:** The third `on_invalid="raw"` mode (§5) means a future consumer
   that needs to distinguish "not yet queried" from "queried, definitively
   unavailable" does not require a new accessor method or a direct reach
@@ -387,3 +443,16 @@ window" case, just narrower in scope now.
   a gap, but it means there are two accessor shapes to learn instead of
   one, each with its own default out of three possible `on_invalid`
   behaviors.
+- **Con:** Provider-backed predictor series (§2 — `FC` and temperature
+  today, per ADR-012 §4) are the only caches with genuinely hybrid
+  `to_index` behavior — bounded-by-query on one side of "now", extended
+  by push on the other. Every measured/computed cache (actual-yield, the
+  corrected forecast) is cleanly one or the other. This is a real
+  asymmetry, not just documentation noise: a bug in the boundary logic
+  could plausibly leak a not-yet-elapsed, still-revisable pushed value
+  into a training read that expects only frozen history, or vice versa —
+  the `not_before_index` guard (§3) exists specifically to make that
+  failure mode structurally unlikely rather than merely documented
+  against. Each additional provider (ADR-012 §4) is one more cache
+  living with this asymmetry, though the mechanism itself does not grow
+  more complex per provider.

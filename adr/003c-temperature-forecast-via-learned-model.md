@@ -7,6 +7,14 @@ prediction-time reverse transform), ADR-012 §3 (the naive-persistence
 fallback it specified is superseded here — see ADR-012's own amendment
 note), and ADR-010 (adds the "weather forecast entity for temperature
 prediction" field to the config flow's "settings" step — see §3 below).
+**Amended:** 2026-08-19 — new §7: this predictor's historical samples
+are now also captured via push, on its own listener, per ADR-012 §4's
+generic policy — no behavior change to §4's prediction-time read or to
+ADR-002's recompute triggers. Later the same day, §7 trimmed further:
+once ADR-012 §1 gained a `forward()` provider method, §7 no longer
+describes its own listener or push call, only that this predictor's
+`forward()` maps the live `forecast` attribute onto ADR-009 §2's
+canonical series shape.
 
 ---
 
@@ -168,7 +176,7 @@ about `cache.py` changes. The predictor's training-vs-prediction duality
 (historical reading for fitting, `forecast` attribute for prediction) is
 the same shape ADR-001 §2 already documents for `FC` itself
 ("Training-time `FC`" vs. "Prediction-time `FC`") — reused unchanged,
-not a new pattern.
+not a new pattern, including how that duality is now sourced: see §7.
 
 The batched, padded pool needed for the actual per-slot fit reuses
 ADR-008's `get_regression_pools` accessor as-is — confirmed, not merely
@@ -178,6 +186,40 @@ any set of sensor IDs, and ADR-008 itself states the PV-specific
 weighting (`magnitude_weight_i`, time/neighbor-distance) is computed
 separately in `regression/base.py`, not inside the accessor. No
 signature change, no rename, no second accessor.
+
+### 7 — Predictor push: this document's instance of ADR-012 §4's generic policy
+
+§6 calls the predictor's training-vs-prediction duality "the same shape"
+as `FC`'s. That now extends to *how* training-time samples are
+captured, not just how they are later read: this predictor's
+`providers/temperature.py` instance (§3) overrides `forward(now)`
+(ADR-012 §1) by mapping the weather entity's live `forecast` attribute
+onto the same canonical `list[tuple[datetime, float]]` shape ADR-009 §2
+established for baseline — the second, independent case ADR-012 §4
+named when it generalized `FC`'s push into a policy, not a new mechanism
+invented here.
+
+Nothing else needs stating: ADR-012 §4's one generic `coordinator.py`
+loop finds this override, registers a listener on §3's weather entity,
+and pushes on every update, using the same `push(sensor_id, dict[index,
+value])` call and `not_before_index` guard as every other provider — no
+temperature-specific listener or push call lives in this document. A
+slot's predictor value is frozen the moment it elapses, for the
+identical reason ADR-012 §4 gives generically: a `forecast` attribute is
+a snapshot of current belief, not a queryable record of what it believed
+at a past moment, so recorder query (ADR-007a §4) remains only the
+backfill/gap path — the 28 days predating a string's first
+temperature-model fit, or a gap from downtime — not the primary source
+of training-time predictor samples going forward.
+
+This provider's listener firing does **not**, by itself, trigger ADR-002
+§1/§2's recalibration or recompute — per ADR-012 §4, push and recompute
+are independent concerns, and this document does not change ADR-002's
+triggers. §4's prediction-time read (the live `forecast` attribute value
+fed into `g_slot`) still happens at whatever moment ADR-002 §2's own
+trigger fires, unaffected by this section; §7 only governs how that same
+predictor's *historical* samples end up already sitting in `cache.py` by
+the time the next recalibration wants them.
 
 ---
 
@@ -217,3 +259,15 @@ signature change, no rename, no second accessor.
   configured elsewhere in their Home Assistant instance for another
   purpose (e.g. as the baseline FC provider). Traded deliberately for
   the explicitness described above.
+- **Pro:** §7's push means this predictor's training-time samples no
+  longer depend on reconstructing a past belief from a `weather.*`
+  entity's live `forecast` attribute after the fact — the same fix
+  ADR-002 §4 gives `FC`, now covering the second of the two providers
+  that actually need it.
+- **Con:** §7's `forward()` override means ADR-012 §4's generic loop
+  registers a second coordinator listener (the weather-prediction
+  entity) that exists purely to push and does not participate in
+  ADR-002's recompute triggers — one more listener kind for a future
+  reader of `coordinator.py` to keep straight from the recompute-
+  triggering baseline one, mirroring the identical trade-off ADR-012 §4
+  already accepts generically.

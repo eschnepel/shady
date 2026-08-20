@@ -107,8 +107,8 @@ flowchart BT
 
 - **`providers/`** (`discovery.py`, `normalize.py`, `base.py`,
   `temperature.py`) — pure-ish: reads external time series from whatever
-  HA entity exposes them, behind the shared `base.py` protocol defined in
-  ADR-012 — that document is the source of truth for what `providers/`
+  HA entity exposes them, behind the shared `base.py` base class defined
+  in ADR-012 — that document is the source of truth for what `providers/`
   contains and why. `discovery.py` + `normalize.py` discover and
   normalize the forecast/sunshine/cloud-coverage baseline series (ADR-009);
   `temperature.py` resolves the config-flow-selected temperature source
@@ -145,7 +145,7 @@ flowchart BT
 - **`sensor.py` / `config_flow.py` / `switch.py` / `button.py`** — HA
   entity glue. `config_flow.py` implements the flow shape in ADR-010;
   `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1); `button.py` is
-  `ShadyRecalculateButton` (ADR-002 §4).
+  `ShadyRecalculateButton` (ADR-002 §5).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 Dependencies point upward only. The pure-tier modules (§6's canonical

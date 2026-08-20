@@ -9,7 +9,10 @@ ADR-007 and ADR-008. **2026-08-14** — split: baseline-forecast sourcing
 ADR-009 and ADR-010; no behavioral change — see the Revision note at
 the end of this document. **2026-08-17** — split again: temporal
 smoothing and neighbor-regime exclusion (formerly §3b/§3c/§3d) moved out
-to ADR-011; no behavioral change — see the Revision note.
+to ADR-011; no behavioral change — see the Revision note. **2026-08-19**
+— §2's "Training-time `FC`" bullet updated: sourced primarily via push
+now (ADR-002 §4), with recorder query (ADR-007a §4) as the backfill/gap
+fallback, rather than query alone.
 
 ---
 
@@ -89,11 +92,17 @@ discusses this; it is not revisited elsewhere.
 use `FC` values from two different points in time, sourced two different
 ways:
 
-- **Training-time `FC`** — the string's raw `FC` *history* (via
-  `providers/`, ADR-009, and the recorder), read for every historical
-  sample in a slot's pool (§3a, ADR-011 §1). Paired with that same sample's
-  (clipped-and-normalized, per ADR-003a §1/ADR-003b §1) actual yield, this is what
-  `fit(samples)` below trains on.
+- **Training-time `FC`** — the string's raw `FC` *history*, read for
+  every historical sample in a slot's pool (§3a, ADR-011 §1). As of
+  ADR-002 §4, this is sourced primarily from what was **pushed** into
+  `cache.py` at prediction time — the exact value the baseline provider
+  gave for that slot while it was still in the future, frozen the moment
+  it elapsed (ADR-007a §2/§3) — with a recorder query (via `providers/`,
+  ADR-009, and ADR-007a §4) falling back to fill whatever push never
+  reached: a config entry's pre-install history, or a gap from downtime.
+  Paired with that same sample's (clipped-and-normalized, per ADR-003a
+  §1/ADR-003b §1) actual yield, this is what `fit(samples)` below trains
+  on.
 - **Prediction-time `FC`** — the slot's *current/live* raw `FC` value for
   today or tomorrow (the same value `providers/` exposes going forward,
   ADR-002 §2's baseline-update trigger), used only to query the

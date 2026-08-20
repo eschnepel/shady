@@ -5,6 +5,20 @@
 **Amended:** 2026-07-05 — §3 and §4 updated to reflect the introduction
 of `cache.py` (ADR-007) and to cross-reference ADR-005's whole-day
 aggregate sensor.
+**2026-08-19** — new §4: raw baseline `FC` is now also pushed into
+`cache.py` on every baseline update, alongside the corrected forecast;
+former §4 ("Resulting module responsibilities") renumbered to §5 and its
+`coordinator.py` bullet updated accordingly. See ADR-007a §2/§3 for the
+cache-side mechanics and ADR-001 §2 for the updated "Training-time `FC`"
+definition this enables. Later the same day, §4's rationale was
+generalized into ADR-012 §4 as a policy for any forecast-shaped
+provider (temperature included, ADR-003c §7); §4 here was trimmed to
+this document's own instantiation of that policy, no behavioral change.
+Later still, §4 was trimmed further once ADR-012 §1 gained a `forward()`
+provider method and §4's `coordinator.py` loop became fully generic —
+this document no longer describes its own listener or push call, only
+that baseline's `forward()` reuses ADR-009 §2's canonical-series mapping;
+§5's `coordinator.py` bullet updated to match.
 
 ---
 
@@ -152,16 +166,47 @@ forecast later in the evening), Shady simply outputs whatever horizon is
 currently available — this is not an error condition, and the missing
 period is filled in on the next baseline update.
 
-### 4 — Resulting module responsibilities
+### 4 — Retaining raw baseline `FC` via push: this document's instance of ADR-012 §4's generic policy
+
+**§2/§3 above establish how the *corrected* forecast reaches `cache.py`.
+The *raw* baseline `FC` value each of those corrections started from
+gets the same treatment, automatically, because the baseline provider
+(`providers/discovery.py` + `providers/normalize.py`) overrides
+`forward()` (ADR-012 §1):** its `forward(now)` is backed by the exact
+same canonical-series mapping (ADR-009 §2) that already backs its
+`fetch()`, just given the live attribute's current forward range instead
+of a past one. ADR-012 §4's one generic `coordinator.py` loop picks this
+up without any FC-specific listener or push call living in this
+document — the loop, the `push(sensor_id, dict[index, value])` call, and
+the `not_before_index` guard are all specified once, in ADR-012 §4, not
+re-derived here.
+
+What is specific to `FC`: the `sensor_id` pushed to is each string's
+resolved baseline entity (ADR-009 §1/§5), and the reason this matters is
+recalibration's training pool (ADR-001 §2, ADR-011 §1), which wants
+*what the forecast said when the slot was still in the future*. A pushed
+value already *is* that, frozen the moment it elapses, with no
+reconstruction needed once the slot has passed — recorder query
+(ADR-007a §4) remains only the fallback for whatever a config entry's
+push history doesn't cover (pre-install data, downtime gaps), exercised
+far less often in practice for exactly the window (recent history) a
+rolling 28-day training window (ADR-001 §4) draws most of its samples
+from.
+
+### 5 — Resulting module responsibilities
 
 - `coordinator.py` owns: the daily recalibration schedule and
   up-to-yesterday cutoff (§1); listeners on every configured baseline
-  entity (§2); and pushing recomputed results to each string's
-  `ShadyForecastSensor`. The per-string, per-slot fitted-model cache
-  itself lives in `cache.py` (ADR-007) — `coordinator.py` reads/writes it
-  but does not own its storage. `coordinator.py` exposes the refit
-  routine as a single public method so both the midnight schedule and the
-  button (§1) call the exact same code path.
+  entity, driving recompute (§2); pushing recomputed results to each
+  string's `ShadyForecastSensor` (§3). Raw baseline `FC` (§4) is *not* a
+  separate `coordinator.py`-owned responsibility in its own right — it
+  falls out of ADR-012 §4's one generic provider-push loop, which
+  `coordinator.py` also runs, independently of the recompute listener
+  above. The per-string, per-slot fitted-model cache itself lives in
+  `cache.py` (ADR-007) — `coordinator.py` reads/writes it but does not
+  own its storage. `coordinator.py` exposes the refit routine as a
+  single public method so both the midnight schedule and the button (§1)
+  call the exact same code path.
 - `button.py` adds one diagnostic `ShadyRecalculateButton` per config
   entry (mirroring Effy's `EffyRecalculateButton`), whose `async_press`
   simply calls the coordinator's refit method and logs/swallows exceptions
@@ -201,6 +246,18 @@ period is filled in on the next baseline update.
   deliberate simplification that assumes low-frequency baseline updates;
   this is a documented assumption, not a proven one, and may need revisiting
   per-provider.
+- **Pro:** §4's raw-`FC` push means recalibration's training pool no
+  longer depends on being able to reconstruct a past prediction from a
+  provider's live attribute after the fact — a reconstruction the
+  attribute itself cannot support (§4) — since the value was captured
+  and frozen the moment it was known, the same way the corrected
+  forecast already is.
+- **Con:** §4's push, via ADR-012 §4's generic loop, is a second,
+  independent listener on the same baseline entity §2 already listens
+  to for recompute — two registrations on one entity rather than one
+  callback doing both, so a reader has to know these are deliberately
+  separate concerns (ADR-012 §4) rather than assume one listener implies
+  one effect.
 - **Neutral:** Because recalibration and forecast recompute are decoupled,
   there is a window (up to 24h, between refits) where the forecast output
   is being produced by a model that is up to a day "older" than the
