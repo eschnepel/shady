@@ -135,10 +135,10 @@ current day, including ones already past by the time anyone looks at the
 sensor — and a baseline provider's own live attributes typically stop
 covering an hour once it has elapsed, so that data cannot be
 reconstructed later from the source. The coordinator therefore **pushes**
-each string's corrected value into `cache.py` (ADR-007 §1c) at the moment
+each string's corrected value into `cache.py` (ADR-007a §3) at the moment
 it is first computed (i.e. while it was still a future slot, per the
 normal §2 recompute trigger) — `ShadyForecastSensor`'s series has
-`to_index = None` in `cache.py`'s validated-range tracking (ADR-007 §1b),
+`to_index = None` in `cache.py`'s validated-range tracking (ADR-007a §2),
 meaning it is populated by push, never by query, and a past entry is
 simply never touched again once written. This is a passive cache, not a
 second recomputation path — it changes nothing about which slots

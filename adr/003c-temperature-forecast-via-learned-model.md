@@ -163,7 +163,7 @@ all is preferable to one applied on only one side of the round-trip.
 
 Both the predictor series and the target series are ordinary time
 series, read through `cache.py`'s existing `get_time_range` accessor
-(ADR-007 §1e / ADR-012 §3) — additional `sensor_id` values, nothing
+(ADR-007a §5 / ADR-012 §3) — additional `sensor_id` values, nothing
 about `cache.py` changes. The predictor's training-vs-prediction duality
 (historical reading for fitting, `forecast` attribute for prediction) is
 the same shape ADR-001 §2 already documents for `FC` itself

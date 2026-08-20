@@ -45,13 +45,13 @@ not independently. State: current summed corrected power (W).
 The sum, **per slot**, of every configured string's corrected forecast for
 *every one of today's 288 slots* — including already-past ones. Each
 string's own corrected values are pushed into `cache.py` as they are
-computed (ADR-007 §1c — `ShadyForecastSensor`'s series has `to_index =
-None`, per ADR-007 §1b, since Shady calculates and pushes it rather than
+computed (ADR-007a §3 — `ShadyForecastSensor`'s series has `to_index =
+None`, per ADR-007a §2, since Shady calculates and pushes it rather than
 querying it back), which is what makes past slots still available here
 without a second recomputation path (ADR-002 §3). `coordinator.py` builds
 this sensor's two array attributes with one call to `cache.py`'s
 `get_time_range(string_forecast_sensor_ids, start=00:00, end=23:55,
-group_by="slot")` (ADR-007 §1e) — `group_by="slot"` returns one dict per
+group_by="slot")` (ADR-007a §5) — `group_by="slot"` returns one dict per
 slot, `{sensor_id: value, ...}`, exactly the shape needed to sum every
 string's value at each slot directly, with no separate transpose step:
 
@@ -208,7 +208,7 @@ flowchart BT
   totals are, per ADR-007 §1). This is not a permanent data loss, since
   `ShadyForecastSensor` is an ordinary HA entity and the recorder already
   keeps its own history of every value that was ever pushed to it — but
-  it does mean a restart mid-day triggers ADR-007 §1d's full-history
+  it does mean a restart mid-day triggers ADR-007a §4's full-history
   catch-up query for that sensor (recovering exactly what was pushed
   before the restart from the recorder) rather than the cheaper
   incremental-tail path a sensor that had stayed running would have used.

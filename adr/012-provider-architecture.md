@@ -35,8 +35,9 @@ This ADR is the **source of truth** for the shared provider architecture
 and its cache integration. ADR-009 remains the source of truth for
 baseline discovery/scoring/normalization specifics; ADR-003b remains the
 source of truth for which temperature sources are supported and the
-cell-temperature formulas; ADR-007 remains the source of truth for
-`cache.py`'s own storage/accessor design. This document only owns the
+cell-temperature formulas; ADR-007a remains the source of truth for
+`cache.py`'s own storage/accessor design (ADR-007 remains the source of
+truth for why `cache.py` exists as its own module). This document only owns the
 connective tissue between them, so those three stop each carrying a
 partial, independently-drifting description of "how data gets from HA
 into the cache."
@@ -51,7 +52,7 @@ into the cache."
 implements:
 
 - `fetch(start, end) -> list[float | None | str]` — matches
-  `cache.py`'s existing `fetch_fn` signature (ADR-007 §1d) exactly, so a
+  `cache.py`'s existing `fetch_fn` signature (ADR-007a §4) exactly, so a
   provider's `fetch` method can be wired in as a cache's `fetch_fn`
   directly, with no adapter layer in between.
 - `identify() -> EntityRef | None` — optional; only meaningful for a
@@ -80,7 +81,7 @@ already-identified entity the user selects directly in the config flow
 (ADR-010) — there is no shape to detect and no source-tier branching to
 apply, so `coordinator.py` wires its `entity_id` straight into
 `cache.py`'s generic `fetch_fn` (backed by `statistics_during_period`,
-ADR-007 §1d) with no provider-layer involvement at all. (An earlier,
+ADR-007a §4) with no provider-layer involvement at all. (An earlier,
 looser description of this data flow — ADR-003 §3, before its 2026-08-18
 split — grouped actual-yield under the same "providers/" bullet as
 baseline; that was imprecise and is corrected here.) The dividing line
@@ -92,7 +93,7 @@ config value.
 ### 3 — Cache reuse: no new cache concept
 
 Temperature series reuse `cache.py`'s existing time-series storage and
-`get_time_range` accessor (ADR-007 §1a/§1b/§1e) exactly as baseline and
+`get_time_range` accessor (ADR-007a §1/§2/§5) exactly as baseline and
 actual-yield already do — additional `sensor_id` entries in the same
 `values`/`validated` dicts, nothing about `cache.py`'s internal design
 changes. ADR-003c's learned per-slot temperature forecast reuses this

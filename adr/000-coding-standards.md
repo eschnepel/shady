@@ -7,6 +7,11 @@ reflect `cache.py` (ADR-007) and `aggregation.py` (ADR-005) once
 accepted, and to cross-reference `ShadyDiagnosticsSwitch` (ADR-004 §1).
 **2026-08-14** — §3 (`providers/`, `config_flow.py` pointers) updated
 for ADR-001's split into ADR-009/ADR-010.
+**2026-08-19** — §7 amended to require `adr/INDEX.md` be kept in sync
+with any structural change to the ADR set; §3's `cache.py` bullet
+updated for ADR-007's split into ADR-007/ADR-007a; §3's dependency-
+direction paragraph now points to §6's module list instead of
+re-enumerating it, matching §2's existing single-source-of-truth note.
 
 ---
 
@@ -131,7 +136,8 @@ flowchart BT
   temperature pairs), plus simple dict stores for the model cache and
   ramp state, and the persisted integral totals; no
   HA imports, constructed with an injected `fetch_fn` so it never imports
-  the recorder API itself; see ADR-007.
+  the recorder API itself; see ADR-007 for why the module exists,
+  ADR-007a for its storage/accessor design.
 - **`coordinator.py`** — orchestrates: registers all scheduling triggers,
   calls the pure layer including `cache.py`, decides which cache
   instances get restart-persisted, pushes results to sensors — the only
@@ -142,10 +148,9 @@ flowchart BT
   `ShadyRecalculateButton` (ADR-002 §4).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
-Dependencies point upward only. `providers/normalize.py`,
-`yield_correction.py`, `regression/`, `forecast_adjust.py`,
-`aggregation.py`, and `cache.py` never import from any HA-facing module,
-and never import `homeassistant.*` directly. `providers/discovery.py` is
+Dependencies point upward only. The pure-tier modules (§6's canonical
+list) never import from any HA-facing module, and never import
+`homeassistant.*` directly. `providers/discovery.py` is
 the one exception within `providers/`: it
 necessarily reads `hass.states`/`hass.config_entries` to discover and read
 other integrations' entities, but is still isolated from `coordinator.py`'s
@@ -249,6 +254,19 @@ baseline samples (ADR-001 §2)`). This avoids rationale drifting out of
 sync with the code, since an ADR is versioned independently and can be
 marked `Superseded` if a decision changes, without having to hunt down
 every comment that explained it.
+
+**[`adr/INDEX.md`](INDEX.md) is the single, authoritative list of every
+ADR and its current status** — not this document, and not the project
+README (which only links to it). Updating it is a **mandatory** part of
+any structural change to the ADR set, in the same commit as the change
+itself, not a follow-up: adding a new ADR, splitting one (as ADR-001 and
+ADR-003 each were), marking one `Superseded`, or otherwise changing an
+ADR's `Status` header all require a matching edit to `adr/INDEX.md`. This
+exists because status and split/supersession relationships are exactly
+the kind of fact that is easy to update in the ADR itself while
+forgetting the one other place it is also recorded — the same class of
+drift §9's Con already accepts for module diagrams vs. their adjacent
+prose, addressed here for the ADR set's own index the same way.
 
 ### 8 — Error handling
 

@@ -107,23 +107,5 @@ combined).
 See [`adr/000-coding-standards.md`](adr/000-coding-standards.md) for the
 module boundaries.
 
-| ADR | Title |
-|---|---|
-| [000](adr/000-coding-standards.md) | Code Quality Standards, Programming Style & Core Concepts |
-| [001](adr/001-empirical-shading-model.md) | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, rolling window |
-| [002](adr/002-coordinator-update-strategy.md) | Coordinator Update Strategy: Recalibration vs. Forecast Recompute |
-| [003](adr/003-yield-corrections-clipping-derating.md) | *Superseded — split into ADR-003a and ADR-003b (2026-08-18)* |
-| [003a](adr/003a-inverter-clipping-exclusion.md) | Optional Per-String Yield Correction: Inverter Clipping Exclusion *(split from ADR-003 §1/§1a)* |
-| [003b](adr/003b-temperature-derating-correction.md) | Optional Per-String Yield Correction: Temperature Derating *(split from ADR-003 §2/§2a/§2b/§2c/§3)* |
-| [003c](adr/003c-temperature-forecast-via-learned-model.md) | Temperature Derating: Forecasting the Target-Slot Temperature via a Learned Per-Slot Model *(amends ADR-003b §1a/§1b, ADR-012 §3, ADR-010)* |
-| [004](adr/004-diagnostics-switch-and-scatter-sensor.md) | Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed) |
-| [005](adr/005-aggregate-sum-and-integral-sensors.md) | Cross-String Aggregate Sensors: Sums and Daily Integrals |
-| [006](adr/006-intraday-deviation-correction.md) | Intraday Deviation Correction for the Remaining-Today Forecast |
-| [007](adr/007-coordinator-cache-split.md) | Splitting the Coordinator: A Dedicated Cache Module |
-| [008](adr/008-numpy-backend-and-cache-array-accessor.md) | Numeric Backend for `regression/`, and a Batched Cache Accessor |
-| [009](adr/009-baseline-forecast-sourcing.md) | Baseline (Unshaded) Forecast Sourcing: Generic Attribute Discovery *(split from ADR-001 §5)* |
-| [010](adr/010-config-flow-shape.md) | Config Flow Shape *(split from ADR-001 §6)* |
-| [011](adr/011-temporal-smoothing-and-neighbor-exclusion.md) | Temporal Smoothing and Neighbor-Regime Exclusion for Slot Training Pools *(split from ADR-001 §3b/§3c/§3d)* |
-| [012](adr/012-provider-architecture.md) | Provider Architecture: Shared Base Class and Cache Reuse for External Series |
-
-Further ADRs (013 onward) will be added as brainstorming continues.
+See [`adr/INDEX.md`](adr/INDEX.md) for the full list of ADRs, their
+status, and how they relate to one another.

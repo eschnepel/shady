@@ -17,6 +17,9 @@ prediction-time fallback is no longer naive persistence, but a learned
 per-slot forecast (ADR-003c), with the forward+reverse correction now
 skipped together, not just the reverse half, when no forecast-capable
 predictor is available. See ADR-003c for the full mechanism.
+**2026-08-19** — §2's `forecast_adjust.py` bullet trimmed to point at
+ADR-006 §1b for the clamp-ordering rationale instead of restating the
+Ramping/Blending mechanics inline; no behavior changed.
 
 ---
 
@@ -295,12 +298,11 @@ flowchart BT
 - **`forecast_adjust.py`** — calls back into `yield_correction.py`'s
   reverse transform per §1b (the dashed edge above) — converts a
   25°C-equivalent prediction back to the target slot's own expected
-  temperature — then runs ADR-006's intraday deviation correction (§1)
-  on that unclamped value, in whichever shape the currently-configured
-  state calls for (a single ramped-and-clamped-ratio multiply under
-  Ramping, ADR-006 §1a; two independently-computed sides crossfaded
-  together under Blending, ADR-006 §1b; a no-op if disabled), and only
-  then applies ADR-003a §1a's output clamp — once, last.
+  temperature — then runs ADR-006's intraday deviation correction on
+  that unclamped value, and only then applies ADR-003a §1a's output
+  clamp, once, last. See ADR-006 §1b for the canonical statement of why
+  this ordering — and not, say, clamping before the intraday
+  correction — is the one that's correct; not restated here.
 
 `yield_correction.py` itself stays a single, small, stateless module —
 the forward and reverse functions are two entry points into the same

@@ -81,11 +81,11 @@ ratio_string = pv_energy_window / fc_energy_window
 computed **per string**, where both quantities are the energy accumulated
 over the trailing **`window_slots`** slots (§3 below) at 5-minute
 resolution. Both series come from `cache.py`'s `get_time_range(sensor_ids,
-start=now-window_slots*5m, end=now, group_by="sensor")` accessor (ADR-007
-§1e) — the string's actual-yield entity and its own `ShadyForecastSensor`.
+start=now-window_slots*5m, end=now, group_by="sensor")` accessor
+(ADR-007a §5) — the string's actual-yield entity and its own `ShadyForecastSensor`.
 This is the same underlying `statistics_during_period` read pattern
 Effy's ADR-003 established (`mean` field, 5-minute `statistics_short_term`
-table) that `cache.py`'s injected `fetch_fn` uses (ADR-007 §1d), but Shady
+table) that `cache.py`'s injected `fetch_fn` uses (ADR-007a §4), but Shady
 never calls it directly here — going through `cache.py` means this read
 is validated and gap-filled the same way every other time-series access
 in this design is, rather than being a second, bespoke recorder-reading
@@ -93,7 +93,7 @@ path. Unlike Effy, Shady never needs the internal `async_import_statistics`
 write path ADR-003 there had to fall back on, because these are ordinary
 sensor entities Home Assistant already records on its own (or, for
 `ShadyForecastSensor`, values Shady itself already pushed into `cache.py`,
-ADR-007 §1c) — Shady only ever reads history it did nothing special to
+ADR-007a §3) — Shady only ever reads history it did nothing special to
 create.
 
 This is refreshed on its own schedule — **every 5 minutes**
@@ -332,9 +332,9 @@ module needed:
   to Blending.
 
 The trailing-window read itself (§1a) goes through `cache.py`'s
-`get_time_range` accessor (ADR-007 §1e), which in turn sources any
+`get_time_range` accessor (ADR-007a §5), which in turn sources any
 not-yet-cached portion via `statistics_during_period` (the same public
-recorder API access point Effy's ADR-003 reads with, ADR-007 §1d) —
+recorder API access point Effy's ADR-003 reads with, ADR-007a §4) —
 `coordinator.py` calls `cache.py`, it does not call
 `statistics_during_period` itself. The small, short-lived per-string
 ramp/crossfade state from §1b lives in `cache.py` (ADR-007) too, as a

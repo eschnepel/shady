@@ -194,7 +194,7 @@ takes a single optional parameter:
 per sensor.** Every diagnostic sensor, the per-string
 `ShadyDiagnosticsSensor`s (§2) and the summed `ShadyDiagnosticsSumSensor`
 (§2b) alike, shows the *same* moment: whichever slot `cache.py`'s
-`pinned_reference` (ADR-007 §1f) currently names, or "last complete slot"
+`pinned_reference` (ADR-007a §6) currently names, or "last complete slot"
 if it is unset. There is no per-sensor "is this one pinned or still
 auto-tracking" toggle to keep in sync — the service is not entity-
 targeted at all, since there is only ever one thing, config-entry-wide,
@@ -217,9 +217,9 @@ accuracy eventually appear once real time catches up to it, without the
 pin having to be re-issued.
 
 **Every diagnostic sensor's slot-pool series comes from one function,
-`get_pinned_slot_pool` (ADR-007 §1f) — whether currently pinned or
+`get_pinned_slot_pool` (ADR-007a §6) — whether currently pinned or
 auto-tracking.** There is no separate today-only call for the
-auto-tracking case. See ADR-007 §1f for exactly how the function
+auto-tracking case. See ADR-007a §6 for exactly how the function
 resolves its own window from `pinned_reference` — including why a pin to
 a **future** date falls back to the same window an auto-tracking sensor
 already uses, since recalibration (ADR-002 §1) never trains on data
@@ -235,11 +235,11 @@ this sensor specifically:
 - **Pinned to a past date outside the live window** — not free. The
   resolved window will typically not already be cached, so the call
   triggers a real recorder fetch for the missing range (`cache.py`'s
-  validate-before-read, ADR-007 §1d, handles this like any other cache
+  validate-before-read, ADR-007a §4, handles this like any other cache
   miss).
 - **Residual limitation:** data already trimmed *before* the pin was set
-  cannot be recovered from the cache alone — `cache.trim()` (ADR-007
-  §1a/§1f) only extends its retained floor for a pin that already
+  cannot be recovered from the cache alone — `cache.trim()` (ADR-007a
+  §1/§6) only extends its retained floor for a pin that already
   existed at trim time. `selected {method}`/`selected actual` still work
   for such a slot regardless, as long as the recorder itself still has
   that slot's raw `FC`/`PV` history — they don't depend on the pool
@@ -327,7 +327,7 @@ slots during recalibration (ADR-002 §1), since fitting all 288 slot
 models necessarily means reading all 288 pools first. When the
 diagnostics switch (§1) is on, every per-string sensor's
 `"-1"`/`"0"`/`"1"` series are populated by calling `get_pinned_slot_pool`
-(ADR-007 §1f) for the diagnosed slot (and its neighbors) — the **same**
+(ADR-007a §6) for the diagnosed slot (and its neighbors) — the **same**
 call whether currently pinned or auto-tracking (§2a); there is no
 separate today-only accessor diagnostics falls back to. While
 auto-tracking, that call's internally-resolved window happens to be
@@ -343,9 +343,9 @@ The cache refreshes on exactly the same triggers as the recalibration
 that produces it — **midnight or button** (ADR-002 §1) — plus **once at
 system start**, since a fresh restart has no recalibration-produced data
 yet to retain until the first one runs; a restart also invalidates
-`cache.py`'s validated ranges (ADR-007 §1b) for these sensors, so the
+`cache.py`'s validated ranges (ADR-007a §2) for these sensors, so the
 first `get_pinned_slot_pool` call after one naturally triggers the
-full-history fetch path (ADR-007 §1d) rather than assuming stale
+full-history fetch path (ADR-007a §4) rather than assuming stale
 in-memory state survived. While **auto-tracking**, the slot-pool series
 are **not** refreshed on the 5-minute tick from §2, nor on ADR-002 §2's
 baseline-update trigger — only recalibration (or a restart priming it
@@ -402,10 +402,12 @@ this shaping is pure presentation and does not belong in `regression/` or
 registered in `__init__.py` (the usual home for service registration),
 is **not** entity-targeted (§2a — there is one diagnosed-slot state per
 config entry, not one per sensor), and its handler is a thin wrapper that
-validates the timestamp and calls `cache.py`'s `pin_reference`/
-`clear_reference` (ADR-007 §1f) directly for that config entry's
-coordinator — no new module needed for a single service handler this
-small.
+validates the timestamp and calls that config entry's coordinator, which
+in turn forwards to `cache.py`'s `pin_reference`/`clear_reference`
+(ADR-007a §6) — `cache.py` is still only ever reached through
+`coordinator.py` (ADR-007 §2), the same as every other caller; `__init__.py`
+does not reach into `cache.py` directly, and no new module is needed for
+a single service handler this small.
 
 ---
 
@@ -433,7 +435,7 @@ small.
   disagree on a slot later today or tomorrow, without waiting for it to
   elapse. A past pin costs nothing extra when the pinned date is recent
   enough to already be cached, and at most one bounded, on-demand fetch
-  (ADR-007 §1d/§1f) otherwise; a future pin is always free the same way
+  (ADR-007a §4/§6) otherwise; a future pin is always free the same way
   auto-tracking already is (§2a), since it resolves to the same
   already-cached window.
 - **Pro:** Default-off plus the always-on entity / conditionally-computed
@@ -446,9 +448,9 @@ small.
   `accuracy` attribute (§2) still gives automations/templates a value to
   read without parsing a formatted string.
 - **Pro:** Both the auto-tracking and pinned cases go through the same
-  `get_pinned_slot_pool` call (§3, ADR-007 §1f), reusing the exact same
+  `get_pinned_slot_pool` call (§3, ADR-007a §6), reusing the exact same
   recorder-reading mechanism (`fetch_fn`/`statistics_during_period`,
-  ADR-007 §1d) `coordinator.py` already uses for fitting — the diagnostic
+  ADR-007a §4) `coordinator.py` already uses for fitting — the diagnostic
   feature introduces no second way of talking to the recorder, only an
   occasional extra invocation of the one it already has.
 - **Pro:** The summed diagnostics sensor (§2b) gives a config-entry-level
