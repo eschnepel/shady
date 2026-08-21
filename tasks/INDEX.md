@@ -4,21 +4,21 @@
 
 | Slug | Title | Status | Dependencies | Worker |
 |------|-------|--------|--------------|--------|
-| TASK-0001-provider-base-architecture | Provider Base Architecture | todo | — | — |
-| TASK-0002-cache-core-time-series-store | Cache Core — Time-Series Store & Contiguous-Range Accessor | todo | — | — |
-| TASK-0003-baseline-forecast-discovery | Baseline Forecast Discovery & Normalization | todo | TASK-0001 | — |
-| TASK-0004-temperature-source-provider | Temperature Source Provider | todo | TASK-0001 | — |
-| TASK-0005-regression-fitting-pipeline | Regression Fitting Pipeline | todo | — | — |
-| TASK-0006-cache-batched-regression-pool-accessor | Cache — Batched Regression-Pool Accessor | todo | TASK-0002 | — |
-| TASK-0007-yield-corrections | Optional Yield Corrections (Clipping + Temperature Derating) | todo | — | — |
-| TASK-0008-forecast-adjustment | Forecast Adjustment | todo | TASK-0005, TASK-0007 | — |
-| TASK-0009-config-flow | Config Flow | todo | TASK-0003 | — |
-| TASK-0010-coordinator-recalibration-recompute-push | Coordinator — Recalibration, Recompute & Provider Push | todo | TASK-0002, TASK-0006, TASK-0005, TASK-0007, TASK-0008, TASK-0003, TASK-0004 | — |
-| TASK-0011-forecast-sensor-and-recalculate-button | Corrected Forecast Sensor & Manual Recalculation | todo | TASK-0010 | — |
-| TASK-0012-aggregate-sensors | Cross-String Aggregate Sensors | todo | TASK-0011, TASK-0002 | — |
-| TASK-0013-intraday-deviation-correction | Intraday Deviation Correction | todo | TASK-0011, TASK-0008, TASK-0012 | — |
-| TASK-0014-temperature-forecast-learned-model | Temperature-Forecast Learned Model | todo | TASK-0005, TASK-0006, TASK-0004, TASK-0007, TASK-0010 | — |
-| TASK-0015-diagnostics-switch-and-scatter-sensors | Diagnostics — Switch & Scatter/Accuracy Sensors | todo | TASK-0002, TASK-0006, TASK-0010, TASK-0011, TASK-0013 | — |
+| TASK-0001-provider-base-architecture | Provider Base Architecture | done | — | — |
+| TASK-0002-cache-core-time-series-store | Cache Core — Time-Series Store & Contiguous-Range Accessor | done | — | — |
+| TASK-0003-baseline-forecast-discovery | Baseline Forecast Discovery & Normalization | done | TASK-0001 | — |
+| TASK-0004-temperature-source-provider | Temperature Source Provider | done | TASK-0001 | — |
+| TASK-0005-regression-fitting-pipeline | Regression Fitting Pipeline | done | — | — |
+| TASK-0006-cache-batched-regression-pool-accessor | Cache — Batched Regression-Pool Accessor | done | TASK-0002 | — |
+| TASK-0007-yield-corrections | Optional Yield Corrections (Clipping + Temperature Derating) | done | — | — |
+| TASK-0008-forecast-adjustment | Forecast Adjustment | done | TASK-0005, TASK-0007 | — |
+| TASK-0009-config-flow | Config Flow | done | TASK-0003 | — |
+| TASK-0010-coordinator-recalibration-recompute-push | Coordinator — Recalibration, Recompute & Provider Push | done | TASK-0002, TASK-0006, TASK-0005, TASK-0007, TASK-0008, TASK-0003, TASK-0004 | — |
+| TASK-0011-forecast-sensor-and-recalculate-button | Corrected Forecast Sensor & Manual Recalculation | done | TASK-0010 | — |
+| TASK-0012-aggregate-sensors | Cross-String Aggregate Sensors | done | TASK-0011, TASK-0002 | — |
+| TASK-0013-intraday-deviation-correction | Intraday Deviation Correction | done | TASK-0011, TASK-0008, TASK-0012 | — |
+| TASK-0014-temperature-forecast-learned-model | Temperature-Forecast Learned Model | done | TASK-0005, TASK-0006, TASK-0004, TASK-0007, TASK-0010 | — |
+| TASK-0015-diagnostics-switch-and-scatter-sensors | Diagnostics — Switch & Scatter/Accuracy Sensors | done | TASK-0002, TASK-0006, TASK-0010, TASK-0011, TASK-0013 | — |
 
 ### Parallelization notes (Phase 3 will confirm at readiness time)
 

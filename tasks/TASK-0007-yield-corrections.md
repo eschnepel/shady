@@ -1,6 +1,6 @@
 # Task: Optional Yield Corrections (Clipping + Temperature Derating)
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-003a §1, ADR-003a §1a, ADR-003a §2, ADR-003b §1, ADR-003b §1a, ADR-003b §1b, ADR-003b §1c]
 - **Dependencies:** []
 
@@ -56,3 +56,4 @@ own unit tests.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/yield_correction.py` → functions `exclude_clipped_samples()`, `apply_temperature_derating()`, `reverse_temperature_derating()`, `estimate_cell_temperature_from_ambient()`

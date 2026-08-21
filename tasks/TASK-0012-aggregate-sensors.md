@@ -1,6 +1,6 @@
 # Task: Cross-String Aggregate Sensors
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-005 §1, ADR-005 §2, ADR-005 §3, ADR-005 §4, ADR-005 §5, ADR-005 §6]
 - **Dependencies:** [TASK-0011-forecast-sensor-and-recalculate-button, TASK-0002-cache-core-time-series-store]
 
@@ -60,3 +60,15 @@ this task to sequence the two coordinator.py edits.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/aggregation.py` adds the pure slot-sum and
+  trapezoidal-energy helpers used by the aggregate sensors.
+- `custom_components/shady/cache.py` now persists the two daily integral
+  totals plus `last_reset_date`.
+- `custom_components/shady/coordinator.py` now refreshes aggregate
+  snapshots, registers the midnight reset and 5-minute refresh listeners,
+  and drives the integral totals from the cached day series.
+- `custom_components/shady/sensor.py` now exposes the six aggregate
+  config-entry sensors alongside the per-string forecast sensor.
+- `tests/test_aggregation.py` and `tests/test_sensor_aggregates.py`
+  validate the pure math and sensor glue; `tests/test_coordinator.py`
+  covers the new refresh/reset paths.

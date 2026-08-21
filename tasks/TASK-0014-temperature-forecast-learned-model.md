@@ -1,6 +1,6 @@
 # Task: Temperature-Forecast Learned Model
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-003c §1, ADR-003c §2, ADR-003c §3, ADR-003c §4, ADR-003c §5, ADR-003c §6, ADR-003c §7]
 - **Dependencies:** [TASK-0005-regression-fitting-pipeline, TASK-0006-cache-batched-regression-pool-accessor, TASK-0004-temperature-source-provider, TASK-0007-yield-corrections, TASK-0010-coordinator-recalibration-recompute-push]
 
@@ -65,3 +65,12 @@ predictor up automatically once it overrides `forward()`.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/__init__.py` now wires the global weather
+  temperature provider into the coordinator when configured.
+- `custom_components/shady/coordinator.py` now fits per-slot temperature
+  models, predicts future target temperatures from the weather forecast
+  provider, and feeds those predictions into reverse temperature
+  derating.
+- `tests/test_init.py` and `tests/test_coordinator.py` cover the provider
+  wiring and learned temperature-model path, including the direct cell and
+  ambient-uplift branches.

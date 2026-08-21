@@ -1,6 +1,6 @@
 # Task: Regression Fitting Pipeline
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-001 §2, ADR-001 §2a, ADR-001 §3, ADR-001 §3a, ADR-011 §1, ADR-011 §2, ADR-011 §3, ADR-008 §1]
 - **Dependencies:** []
 
@@ -62,3 +62,8 @@ per-slot). No `cache.py` coupling — pools are passed in.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/regression/base.py` → class `RegressionModel`, class `PolynomialRegressionModel`, class `KernelRegressionModel`, helper functions `magnitude_weight()`, `time_weight()`, `build_training_pool()`
+- `custom_components/shady/regression/linear.py` → function `fit()`
+- `custom_components/shady/regression/kernel.py` → function `fit()`
+- `custom_components/shady/regression/wls2.py` → function `fit()`
+- `custom_components/shady/regression/wls3.py` → function `fit()`

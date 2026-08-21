@@ -1,6 +1,6 @@
 # Task: Intraday Deviation Correction
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-006 §1, ADR-006 §1a, ADR-006 §1b, ADR-006 §2, ADR-006 §3, ADR-006 §4, ADR-006 §5]
 - **Dependencies:** [TASK-0011-forecast-sensor-and-recalculate-button, TASK-0008-forecast-adjustment, TASK-0012-aggregate-sensors]
 
@@ -75,3 +75,17 @@ same files — sequenced after TASK-0012 to avoid concurrent modification.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/aggregation.py` adds the pure `ramp_weight`,
+  `intraday_correction_factor`, and `crossfade` helpers.
+- `custom_components/shady/cache.py` now stores short-lived intraday
+  state per string.
+- `custom_components/shady/forecast_adjust.py` applies intraday factors
+  and optional crossfades before the final clamp.
+- `custom_components/shady/coordinator.py` computes the intraday context
+  on recompute, refreshes it on provider updates and 5-minute ticks, and
+  clears it on midnight reset.
+- `custom_components/shady/sensor.py` exposes the intraday transparency
+  attributes on `ShadyForecastSensor`.
+- `tests/test_aggregation.py`, `tests/test_forecast_adjust.py`,
+  `tests/test_coordinator.py`, `tests/test_sensor_forecast.py`, and
+  `tests/test_sensor_aggregates.py` cover the new behavior.

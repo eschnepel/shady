@@ -1,6 +1,6 @@
 # Task: Corrected Forecast Sensor & Manual Recalculation
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-002 §3, ADR-002 §5, ADR-000 §3]
 - **Dependencies:** [TASK-0010-coordinator-recalibration-recompute-push]
 
@@ -57,3 +57,15 @@ importing anything from `config_flow.py`.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/__init__.py` now instantiates
+  `ShadyCoordinator`, stores it in `hass.data[DOMAIN][entry.entry_id]`,
+  forwards `button` and `sensor`, and unloads/cleans up the coordinator.
+- `custom_components/shady/sensor.py` implements the thin per-string
+  `ShadyForecastSensor`, reading its current value and series attributes
+  directly from the coordinator.
+- `custom_components/shady/button.py` implements
+  `ShadyRecalculateButton`, calling the coordinator's shared refit path
+  and logging/swallowing failures.
+- `tests/test_init.py`, `tests/test_sensor_forecast.py`, and
+  `tests/test_button.py` verify the setup/unload wiring, sensor state,
+  listener updates, and button refit behavior.

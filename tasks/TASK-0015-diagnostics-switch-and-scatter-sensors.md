@@ -1,6 +1,6 @@
 # Task: Diagnostics — Switch & Scatter/Accuracy Sensors
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-004 §1, ADR-004 §2, ADR-004 §2a, ADR-004 §2b, ADR-004 §3, ADR-004 §4, ADR-004 §5, ADR-007a §6]
 - **Dependencies:** [TASK-0002-cache-core-time-series-store, TASK-0006-cache-batched-regression-pool-accessor, TASK-0010-coordinator-recalibration-recompute-push, TASK-0011-forecast-sensor-and-recalculate-button, TASK-0013-intraday-deviation-correction]
 
@@ -85,3 +85,18 @@ sequential).
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/cache.py` now provides the pinned-reference
+  scalar and the slot-pool accessor used by diagnostics.
+- `custom_components/shady/aggregation.py` adds the clamped diagnostic
+  accuracy helper.
+- `custom_components/shady/coordinator.py` now tracks diagnostics
+  selection, fits four slot-specific regression strategies for the pinned
+  slot, and publishes per-string plus summed diagnostic snapshots.
+- `custom_components/shady/switch.py` adds the diagnostics switch entity.
+- `custom_components/shady/sensor.py` adds the per-string and summed
+  diagnostics sensors.
+- `custom_components/shady/__init__.py` wires the diagnostics switch
+  platform and registers the `shady.select_diagnostic_slot` service.
+- `tests/test_cache_pinned_slot_pool.py`, `tests/test_diagnostics.py`,
+  `tests/test_aggregation.py`, `tests/test_init.py`, and
+  `tests/test_coordinator.py` cover the new behavior.

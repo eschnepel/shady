@@ -1,6 +1,6 @@
 # Task: Coordinator — Recalibration, Recompute & Provider Push
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-002 §1, ADR-002 §2, ADR-002 §3, ADR-002 §4, ADR-002 §5, ADR-012 §4]
 - **Dependencies:** [TASK-0002-cache-core-time-series-store, TASK-0006-cache-batched-regression-pool-accessor, TASK-0005-regression-fitting-pipeline, TASK-0007-yield-corrections, TASK-0008-forecast-adjustment, TASK-0003-baseline-forecast-discovery, TASK-0004-temperature-source-provider]
 
@@ -65,3 +65,9 @@ correct `not_before_index` guard.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/coordinator.py` implements the shared
+  orchestration core: startup refit safety net, midnight+1min daily refit
+  registration, provider-push listeners for forward-overridden providers,
+  push-to-cache slot conversion, and today/tomorrow recompute filtering.
+- `tests/test_coordinator.py` verifies listener registration, provider
+  push indexing, recompute triggering, and recompute horizon limits.

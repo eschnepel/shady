@@ -7,10 +7,11 @@ empirically (no horizon-profile input, no sun-geometry calculation).
 file is a condensed, implementation-facing digest — when in doubt, the
 ADR text wins. All 17 ADRs are `Accepted` except ADR-003, which is
 `Superseded` (split into ADR-003a/ADR-003b, content fully absorbed).
-**Current repo state:** brainstorming-phase skeleton only —
-`custom_components/shady/__init__.py`, `const.py`, `manifest.json`,
-`translations/{en,de}.json` exist as placeholders with TODOs; no other
-module exists yet. `tests/__init__.py` is empty.
+**Current repo state:** foundational pure modules now exist for the first
+two implementation waves (`providers/base.py`, `providers/discovery.py`,
+`providers/normalize.py`, `providers/temperature.py`, `cache.py`,
+`regression/`, `yield_correction.py`, `forecast_adjust.py`) alongside the
+original integration skeleton and tests.
 
 ---
 

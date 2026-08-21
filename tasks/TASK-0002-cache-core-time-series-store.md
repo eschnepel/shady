@@ -1,6 +1,6 @@
 # Task: Cache Core — Time-Series Store & Contiguous-Range Accessor
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-007, ADR-007a §1, ADR-007a §2, ADR-007a §3, ADR-007a §4, ADR-007a §5]
 - **Dependencies:** []
 
@@ -53,3 +53,4 @@ storage layer nearly every later task builds on — keep it free of any
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/cache.py` → class `ShadyCache`, constants `SlotGroup`, `InvalidMode`, methods `push()`, `invalidate()`, `trim()`, `get_time_range()`

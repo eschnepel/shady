@@ -1,6 +1,6 @@
 # Task: Forecast Adjustment
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-001 §2, ADR-003a §1a, ADR-003b §1b, ADR-006 §1b]
 - **Dependencies:** [TASK-0005-regression-fitting-pipeline, TASK-0007-yield-corrections]
 
@@ -55,3 +55,4 @@ in TASK-0013 as a shared-file dependency on this task).
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/forecast_adjust.py` → functions `adjust_forecast()`, `apply_forecast_adjustment()`

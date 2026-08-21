@@ -1,6 +1,6 @@
 # Task: Config Flow
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-010, ADR-001 §1]
 - **Dependencies:** [TASK-0003-baseline-forecast-discovery]
 
@@ -61,3 +61,9 @@ done.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/config_flow.py` implements `ShadyConfigFlow`
+  and `ShadyOptionsFlow` with the ADR-010 step sequence, ranked baseline
+  candidate dropdown, automatic temperature-aware string handling, and
+  options-flow reuse.
+- `tests/test_config_flow.py` verifies defaults, candidate ranking, the
+  add-string flow, and candidate-driven temperature awareness.

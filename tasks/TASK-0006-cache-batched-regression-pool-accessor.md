@@ -1,6 +1,6 @@
 # Task: Cache — Batched Regression-Pool Accessor
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-008 §2, ADR-008 §3]
 - **Dependencies:** [TASK-0002-cache-core-time-series-store]
 
@@ -51,3 +51,4 @@ np.ndarray]` accessor for the full 288-slot sweep.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/cache.py` → attribute `shadow`, method `get_regression_pools()`

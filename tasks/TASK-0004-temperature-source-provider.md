@@ -1,6 +1,6 @@
 # Task: Temperature Source Provider
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-003b §1a, ADR-012 §1]
 - **Dependencies:** [TASK-0001-provider-base-architecture]
 
@@ -49,3 +49,4 @@ tier-specific behavior should be hardcoded elsewhere.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/providers/temperature.py` → class `ShadyTemperatureProvider`, type alias `TemperatureTier`

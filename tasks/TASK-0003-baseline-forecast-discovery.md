@@ -1,6 +1,6 @@
 # Task: Baseline Forecast Discovery & Normalization
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-009, ADR-012 §1, ADR-012 §1a]
 - **Dependencies:** [TASK-0001-provider-base-architecture]
 
@@ -55,3 +55,5 @@ code.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/providers/discovery.py` → dataclass `ForecastCandidate`, class `ShadyBaselineForecastProvider`, functions `discover_candidates()`, `rank_candidates()`, `score_candidate()`
+- `custom_components/shady/providers/normalize.py` → functions `normalize_series()`, `canonical_series`, `parse_timestamp()`

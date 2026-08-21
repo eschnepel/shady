@@ -1,6 +1,6 @@
 # Task: Provider Base Architecture
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-012 §1, ADR-012 §1a]
 - **Dependencies:** []
 
@@ -43,3 +43,4 @@ no concrete provider lives here.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/providers/base.py` → class `ProviderBase`, type aliases `EntityRef`, `ThreeStateValue`, helper functions `state_to_three_state_value()` and `assemble_series_tuples()`
