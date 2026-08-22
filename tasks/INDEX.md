@@ -6,8 +6,8 @@
 |------|-------|--------|--------------|--------|
 | TASK-0001-provider-base-architecture | Provider Base Architecture | done | — | Lead Agent (worker+reviewer, inline) |
 | TASK-0002-cache-core-time-series-store | Cache Core — Time-Series Store & Contiguous-Range Accessor | done | — | Lead Agent (worker+reviewer, inline) |
-| TASK-0003-baseline-forecast-discovery | Baseline Forecast Discovery & Normalization | todo | TASK-0001 | — |
-| TASK-0004-temperature-source-provider | Temperature Source Provider | todo | TASK-0001 | — |
+| TASK-0003-baseline-forecast-discovery | Baseline Forecast Discovery & Normalization | done | TASK-0001 | Lead Agent (worker+reviewer, inline) |
+| TASK-0004-temperature-source-provider | Temperature Source Provider | done | TASK-0001 | Lead Agent (worker+reviewer, inline) |
 | TASK-0005-regression-fitting-pipeline | Regression Fitting Pipeline | done | — | Lead Agent (worker+reviewer, inline) |
 | TASK-0006-cache-batched-regression-pool-accessor | Cache — Batched Regression-Pool Accessor | todo | TASK-0002 | — |
 | TASK-0007-yield-corrections | Optional Yield Corrections (Clipping + Temperature Derating) | todo | — | — |
