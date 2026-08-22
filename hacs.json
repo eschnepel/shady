@@ -2,7 +2,7 @@
   "name": "Shady",
   "description": "Shading-Adjusted PV Forecast - corrects an existing PV yield forecast for local shading effects (e.g. trees, buildings) by empirically fitting actual yield against the raw forecast value, per historical slot, rather than modelling the shading geometry itself.",
   "render_readme": true,
-  "homeassistant": "2024.1.0",
+  "homeassistant": "2026.3.1",
   "domains": ["sensor", "switch", "button"],
   "zip_release": true,
   "filename": "shady.zip"

@@ -16,8 +16,11 @@ module exists yet. `tests/__init__.py` is empty.
 
 ## 1 — Tech stack & tooling
 
-- **Language:** Python ≥3.11 (repo), mypy target 3.12. Home Assistant
-  custom integration, `iot_class: local_polling`, HACS-packaged.
+- **Language:** Python ≥3.14 (repo), mypy target 3.14 — raised from
+  ≥3.11/3.12 by ADR-000 Amendment (2026-08-22), which is the required
+  minimum since HA 2026.3.x. Home Assistant custom integration, `iot_class:
+  local_polling`, HACS-packaged (`hacs.json` `homeassistant` minimum
+  raised to `2026.3` for the same reason).
 - **Numeric backend:** `numpy>=1.26.0`, declared in `manifest.json`
   `requirements` and `pyproject.toml` — batched (never naive per-slot)
   across all four `regression/` strategies, both `fit()` and `predict()`

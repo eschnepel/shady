@@ -7,7 +7,7 @@ name = "shady"
 version = "0.1.0"
 description = "Shading-Adjusted PV Forecast - Passt einen bestehenden PV-Ertragsforecast anhand lokaler Verschattungseinflüsse an."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = { text = "Apache 2.0" }
 keywords = ["solar", "pv", "forecast", "shading", "home-assistant"]
 dependencies = [
@@ -38,7 +38,7 @@ dev = [
 where = ["custom_components"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 mypy_path = "."
 no_namespace_packages = true
 ignore_missing_imports = true

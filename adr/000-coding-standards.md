@@ -22,6 +22,24 @@ points here rather than re-enumerating. §3's `coordinator.py` bullet
 updated to note the provider-push listeners ADR-012 §4 added, alongside
 its existing scheduling triggers.
 
+## Amendment — 2026-08-22
+
+**Reason:** Home Assistant 2026.3 (the current HA release is 2026.8.2) raised HA's
+own minimum supported Python version to 3.14. §4's rationale for
+`from __future__ import annotations` ("without requiring Python 3.10+ at
+runtime — HA's actual minimum is lower") is now stale: HA's actual
+minimum is no longer lower, it is 3.14. As a direct consequence,
+`pyproject.toml` (`requires-python`, `[tool.mypy] python_version`) and
+`hacs.json` (`homeassistant` minimum) are amended to match, so a HACS
+install can no longer advertise compatibility with an HA release whose
+bundled Python predates the interpreter this codebase now targets.
+**Decision:** Python ≥3.14 is the project's minimum supported runtime.
+§4's first bullet is updated accordingly (see below). `pyproject.toml`'s
+`requires-python` is raised to `>=3.14` and `[tool.mypy] python_version`
+to `"3.14"`; `hacs.json`'s `homeassistant` minimum is raised to
+`"2026.3"`. `tasks/adr-summary.md` §1 is updated to match.
+**Decided by:** human (confirmed by Lead Agent).
+
 ---
 
 ## Context
@@ -174,8 +192,12 @@ baseline.
 ### 4 — Type-hinting conventions
 
 - `from __future__ import annotations` at the top of every module — allows
-  modern `list[str] | None` syntax without runtime evaluation cost and
-  without requiring Python 3.10+ at runtime (HA's actual minimum is lower).
+  modern `list[str] | None` syntax without runtime evaluation cost.
+  The project's minimum supported runtime is Python 3.14 (Amendment,
+  2026-08-22 — matching HA 2026.3's minimum), which already
+  supports this syntax natively; the import is kept for the deferred-
+  evaluation cost benefit and as defense-in-depth should the minimum
+  ever need to be lowered again, not because a lower minimum requires it.
 - Built-in generics (`list[str]`, `dict[str, float]`) are used directly;
   `typing.List`/`typing.Dict` are never imported.
 - `X | None` is used instead of `Optional[X]`.
