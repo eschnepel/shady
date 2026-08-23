@@ -1,6 +1,6 @@
 # Task: Optional Yield Corrections (Clipping + Temperature Derating)
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-003a §1, ADR-003a §1a, ADR-003a §2, ADR-003b §1, ADR-003b §1a, ADR-003b §1b, ADR-003b §1c]
 - **Dependencies:** []
 
@@ -56,3 +56,32 @@ own unit tests.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/yield_correction.py` →
+  - `DEFAULT_CLIPPING_THRESHOLD: float` (module constant, `0.98`, ADR-003a §1)
+  - `REFERENCE_TEMPERATURE_C: float` (module constant, `25.0`, ADR-003b §1)
+  - `DEFAULT_MAX_UPLIFT_C: float` (module constant, `25.0`, ADR-003b §1a)
+  - `exclude_clipped(actual_yield: np.ndarray, inverter_limit: float | None, clipping_threshold: float = DEFAULT_CLIPPING_THRESHOLD) -> np.ndarray`
+    — ADR-003a §1/§2; marks excluded samples `NaN` (same "invalid" sentinel
+    `regression/base.py`'s `build_pool` treats as zero weight); no-op
+    (returns the same object) when `inverter_limit is None`.
+  - `uplift_ambient_to_cell(ambient_temperature: float | np.ndarray, baseline_forecast: float | np.ndarray, baseline_rated_capacity: float, max_uplift_c: float = DEFAULT_MAX_UPLIFT_C) -> float | np.ndarray`
+    — ADR-003b §1a.
+  - `derate_actual_to_reference(actual_raw: float | np.ndarray, cell_temperature: float | np.ndarray | None, coefficient_per_c: float | None, *, provider_already_corrects: bool = False) -> float | np.ndarray`
+    — ADR-003b §1 forward transform; no-op when `provider_already_corrects`,
+    or `coefficient_per_c is None`, or `cell_temperature is None`.
+  - `apply_derate_to_prediction(predicted_at_reference: float | np.ndarray, target_cell_temperature: float | np.ndarray | None, coefficient_per_c: float | None, *, provider_already_corrects: bool = False) -> float | np.ndarray`
+    — ADR-003b §1b reverse transform (exact algebraic inverse of
+    `derate_actual_to_reference`); same no-op conditions.
+- `tests/test_yield_correction.py` → 22 zero-mocking tests, one class per
+  acceptance criterion (`TestExcludeClipped`, `TestExcludeClippedNoOp`,
+  `TestDerateActualToReference`, `TestReverseTransformRoundTrip`,
+  `TestUpliftAmbientToCell`, `TestProviderAlreadyCorrectsFlag`,
+  `TestDeratingNoOpWhenNotConfigured`).
+- External dependencies added: none (`numpy` already declared, no
+  `tasks/DEPENDENCIES.md` change needed).
+- **Caller contract (not enforced by the module, documented in its
+  docstring):** apply `exclude_clipped` before `derate_actual_to_reference`
+  when preparing training data — the clipping threshold is a raw physical
+  inverter limit, evaluated against the un-normalized actual-yield value.
+- CI gate: `mypy --strict` (0 issues, 23 files), `ruff check` + `ruff
+  format --check` (clean), `pytest` (106 passed, 22 new + 84 pre-existing).

@@ -25,7 +25,11 @@ module exists yet. `tests/__init__.py` is empty.
   `requirements` and `pyproject.toml` — batched (never naive per-slot)
   across all four `regression/` strategies, both `fit()` and `predict()`
   (ADR-008). Benchmarked on the real target platform (Raspberry Pi 5),
-  not just dev x86.
+  not just dev x86. **Every `numpy.ndarray`-valued type is written
+  `numpy.typing.NDArray[np.float64]`, never a bare `np.ndarray`** —
+  ADR-000 §4 Amendment (2026-08-22); TASK-0005/TASK-0007 retrofitted via
+  patch tasks (Scenario C), every task from TASK-0006 on uses it from
+  the outset.
 - **Config-flow validation:** `voluptuous` (dev dependency; standard HA
   pattern).
 - **Gate (CI, `ADR-000 §1`):** `ruff format`, `ruff check`, `mypy --strict`
@@ -205,7 +209,7 @@ identical missing range into one `fetch_fn` call.
 **Three accessors, each sized to its one caller (ADR-008 §3):**
 - `get_time_range(sensor_ids, start, end, on_invalid="skip"|"raw"|float=0.0, group_by="sensor"|"slot")` — contiguous ranges (day arrays, trailing windows). `ADR-007a §5`.
 - `get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid="skip"|"raw"|float="skip") -> dict[sensor_id, list[float]]` — one slot across many days, pin-aware via cache-wide scalar `pinned_reference: date|None` (`pin_reference()`/`clear_reference()`). `ADR-007a §6`.
-- `get_regression_pools(sensor_ids, smoothing_radius) -> dict[sensor_id, np.ndarray]` — full 288-slot sweep, batched `numpy`, shape `(288, window_days×(2×radius+1))`. Backed by a shadow `float64` array (NaN = gap) kept in sync with the three-state list on every push/invalidate. `ADR-008 §2`.
+- `get_regression_pools(sensor_ids, smoothing_radius) -> dict[sensor_id, NDArray[np.float64]]` — full 288-slot sweep, batched `numpy`, shape `(288, window_days×(2×radius+1))`. Backed by a shadow `float64` array (NaN = gap) kept in sync with the three-state list on every push/invalidate. `ADR-008 §2`.
 
 **Provider architecture (ADR-012):** `providers/base.py` defines a real
 base class (not `Protocol`) with `fetch(start,end)` (required, pull),

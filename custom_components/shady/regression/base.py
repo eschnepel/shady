@@ -9,7 +9,7 @@ No `cache.py` coupling: `build_pool` operates on raw, already-assembled
 **Input contract for `build_pool`** (this task's own design decision,
 since `cache.py`'s `get_regression_pools` accessor — ADR-008 §2 — is out
 of scope here and TASK-0006 hasn't run yet): `fc_by_offset`/`pv_by_offset`
-are `dict[int, np.ndarray]` keyed by neighbor slot offset (`0` = the
+are `dict[int, NDArray[np.float64]]` keyed by neighbor slot offset (`0` = the
 target slot itself, `-radius..+radius` = its temporal neighbors, ADR-011
 §1), each value shaped `(n_slots, window_days)` — one row per target
 slot in the batch, one column per day in the rolling window, **already
@@ -25,11 +25,12 @@ to) this exact shape.
 from __future__ import annotations
 
 import warnings
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 # The rescale sentinel (ADR-011 §3): "-1%", expressed in the same
 # fractional convention `neighbor_fitting_cutoff` (a plain 0-1 fraction,
@@ -58,24 +59,59 @@ class SamplePool:
     a caller goes on to use (ADR-001 §2's method-independence guarantee).
     """
 
-    fc: np.ndarray
-    pv: np.ndarray
-    weight: np.ndarray
-    confidence: np.ndarray
+    fc: NDArray[np.float64]
+    pv: NDArray[np.float64]
+    weight: NDArray[np.float64]
+    confidence: NDArray[np.float64]
 
 
-class FittedModel(Protocol):
-    """Shared protocol every strategy's fitted model implements
-    (ADR-001 §2)."""
+class FittedModel(ABC):
+    """Shared base class every strategy's fitted model inherits (ADR-001
+    §2) — same `ABC` + `@abstractmethod` pattern `providers/base.py`'s
+    `Provider` already establishes.
 
-    def predict(self, fc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    `predict()` is identical across every strategy —
+    `clamp_to_forecast(*predict_unclamped(fc))` — so it is implemented
+    once, here, rather than duplicated in each of the four strategy
+    modules (`TASK-0005-patch-2` originally duplicated it verbatim in
+    all four; this collapses that duplication now that it's visibly the
+    same code in every one). Only `predict_unclamped`, which is
+    genuinely strategy-specific, remains abstract — a concrete subclass
+    that omits it fails to instantiate.
+    """
+
+    @abstractmethod
+    def predict_unclamped(
+        self, fc: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """`fc`, shape `(n_slots,)` → `(raw_adjusted, confidence)`. The
+        exact value `predict()` clamps to `[0, fc]` before returning —
+        here, deliberately not yet clamped, so a caller needing to slot
+        another step in between (ADR-003b §1b's temperature
+        reverse-transform, ADR-006 §1b's canonical ordering:
+        raw-predict -> reverse-transform -> exactly-one final clamp) has
+        something to work with. The cold-start passthrough fallback
+        (falling back to `fc` unmodified when there is no usable
+        confidence/neighbor weight) belongs here, inside each strategy's
+        own `predict_unclamped` — it is a business-logic default, not
+        the ADR-006 §1b output clamp, and must be identical whether
+        reached via `predict()` or `predict_unclamped()` directly
+        (`TASK-0005-patch-2`)."""
+        raise NotImplementedError
+
+    def predict(self, fc: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """`fc`, shape `(n_slots,)` → `(adjusted_forecast, confidence)`,
         both shape `(n_slots,)`. `adjusted_forecast` is always clamped to
-        `[0, fc]` (ADR-001 §2, ADR-000 §8)."""
-        ...
+        `[0, fc]` (ADR-001 §2, ADR-000 §8). A thin wrapper around
+        `predict_unclamped` (ADR-006 §1b Amendment, `TASK-0005-patch-2`),
+        shared by every strategy — not overridden by any of them."""
+        raw, confidence = self.predict_unclamped(fc)
+        return clamp_to_forecast(raw, fc), confidence
 
 
-def clamp_to_forecast(adjusted: np.ndarray, fc: np.ndarray) -> np.ndarray:
+def clamp_to_forecast(
+    adjusted: NDArray[np.float64], fc: NDArray[np.float64]
+) -> NDArray[np.float64]:
     """Clamp a raw prediction to `[0, FC]` — never negative, never more
     than the slot's own raw forecast value (ADR-001 §2). Applied
     unconditionally, so it holds even for a wild out-of-training-range
@@ -88,8 +124,8 @@ def clamp_to_forecast(adjusted: np.ndarray, fc: np.ndarray) -> np.ndarray:
 
 
 def passthrough_where_no_confidence(
-    adjusted: np.ndarray, fc: np.ndarray, confidence: np.ndarray
-) -> np.ndarray:
+    adjusted: NDArray[np.float64], fc: NDArray[np.float64], confidence: NDArray[np.float64]
+) -> NDArray[np.float64]:
     """A slot with zero pool weight (cold start: no historical samples
     yet) has nothing to base a fit on — its regression coefficients are
     numerically arbitrary (from `_RIDGE_EPSILON`'s regularization, not
@@ -99,7 +135,9 @@ def passthrough_where_no_confidence(
     return np.where(confidence > 0.0, adjusted, fc)
 
 
-def _magnitude_weight(fc: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+def _magnitude_weight(
+    fc: NDArray[np.float64], valid_mask: NDArray[np.bool_]
+) -> NDArray[np.float64]:
     """`magnitude_weight_i` (ADR-001 §2): continuous, downweights samples
     with a near-zero `FC_i`, exactly `0` only at `FC_i == 0`. Scaled
     against the pool's own per-row maximum valid `FC` — scale-invariant,
@@ -111,7 +149,9 @@ def _magnitude_weight(fc: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
     return np.asarray(weight)
 
 
-def _median_ratio(fc: np.ndarray, pv: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+def _median_ratio(
+    fc: NDArray[np.float64], pv: NDArray[np.float64], valid_mask: NDArray[np.bool_]
+) -> NDArray[np.float64]:
     """`median(PV_i / FC_i)` per row, over valid, `FC_i > 0` entries only
     (ADR-011 §2/§3). `NaN` for a row with no such entries."""
     ratio_mask = valid_mask & (fc > 0)
@@ -125,8 +165,8 @@ def _median_ratio(fc: np.ndarray, pv: np.ndarray, valid_mask: np.ndarray) -> np.
 
 
 def build_pool(
-    fc_by_offset: Mapping[int, np.ndarray],
-    pv_by_offset: Mapping[int, np.ndarray],
+    fc_by_offset: Mapping[int, NDArray[np.float64]],
+    pv_by_offset: Mapping[int, NDArray[np.float64]],
     smoothing_radius: int,
     neighbor_fitting_cutoff: float,
 ) -> SamplePool:
@@ -144,9 +184,9 @@ def build_pool(
     center_valid = ~np.isnan(center_fc) & ~np.isnan(pv_by_offset[0])
     center_median = _median_ratio(center_fc, pv_by_offset[0], center_valid)
 
-    fc_blocks: list[np.ndarray] = []
-    pv_blocks: list[np.ndarray] = []
-    weight_blocks: list[np.ndarray] = []
+    fc_blocks: list[NDArray[np.float64]] = []
+    pv_blocks: list[NDArray[np.float64]] = []
+    weight_blocks: list[NDArray[np.float64]] = []
 
     for offset in offsets:
         raw_fc = fc_by_offset[offset]
@@ -200,7 +240,7 @@ def build_pool(
     return SamplePool(fc=fc_pool, pv=pv_pool, weight=weight_pool, confidence=confidence)
 
 
-def fit_weighted_polynomial(pool: SamplePool, degree: int) -> np.ndarray:
+def fit_weighted_polynomial(pool: SamplePool, degree: int) -> NDArray[np.float64]:
     """Batched weighted-least-squares polynomial fit (ADR-008 §1): one
     `numpy.linalg.solve` call for every slot in the batch at once, never
     one call per slot. Returns coefficients, shape `(n_slots, degree+1)`,
@@ -225,16 +265,18 @@ def fit_weighted_polynomial(pool: SamplePool, degree: int) -> np.ndarray:
     # implicit (..., M) vector stack. Add an explicit trailing K=1 axis
     # for the batched per-slot solve, then drop it again.
     solved = np.linalg.solve(xt_w_x_regularized, xt_w_y[..., None])
-    coefficients: np.ndarray = solved[..., 0]
+    coefficients: NDArray[np.float64] = solved[..., 0]
     return coefficients
 
 
-def evaluate_polynomial(coefficients: np.ndarray, fc: np.ndarray) -> np.ndarray:
+def evaluate_polynomial(
+    coefficients: NDArray[np.float64], fc: NDArray[np.float64]
+) -> NDArray[np.float64]:
     """Evaluate a batch of polynomials (one per row of `coefficients`) at
     `fc`, shape `(n_slots,)`. Shared by `linear.py`/`wls2.py`/`wls3.py`'s
     `predict()`."""
     degree = coefficients.shape[1] - 1
     powers = np.arange(degree + 1)
     design = fc[:, None] ** powers[None, :]  # (n_slots, degree+1)
-    result: np.ndarray = np.einsum("ni,ni->n", design, coefficients)
+    result: NDArray[np.float64] = np.einsum("ni,ni->n", design, coefficients)
     return result

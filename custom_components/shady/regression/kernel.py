@@ -28,14 +28,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
-from .base import SamplePool, clamp_to_forecast
+from .base import FittedModel, SamplePool
 
 _BANDWIDTH_FLOOR_FRACTION = 0.01
 _BANDWIDTH_ABSOLUTE_FLOOR = 1e-6
 
 
-def _bandwidth(pool: SamplePool) -> np.ndarray:
+def _bandwidth(pool: SamplePool) -> NDArray[np.float64]:
     """Per-slot Gaussian bandwidth: the pool-weighted standard deviation
     of that slot's valid `FC_i` values, floored against that slot's own
     `FC` scale (see module docstring)."""
@@ -53,17 +54,19 @@ def _bandwidth(pool: SamplePool) -> np.ndarray:
 
 
 @dataclass(frozen=True)
-class KernelFittedModel:
+class KernelFittedModel(FittedModel):
     """Retains the pool itself (ADR-008 §2) — `predict()` recomputes a
     locally-weighted average against it on every call."""
 
-    fc_pool: np.ndarray
-    pv_pool: np.ndarray
-    weight_pool: np.ndarray
-    confidence: np.ndarray
-    bandwidth: np.ndarray
+    fc_pool: NDArray[np.float64]
+    pv_pool: NDArray[np.float64]
+    weight_pool: NDArray[np.float64]
+    confidence: NDArray[np.float64]
+    bandwidth: NDArray[np.float64]
 
-    def predict(self, fc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def predict_unclamped(
+        self, fc: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         distance = self.fc_pool - fc[:, None]
         bandwidth = self.bandwidth[:, None]
         closeness = np.exp(-(distance**2) / (2 * bandwidth**2))
@@ -77,7 +80,7 @@ class KernelFittedModel:
         # polynomial strategies use (ADR-001's documented behavior).
         adjusted = np.where(total_weight > 0, weighted_average, fc)
 
-        return clamp_to_forecast(adjusted, fc), self.confidence
+        return np.asarray(adjusted), self.confidence
 
 
 def fit(pool: SamplePool) -> KernelFittedModel:

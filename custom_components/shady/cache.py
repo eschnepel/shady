@@ -4,13 +4,14 @@ No `hass` import — constructed with an injected `fetch_fn` so it never
 imports the recorder API itself (ADR-007a §4). Only ever called from
 `coordinator.py` (ADR-007 §2).
 
-This module currently implements the storage core: the three-state
-(`float | None | str`) value model (§1), validated-range tracking (§2),
-`push`/`invalidate` (§3), the injected-`fetch_fn` validate-before-read
-step (§4), and the contiguous-range `get_time_range` accessor (§5). The
-other two accessors — `get_pinned_slot_pool` (ADR-007a §6) and
-`get_regression_pools` (ADR-008 §2) — are deliberately out of scope here;
-each is added alongside its own caller (TASK-0006, TASK-0015).
+This module implements the storage core: the three-state (`float | None
+| str`) value model (§1), validated-range tracking (§2), `push`/
+`invalidate` (§3), the injected-`fetch_fn` validate-before-read step
+(§4), and two of the three accessors — the contiguous-range
+`get_time_range` (§5) and the batched, full-288-slot-sweep
+`get_regression_pools` (ADR-008 §2). The third accessor,
+`get_pinned_slot_pool` (ADR-007a §6), is deliberately out of scope here
+— added alongside its own caller, TASK-0015.
 
 **`fetch_fn` calling convention** (established here, binding for every
 caller — `coordinator.py`, and matching `providers/base.py`'s `Provider.
@@ -18,6 +19,18 @@ fetch` signature, ADR-012 §1): `fetch_fn(sensor_id, start, end)` returns
 exactly one value per 5-minute slot in the **half-open** interval
 `[start, end)` — `start` inclusive, `end` exclusive — so a request for
 `n` slots returns a list of length `n`.
+
+**Shadow `float64` array (ADR-008 §2, this task):** alongside each
+sensor's three-state list (the system of record, unchanged), `cache.py`
+also maintains a `float64` `numpy` array over the exact same rolling
+window — same length, same `list_offset` alignment — with `NaN` standing
+in for whatever the three-state list holds as `None` or a `str` reason.
+It is kept incrementally in sync at the single choke point every
+mutation already routes through (`_write`, called by both the push path
+and the fetch-and-store path) and trimmed in lockstep by `trim()` —
+never rebuilt from the three-state list on read. `get_regression_pools`
+is built from strided/broadcast views over this shadow array, per
+ADR-008 §2.
 """
 
 from __future__ import annotations
@@ -25,6 +38,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal, overload
+
+import numpy as np
+from numpy.typing import NDArray
 
 SLOT_MINUTES = 5
 SLOT_DURATION = timedelta(minutes=SLOT_MINUTES)
@@ -54,6 +70,21 @@ def _shape(value: float | None | str, on_invalid: OnInvalid) -> tuple[bool, floa
     return True, on_invalid
 
 
+def _shadow_value(value: float | None | str) -> float:
+    """Map a three-state value onto the shadow array's `float64` encoding
+    (ADR-008 §2): a known `float` passes through unchanged; `None`
+    (not-yet-fetched/invalidated) and `str` (a stable "unavailable"-type
+    non-answer) both become `NaN` — the shadow array collapses the
+    three-state model's *two* invalid states into `NaN`'s single one,
+    since `get_regression_pools`'s only consumer (`regression/base.py`'s
+    `build_pool`, TASK-0005) already treats any `NaN` as fully excluded/
+    padding regardless of *why* the sample is invalid.
+    """
+    if isinstance(value, float):
+        return value
+    return float("nan")
+
+
 class Cache:
     """Index-addressable time-series store, generic over any `sensor_id`.
 
@@ -68,6 +99,7 @@ class Cache:
         self._values: dict[str, list[float | None | str]] = {}
         self._list_offset: dict[str, int] = {}
         self._validated: dict[str, tuple[int, int | None]] = {}
+        self._shadow: dict[str, NDArray[np.float64]] = {}
 
     # -- index <-> timestamp (ADR-007a §1) -----------------------------------
 
@@ -97,25 +129,40 @@ class Cache:
         if sensor_id not in self._values:
             self._values[sensor_id] = []
             self._list_offset[sensor_id] = 0
+            self._shadow[sensor_id] = np.empty(0, dtype=np.float64)
 
     def _write(self, sensor_id: str, index: int, value: float | None | str) -> None:
         self._ensure_sensor(sensor_id)
         lst = self._values[sensor_id]
+        shadow = self._shadow[sensor_id]
+        shadow_value = _shadow_value(value)
+
         if not lst:
             self._list_offset[sensor_id] = index
             lst.append(value)
+            self._shadow[sensor_id] = np.array([shadow_value], dtype=np.float64)
             return
+
         offset = self._list_offset[sensor_id]
         pos = index - offset
         if pos < 0:
             lst[0:0] = [None] * (-pos)
             self._list_offset[sensor_id] = index
             lst[0] = value
-        elif pos >= len(lst):
+            shadow = np.concatenate((np.full(-pos, np.nan, dtype=np.float64), shadow))
+            shadow[0] = shadow_value
+        elif pos >= len(shadow):
+            shadow = np.concatenate(
+                (shadow, np.full(pos - len(shadow) + 1, np.nan, dtype=np.float64))
+            )
             lst.extend([None] * (pos - len(lst) + 1))
             lst[pos] = value
+            shadow[pos] = shadow_value
         else:
             lst[pos] = value
+            shadow[pos] = shadow_value
+
+        self._shadow[sensor_id] = shadow
 
     def _read(self, sensor_id: str, index: int) -> float | None | str:
         if sensor_id not in self._values:
@@ -231,7 +278,9 @@ class Cache:
         """Drop each sensor's oldest entries once the rolling window has
         advanced past them, advancing `list_offset`. `validated` ranges
         are adjusted in place, not rewritten, so they stay meaningful
-        across the trim (ADR-007a §1).
+        across the trim (ADR-007a §1). The shadow array (ADR-008 §2) is
+        trimmed by the exact same `drop_count`, in the same call, so it
+        never drifts out of alignment with the three-state list.
 
         `reference` anchors "today" for the retention floor
         (`reference - window_days`); defaults to the real current time.
@@ -249,6 +298,7 @@ class Cache:
                 drop_count = min(floor - offset, len(lst))
                 del lst[:drop_count]
                 self._list_offset[sensor_id] = offset + drop_count
+                self._shadow[sensor_id] = self._shadow[sensor_id][drop_count:]
 
             current = self._validated.get(sensor_id)
             if current is None:
@@ -328,3 +378,96 @@ class Cache:
                     slot_entry[sensor_id] = shaped
             slot_result.append(slot_entry)
         return slot_result
+
+    def get_regression_pools(
+        self,
+        sensor_ids: list[str],
+        smoothing_radius: int,
+        reference: datetime | None = None,
+    ) -> dict[str, NDArray[np.float64]]:
+        """The full 288-slot regression sweep, batched (ADR-008 §2): one
+        `(288, window_days * (2*smoothing_radius + 1))` `float64` array
+        per sensor, in a single call — never 864 individual per-slot
+        calls (ADR-008 §1's naive-per-slot rejection extends here).
+
+        **Window:** the most recent `window_days` *complete* days,
+        ending yesterday — never today, which recalibration (ADR-002 §1)
+        never trains on. `reference` anchors "today" the same way
+        `trim()`'s own `reference` parameter does: defaults to the real
+        current time, but is exposed as a parameter so this stays
+        testable with zero mocking rather than depending on the wall
+        clock internally. This is an addition to ADR-008 §2's literal
+        `(sensor_ids, smoothing_radius)` signature, not a deviation from
+        it — omitting `reference` reproduces the ADR's real-time
+        behavior exactly.
+
+        **Column layout**, matching `regression/base.py`'s `build_pool`
+        convention (TASK-0005's own "load-bearing" layout note):
+        offsets concatenated in ascending order (`-smoothing_radius, ...,
+        0, ..., +smoothing_radius`), each contributing exactly
+        `window_days` columns, oldest day first within each block. A
+        caller adapting this into `build_pool`'s `dict[int, NDArray]`-
+        per-offset input contract (TASK-0005's own documented gap) slices
+        out each `window_days`-wide block in this same order.
+
+        **288-slot day-boundary wraparound** (`regression/base.py`'s
+        "the caller has already applied any 288-slot wraparound" note)
+        is resolved via plain absolute-index arithmetic — slot `s` with
+        offset `o` on day `d` is simply absolute index
+        `day_start(d) + s + o`, which is already correct whether or not
+        `s + o` over/underflows `[0, 288)`, with no explicit modulo step
+        needed. When that arithmetic lands *outside* this call's own
+        window (the earliest day's negative-offset neighbors, or the
+        latest/yesterday's positive-offset neighbors reaching into
+        today), the cell is `NaN` — the same pad/invalid sentinel
+        `regression/base.py` already treats as zero weight — rather than
+        fetching one extra day beyond the configured window; in
+        practice these are always near-midnight slots, where `FC ~ 0`
+        makes `magnitude_weight_i` suppress them regardless.
+
+        Built via broadcast/gather over the shadow array (ADR-008 §2's
+        "strided views/concatenation", not the three-state list) —
+        `_validate_range` is still called first, per sensor, over the
+        exact window this call needs, so the shadow array is fetched/
+        current before it's read.
+        """
+        now = reference if reference is not None else datetime.now(UTC)
+        today_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+        yesterday_start = today_start - timedelta(days=1)
+        yesterday_day_index = self.index_for(yesterday_start)
+        window_start_day_index = yesterday_day_index - (self.window_days - 1) * SLOTS_PER_DAY
+        window_end_index = yesterday_day_index + SLOTS_PER_DAY - 1
+
+        offsets = np.arange(-smoothing_radius, smoothing_radius + 1)
+        slots = np.arange(SLOTS_PER_DAY)
+        days = np.arange(self.window_days)
+
+        # Broadcasts to shape (SLOTS_PER_DAY, window_days, 2*radius+1) —
+        # absolute index for (target slot, day-in-window, neighbor offset).
+        abs_index = (
+            window_start_day_index
+            + days[None, :, None] * SLOTS_PER_DAY
+            + slots[:, None, None]
+            + offsets[None, None, :]
+        )
+
+        pools: dict[str, NDArray[np.float64]] = {}
+        for sensor_id in sensor_ids:
+            self._validate_range(sensor_id, window_start_day_index, window_end_index)
+            shadow = self._shadow[sensor_id]
+            list_offset = self._list_offset[sensor_id]
+
+            if len(shadow) == 0:
+                gathered = np.full(abs_index.shape, np.nan, dtype=np.float64)
+            else:
+                pos = abs_index - list_offset
+                valid = (pos >= 0) & (pos < len(shadow))
+                clipped = np.clip(pos, 0, len(shadow) - 1)
+                gathered = np.where(valid, shadow[clipped], np.nan)
+
+            # (slot, day, offset) -> (slot, offset, day) -> (slot, offset*day)
+            # so each offset contributes a contiguous window_days-wide
+            # block, matching build_pool's column-layout convention.
+            pools[sensor_id] = gathered.transpose(0, 2, 1).reshape(SLOTS_PER_DAY, -1)
+
+        return pools

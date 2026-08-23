@@ -9,10 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .base import (
+    FittedModel,
     SamplePool,
-    clamp_to_forecast,
     evaluate_polynomial,
     fit_weighted_polynomial,
     passthrough_where_no_confidence,
@@ -22,16 +23,18 @@ DEGREE = 3
 
 
 @dataclass(frozen=True)
-class Wls3FittedModel:
+class Wls3FittedModel(FittedModel):
     """`coefficients`, shape `(n_slots, 4)`: `[1, FC, FC^2, FC^3]` coefficients."""
 
-    coefficients: np.ndarray
-    confidence: np.ndarray
+    coefficients: NDArray[np.float64]
+    confidence: NDArray[np.float64]
 
-    def predict(self, fc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def predict_unclamped(
+        self, fc: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         raw = evaluate_polynomial(self.coefficients, fc)
         raw = passthrough_where_no_confidence(raw, fc, self.confidence)
-        return clamp_to_forecast(raw, fc), self.confidence
+        return raw, self.confidence
 
 
 def fit(pool: SamplePool) -> Wls3FittedModel:

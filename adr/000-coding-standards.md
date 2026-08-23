@@ -211,6 +211,32 @@ baseline.
   `FittedModel`) instead of dicts or named tuples — gives
   attribute access, auto-generated `__init__`/`__repr__`/`__eq__`, and a
   single place to add validation later if needed.
+- **`numpy` arrays are typed with their element dtype, never bare.** Every
+  `numpy.ndarray`-valued parameter, return type, and attribute uses
+  `numpy.typing.NDArray[np.float64]` (this project's numeric backend is
+  `float64` throughout, ADR-008 §1) — never a bare `np.ndarray`, which
+  mypy accepts but which drops the dtype half of the type entirely. Same
+  rationale as the `X | None` / built-in-generics rules above: `mypy
+  --strict` does not itself force this (a bare `np.ndarray` type-checks
+  cleanly), so it is a project convention, applied uniformly, rather than
+  a gate the tooling already enforces on its own.
+
+## Amendment — 2026-08-22
+
+**Reason:** §4's type-hinting conventions never specified how `numpy`
+arrays should be typed. TASK-0005 (`regression/`) and TASK-0007
+(`yield_correction.py`) — both already `done` — used bare `np.ndarray`
+throughout, which `mypy --strict` accepts but which is genuinely less
+precise than the rest of §4's own standard (every other convention in
+this section exists specifically to keep a signature's *exact* type
+information visible, not just present).
+**Decision:** Every `numpy.ndarray`-valued type — parameter, return
+type, `@dataclass` attribute — is written `numpy.typing.NDArray[np.float64]`,
+never a bare `np.ndarray`. Retrofitted onto TASK-0005/TASK-0007's already-
+delivered files via patch tasks (Scenario C: `TASK-0005-patch-1`,
+`TASK-0007-patch-1`) rather than reopening either `done` task; every task
+from TASK-0006 onward uses the convention from the outset.
+**Decided by:** human (explicit instruction), confirmed by Lead Agent.
 
 ### 5 — Naming and structure
 
