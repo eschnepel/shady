@@ -90,11 +90,15 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 - **`coordinator.py`** — the only module that imports `cache.py`.
   Registers all scheduling triggers + one generic push listener per
   `forward()`-implementing provider; orchestrates the pure layer; pushes
-  to sensors.
+  to sensors. Exposes `missing_required_entities()` for `__init__.py`'s
+  startup-ordering guard (ADR-002 §1a).
 - **`sensor.py`/`config_flow.py`/`switch.py`/`button.py`** — thin HA
   entity glue, all classes prefixed `Shady`.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`;
-  registers the `shady.select_diagnostic_slot` service.
+  registers the `shady.select_diagnostic_slot` service; owns the
+  startup-ordering guard (ADR-002 §1a, TASK-0016) — `ConfigEntryNotReady`
+  + `async_at_started` + a bounded `async_schedule_reload` bridge for a
+  config entry whose referenced entities haven't loaded yet.
 
 **Testing (`ADR-000 §6`):** every module in `providers/base.py`,
 `providers/normalize.py`, `yield_correction.py`, `regression/`,
@@ -139,6 +143,18 @@ only pure-tier exceptions — tested against a real `hass` fixture.
   yesterday; (2) forecast recompute — on recalibration completion AND on
   every baseline-provider update (no debounce); (3) forecast horizon =
   remainder of today + tomorrow (if published).
+- **Startup ordering (ADR-002 §1a):** a config entry's referenced
+  entities may not exist yet at `async_setup_entry` (HA boot-ordering
+  race, no relative-load-order guarantee between custom components).
+  Required entities (per-string actual-yield; per-string resolved
+  baseline, if configured) missing while `hass.is_running` →
+  `ConfigEntryNotReady` (HA's own backoff retry). Missing while HA is
+  still starting → defer the startup fit via `async_at_started`, and if
+  still missing once that fires, log + `async_schedule_reload` once to
+  rejoin the `ConfigEntryNotReady` path. Optional correction-tier
+  entities (temperature source, weather forecast entity) are never
+  required — ADR-003b/ADR-003c's existing graceful degradation already
+  covers "not loaded yet" the same as "genuinely unset."
 
 ## 4 — Optional per-string corrections (ADR-003a, ADR-003b, ADR-003c)
 

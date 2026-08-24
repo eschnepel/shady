@@ -19,6 +19,14 @@ provider method and §4's `coordinator.py` loop became fully generic —
 this document no longer describes its own listener or push call, only
 that baseline's `forward()` reuses ADR-009 §2's canonical-series mapping;
 §5's `coordinator.py` bullet updated to match.
+**2026-08-23** — new §1a: the original "startup safety net" (§1) only
+ever addressed *staleness* (no model fitted yet / last fit >24h old); it
+said nothing about a config entry's referenced entities not existing yet
+at `async_setup_entry` time because the integration(s) that provide them
+haven't loaded yet — a real Home Assistant boot-ordering race with no
+prior ADR coverage anywhere in the project. Human-directed amendment,
+discovered by the Lead Agent while gathering TASK-0010's Consumed
+Interfaces (Phase 3, before any coordinator.py code existed).
 
 ---
 
@@ -95,6 +103,74 @@ startup, in addition to the daily schedule and the button. This mirrors
 Effy's ADR-006 observation that a restart naturally replays initial state
 and should trigger the equivalent of a first calculation, rather than
 leaving a config entry without any model until the next scheduled time.
+
+### 1a — Startup ordering: a config entry's entities may not exist yet
+
+The startup safety net above assumes the entities a config entry
+references (each string's actual-yield entity; each string's resolved
+baseline entity, global default or override) already exist in
+`hass.states` by the time it runs. On a full Home Assistant restart that
+assumption can be false: Shady's `async_setup_entry` may run before the
+integration(s) that provide those entities have finished their own
+setup — nothing orders custom-component setup relative to each other by
+default. Discovered by the human, mid-Phase-3, before `coordinator.py`
+or `__init__.py` had any code; recorded here rather than guessed at.
+
+**Decision:** at `async_setup_entry` (`__init__.py`, TASK-0016):
+
+1. If `hass.is_running` is already `True` — a config-entry reload, or
+   Shady happens to set up after Home Assistant finished starting —
+   check the config entry's required entities (defined below) against
+   `hass.states.get(entity_id) is not None` right away. If any are
+   missing, raise `homeassistant.exceptions.ConfigEntryNotReady`. Home
+   Assistant's own config-entry loader catches this and retries
+   `async_setup_entry` automatically with its own exponential backoff —
+   no bespoke timer or retry loop needed on Shady's side.
+2. If `hass.is_running` is `False` (Home Assistant is still in its own
+   startup phase) — it is *expected and normal* for dependency
+   entities to not exist yet, so do **not** raise `ConfigEntryNotReady`
+   here (that would just be noisy, guaranteed-to-fail churn during
+   every boot). Instead: build `hass.data` and forward this config
+   entry's platforms (`sensor`/`switch`/`button`) exactly as usual —
+   Shady's own entities register on the normal schedule regardless of
+   whether its *referenced* entities exist yet — but defer the
+   coordinator's startup-safety-net fit (§1 above) via
+   `homeassistant.helpers.start.async_at_started(hass, callback)`,
+   which fires once Home Assistant reports fully started (or
+   immediately, if it already has, by the time the registration runs).
+   `async_setup_entry` must not itself block on that event — Shady's
+   own setup is part of what Home Assistant is waiting to finish before
+   it can report "started," so awaiting the event directly here risks
+   delaying that transition for the whole system, not just Shady.
+3. When the deferred callback from (2) runs, repeat (1)'s same
+   required-entity check. If entities are still missing at that point
+   (their owning integration is unusually slow, or genuinely broken),
+   `ConfigEntryNotReady` can no longer be raised — `async_setup_entry`
+   already returned. Log a warning and call
+   `hass.config_entries.async_schedule_reload(entry.entry_id)` after a
+   short delay instead, which re-runs `async_setup_entry` from the top;
+   since `hass.is_running` is `True` by then, that re-run lands on (1)
+   directly, rejoining the standard `ConfigEntryNotReady`-and-backoff
+   path rather than needing a second, bespoke retry mechanism.
+
+**Which entities are "required"** (block setup per the above) vs. left
+to degrade gracefully: a string's actual-yield entity (always
+configured, ADR-010) and a string's resolved baseline entity (global
+default or override) *if one is configured at all* — leaving baseline
+unset via config-flow manual entry is legitimate (TASK-0009) and is not
+an error to retry over. Optional correction-tier entities — a string's
+temperature-source override, the global default temperature source, the
+weather forecast-temperature entity — are **not** required: ADR-003b/
+ADR-003c already define graceful degradation (skip correction, or fall
+through a tier) for these being absent or unavailable, and that same
+handling covers "not loaded yet" just as well as "genuinely unset" —
+retrying setup over an optional entity would be paying the reboot-delay
+cost for no benefit.
+
+`coordinator.py` exposes the check itself (`missing_required_entities()`)
+rather than `__init__.py` re-deriving per-string entity IDs a second
+time — `__init__.py` only decides *when* to call it and what to do with
+`ConfigEntryNotReady`/`async_at_started`/`async_schedule_reload`.
 
 ### 2 — Forecast recompute: on model update, and on every baseline update
 
