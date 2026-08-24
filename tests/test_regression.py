@@ -146,9 +146,9 @@ class TestClampInvariantAcrossAllStrategies:
                 assert adjusted.shape == (n_slots,)
                 assert confidence.shape == (n_slots,)
                 assert np.all(adjusted >= 0.0), f"{strategy.__name__} went negative at FC={query}"
-                assert np.all(adjusted <= fc_query), (
-                    f"{strategy.__name__} exceeded FC at FC={query}"
-                )
+                assert np.all(
+                    adjusted <= fc_query
+                ), f"{strategy.__name__} exceeded FC at FC={query}"
 
 
 # -- AC2: wls2/wls3 extrapolation safety ------------------------------------
