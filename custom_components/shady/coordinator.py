@@ -381,6 +381,13 @@ class ShadyCoordinator:
             model = self._fit_string(string, now)
             if model is not None:
                 self._models[string.index] = model
+                # Recalibration completion is itself a recompute trigger
+                # (ADR-002 §2, trigger 1) — reuses the exact same
+                # `_recompute_string` path §2's second trigger (a
+                # baseline-entity update) already runs, applying the
+                # freshly-fitted model to whatever baseline data is
+                # currently cached (TASK-0010-patch-1).
+                self._recompute_string(string, now)
         self._last_fit_at = now
 
     def _fit_string(self, string: _StringConfig, now: datetime) -> FittedModel | None:
@@ -474,6 +481,15 @@ class ShadyCoordinator:
         free-text, config_flow.py does not enforce uniqueness).
         """
         return f"{DOMAIN}_forecast_{self.entry.entry_id}_string_{string_index}"
+
+    def strings(self) -> list[tuple[int, str]]:
+        """Public `(index, name)` pairs, one per configured string, in
+        `CONF_STRINGS` order (TASK-0010-patch-2) — lets `sensor.py`
+        (TASK-0011) and, later, `TASK-0015`'s per-string diagnostics
+        entities enumerate strings without depending on the private
+        `_StringConfig` list/type.
+        """
+        return [(string.index, string.name) for string in self._strings]
 
     async def _async_recompute(self, strings: list[_StringConfig], now: datetime) -> None:
         for string in strings:

@@ -392,6 +392,40 @@ class TestMissingRequiredEntities:
         assert coordinator.missing_required_entities() == []
 
 
+class TestRefitTriggersRecompute:
+    """Given a string's model is freshly (re)fit, When fitting succeeds,
+    Then the exact same recompute path runs immediately for that string
+    against whatever baseline data is currently cached (ADR-002 §2,
+    trigger 1) — TASK-0010-patch-1."""
+
+    def test_refit_pushes_a_forecast_without_any_baseline_update(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        sensor_id = coordinator.forecast_sensor_id(0)
+        assert coordinator.cache.validated_range(sensor_id) is None  # nothing pushed yet
+
+        _run(coordinator.async_refit(_NOW))
+
+        pushed = hass_pushed_values(coordinator, sensor_id)
+        assert pushed  # recompute ran as part of refit itself, no separate trigger fired
+
+    def test_no_recompute_attempted_when_fitting_fails(self) -> None:
+        # A string with no baseline provider configured at all: `_fit_string`
+        # returns None, so there must be nothing to recompute either.
+        entry = _make_entry(baseline_entity_id=None, baseline_attribute=None, baseline_shape=None)
+        strings = entry.data[CONF_STRINGS]
+        entry.data[CONF_STRINGS] = strings
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        _seed_actual_yield_statistics(hass, _YESTERDAY, _YESTERDAY + timedelta(days=1))
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+
+        _run(coordinator.async_refit(_NOW))
+
+        assert coordinator._models == {}
+        assert coordinator.cache.validated_range(coordinator.forecast_sensor_id(0)) is None
+
+
 class TestRecomputeOnBaselineUpdate:
     """Given a baseline-provider update fires mid-day, When it fires,
     Then a forecast recompute happens immediately with no debounce, but
@@ -514,3 +548,60 @@ class TestGenericPushNotBeforeIndex:
             [_BASELINE_ENTITY], next_slot_start, next_slot_end, on_invalid="raw"
         )[_BASELINE_ENTITY][0]
         assert raw_next == 500.0
+
+
+class TestStringEnumeration:
+    """Given a config entry with N configured strings, When
+    `coordinator.strings()` is called, Then it returns exactly N
+    `(index, name)` pairs in `CONF_STRINGS` order, with no private
+    `_StringConfig` exposed (TASK-0010-patch-2)."""
+
+    def test_single_string_default_fixture(self) -> None:
+        coordinator, _hass = _make_coordinator()
+
+        result = coordinator.strings()
+
+        assert result == [(0, "Dach Süd")]
+        assert all(isinstance(pair, tuple) and isinstance(pair[1], str) for pair in result)
+
+    def test_multiple_strings_preserve_config_order(self) -> None:
+        second_yield_entity = "sensor.string_b_yield"
+        entry = _make_entry(
+            **{
+                CONF_STRINGS: [
+                    {
+                        "name": "Dach Süd",
+                        "baseline_entity_id": None,
+                        "baseline_attribute": None,
+                        "baseline_shape": None,
+                        "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                        "converter_limit_w": None,
+                        "temperature_source_entity_id": None,
+                        "temperature_coefficient_pct_per_c": -0.4,
+                        "rated_dc_capacity_wp": None,
+                    },
+                    {
+                        "name": "Dach Nord",
+                        "baseline_entity_id": None,
+                        "baseline_attribute": None,
+                        "baseline_shape": None,
+                        "actual_yield_entity_id": second_yield_entity,
+                        "converter_limit_w": None,
+                        "temperature_source_entity_id": None,
+                        "temperature_coefficient_pct_per_c": -0.4,
+                        "rated_dc_capacity_wp": None,
+                    },
+                ]
+            }
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(
+            _BASELINE_ENTITY,
+            {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=3))},
+        )
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.states.set(second_yield_entity, {})
+        _seed_actual_yield_statistics(hass, _YESTERDAY, _YESTERDAY + timedelta(days=1))
+        coordinator = ShadyCoordinator(hass, entry)
+
+        assert coordinator.strings() == [(0, "Dach Süd"), (1, "Dach Nord")]
