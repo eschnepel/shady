@@ -2,7 +2,7 @@
 
 - **Status:** todo
 - **Related ADRs:** [ADR-003c §1, ADR-003c §2, ADR-003c §3, ADR-003c §4, ADR-003c §5, ADR-003c §6, ADR-003c §7]
-- **Dependencies:** [TASK-0005-regression-fitting-pipeline, TASK-0006-cache-batched-regression-pool-accessor, TASK-0004-temperature-source-provider, TASK-0007-yield-corrections, TASK-0010-coordinator-recalibration-recompute-push]
+- **Dependencies:** [TASK-0005-regression-fitting-pipeline, TASK-0006-cache-batched-regression-pool-accessor, TASK-0004-temperature-source-provider, TASK-0007-yield-corrections, TASK-0010-coordinator-recalibration-recompute-push, TASK-0005-patch-4-recency-weight]
 
 ## Goal
 Implement the cell/ambient-tier per-slot temperature forecasting model:
@@ -16,6 +16,18 @@ field) as predictor and the tier's own sensor as target. Feeds
 target-slot temperature forecast. Requires no new coordinator listener
 code — TASK-0010's generic `forward()`-push loop already picks this
 predictor up automatically once it overrides `forward()`.
+
+**Readiness-time note (added after `TASK-0005-patch-4`, ADR-001 §4a):**
+`regression.base.build_pool` — this task's shared fitting mechanics —
+now also requires a `recency_decay_max` argument (ADR-001 §4a's
+day-recency weighting). Whether this second, temperature-predicting fit
+should reuse the same `self._recency_decay_max` the yield fit uses, or
+its own value (e.g. `0.0`, since a learned *temperature* model has no a
+priori reason to expect the same seasonal-regime-shift behavior a
+shading pattern does), is this task's own decision to make at
+implementation time — this note only flags that the call site now needs
+*some* value, not which one. Whichever is chosen, state it explicitly
+in this task's own Delivered Artifacts.
 
 ## Acceptance Criteria
 - Given historical predictor/target pairs for a slot, When the model

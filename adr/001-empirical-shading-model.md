@@ -12,15 +12,47 @@ smoothing and neighbor-regime exclusion (formerly §3b/§3c/§3d) moved out
 to ADR-011; no behavioral change — see the Revision note. **2026-08-19**
 — §2's "Training-time `FC`" bullet updated: sourced primarily via push
 now (ADR-002 §4), with recorder query (ADR-007a §4) as the backfill/gap
-fallback, rather than query alone.
+fallback, rather than query alone. **2026-08-25** — §2 gains a third
+sample-weight factor, `recency_weight_i` (downweights a training day by
+its distance from the rolling window's effective date, config-flow
+exposed, default max 50% at the oldest day); §4 updated to note this
+directly addresses its own previously-flagged "may need a
+slower-decaying window" Consequence — see the Amendment block below.
 
 ---
 
 **This ADR still covers:** predictor space (§1), regression method
 (§2/§2a), per-string/per-slot granularity (§3/§3a), rolling training
-window (§4).
+window and recency weighting (§4/§4a).
 **Moved out:** baseline forecast sourcing → ADR-009; config flow shape →
 ADR-010; temporal smoothing and neighbor-regime exclusion → ADR-011.
+
+---
+
+## Amendment — 2026-08-25
+
+**Reason:** §2's weighted training pool already downweights samples by
+forecast magnitude (`magnitude_weight_i`) and by time-of-day distance
+from the target slot (`time_weight_i`, ADR-011 §1), but every sample
+within the rolling `window_days` (§4) is otherwise trusted equally
+regardless of *how old* it is. §4's own Consequences already flag this
+as an open trade-off ("slots that only ever see a narrow range of
+forecast values... may have persistently low confidence... may need a
+slower-decaying window"), and §4's own motivating example — a deciduous
+tree's canopy density changing across the seasons — is precisely the
+case where a stale 27-day-old sample and a fresh yesterday's sample
+should not count the same: a string transitioning into a falling-leaves
+autumn should have its model catch up on the most recent days'
+regime shift faster than an unweighted 28-day average allows.
+**Decision:** §2's per-sample weighting gains a third, independent
+factor, `recency_weight_i`, folded into the same weighted-pool mechanism
+`magnitude_weight_i`/`time_weight_i` already use — decreasing linearly
+from `1.0` for the most recent day in the window (yesterday, the
+window's effective date, per §4/ADR-007a §4) down to `1 -
+recency_decay_max` for the oldest day, `recency_decay_max` being a new
+global, config-flow-exposed (ADR-010) setting, default `0.5` (50%). See
+the updated §2/§4 below for the full formula and rationale.
+**Decided by:** human.
 
 ---
 
@@ -114,8 +146,10 @@ sample pool that §3a and ADR-011 §1 already define for a given slot (that
 slot's own samples, plus up to `smoothing_radius` neighboring slots,
 across the rolling window), with every sample weighted by
 `magnitude_weight_i` (downweighting near-zero-forecast samples, e.g.
-sunrise/sunset, for the reason given below) and by the time-proximity
-weight from ADR-011 §1. *How*
+sunrise/sunset, for the reason given below), by the time-proximity
+weight from ADR-011 §1, and by `recency_weight_i` (§4a — downweighting a
+training day by its distance from the window's effective date, e.g. to
+adapt faster to a falling-leaves autumn). *How*
 `f` is fit is a **pluggable strategy**, chosen once by the user for the
 whole integration (all strings share the same method; see ADR-010), not
 auto-selected and not configurable per string. Four strategies are
@@ -131,14 +165,15 @@ supported, behind a shared `regression/base.py` protocol (`fit(samples)
 
 **Confidence is defined independently of the chosen method**, as the
 normalized sum of sample weights in the slot's pool, `Σ (magnitude_weight_i
-· time_weight_i)` — no distance calculation in forecast-value space is
-needed for this (that would only matter for `kernel`'s own point estimate,
-not for confidence). A polynomial fit (`linear`/`wls2`/`wls3`) has no
-intrinsic notion of "how much evidence supports this point" from its
-coefficients alone; using the same pool-weight-sum for every method,
-regardless of which one produced the point estimate, decouples "how good
-is the point estimate" from "how sure are we of it", and means switching
-methods never changes what the confidence attribute means.
+· time_weight_i · recency_weight_i)` — no distance calculation in
+forecast-value space is needed for this (that would only matter for
+`kernel`'s own point estimate, not for confidence). A polynomial fit
+(`linear`/`wls2`/`wls3`) has no intrinsic notion of "how much evidence
+supports this point" from its coefficients alone; using the same
+pool-weight-sum for every method, regardless of which one produced the
+point estimate, decouples "how good is the point estimate" from "how
+sure are we of it", and means switching methods never changes what the
+confidence attribute means.
 
 `wls2` was chosen as the default, not `linear`, despite `linear` being
 the method the original proof-of-concept validated — because pure
@@ -332,6 +367,81 @@ having more than 28 to work with even at steady state — an acceptable
 trade-off given the cold-start behavior described in §2 and the small-`n`
 fitting cost already accepted in §3a.
 
+### 4a — Recency weighting within the window: `recency_weight_i`
+
+**2026-08-25 amendment** (see the Amendment block near the top of this
+document). §4's rolling window already re-adapts to a seasonally
+changing obstruction by *dropping* days older than `window_days` — but
+every day still inside the window counts equally regardless of whether
+it is yesterday or 27 days ago, so a canopy that is visibly thinning
+right now (autumn's falling leaves) is still, until it finally ages out
+of the window entirely, weighed down by a full month's worth of
+still-dense-canopy samples pulling the fit toward the *old* regime. This
+is exactly the gap the "may need a slower-decaying window" Consequence
+below flagged as an open trade-off; §4a resolves it directly rather than
+shrinking `window_days` itself (which would only trade this problem for
+worse cold-start behavior, §2/§4 above).
+
+Every sample's day-of-training (its position within the rolling window,
+not its slot-of-day, ADR-011 §1's separate axis) gets a third weight
+factor, `recency_weight_i`, folded into the same weighted-pool mechanism
+`magnitude_weight_i`/`time_weight_i` already use (§2). Linear, mirroring
+ADR-011 §1's own `time_weight_i` formula and its stated preference for a
+single-parameter shape over a second, redundant locality parameter:
+
+```
+day_age_i = (window_days - 1) - day_position_i
+recency_weight_i = 1 - (day_age_i / (window_days - 1)) * recency_decay_max
+```
+
+where `day_position_i` is `0` for the oldest day in the rolling window
+and `window_days - 1` for the most recent complete day — the window's
+**effective date**, "yesterday" relative to the recalibration run
+(§4/ADR-007a §4, the same reference point `cache.py`'s
+`get_regression_pools` window itself uses; recalibration never trains on
+today, ADR-002 §1). This gives `recency_weight_i = 1.0` for the most
+recent day regardless of `recency_decay_max`, decreasing linearly to
+`recency_weight_i = 1 - recency_decay_max` at the oldest day — e.g.
+`1.0` down to `0.5` for the default `recency_decay_max = 0.5` (50%).
+`window_days = 1` (no distinction possible between days) is the one
+degenerate case: `recency_weight_i = 1.0` unconditionally, avoiding the
+division by `window_days - 1 = 0`.
+
+`recency_weight_i` applies identically across every ADR-011 §1 neighbor
+offset block — it is a property of *which calendar day* a sample comes
+from, not of slot-of-day distance, so the same per-day-column weight is
+reused for the center slot and every included neighbor slot alike, never
+recomputed per offset.
+
+**Global, config-flow-exposed (ADR-010) setting:** `recency_decay_max`,
+default `0.5` (50%) — the maximum downscale applied to the oldest day in
+the window. `0` disables recency weighting entirely (every day counts
+equally, reproducing this ADR's pre-2026-08-25 behavior exactly); values
+approaching `1.0` make the fit progressively more dominated by only the
+most recent days.
+
+**Why linear, not exponential.** An exponential decay (`recency_weight_i
+= exp(-day_age_i / τ)`) was considered and rejected on the same grounds
+ADR-011 §1 already rejected a Gaussian `time_weight_i`: it needs a decay
+constant `τ` either tied to `window_days` (in which case, exactly like
+ADR-011 §1's Gaussian case, the oldest day's weight stays roughly
+constant regardless of how large the window is, rather than this
+formula's built-in property that a longer window makes the oldest day
+comparatively *more* downweighted at a fixed `recency_decay_max`) or
+exposed as a second, independent parameter with no obvious default. The
+linear form keeps this a single, directly-interpretable knob — "the
+oldest day counts for at most this much less than yesterday" — with no
+second shape parameter to reason about, at the same small trade-off
+ADR-011 §1 already accepted for the same reason.
+
+**Interaction with ADR-011 §2/§3's neighbor exclusion/rescale.** None —
+the neighbor-vs-center median-ratio comparison ADR-011 §2/§3 uses to
+detect a shading-regime boundary is deliberately unweighted (an
+unweighted `median`, the same reasoning that keeps `magnitude_weight_i`
+out of it too), so `recency_weight_i` does not affect which neighbor
+series get excluded or rescaled — only how much a day's own samples
+count once they are already in the pool.
+
 ### 5, 6 — Baseline sourcing and config flow: see ADR-009, ADR-010
 
 This ADR originally also specified baseline (unshaded) forecast sourcing
@@ -360,6 +470,13 @@ see the Revision note at the end of this ADR for why.
   full historical point cloud, and keeps recalibration cost small and
   independent per slot. (The resulting slot-boundary discontinuity risk,
   and how it's resolved, is covered in ADR-011's own Consequences.)
+- **Pro (§4a, 2026-08-25):** `recency_weight_i` lets the fit adapt to a
+  changing regime (a deciduous tree's canopy thinning through autumn)
+  within the *existing* 28-day window, rather than needing `window_days`
+  itself shrunk to chase seasonal change faster — which would only
+  worsen cold-start behavior in exchange. `recency_decay_max = 0`
+  reproduces this ADR's pre-2026-08-25 behavior exactly, so this is a
+  strictly additive, opt-out-capable capability.
 - **Con:** The model needs real historical data to become useful; a
   freshly-configured string effectively passes the baseline through
   unmodified (low confidence everywhere) until enough per-slot samples
@@ -368,9 +485,24 @@ see the Revision note at the end of this ADR for why.
   see a narrow range of forecast values across the window (e.g. a slot
   that's rarely anything but heavily overcast in a given season) may have
   persistently low confidence even after long-term use, since a given
-  slot's samples never exceed `window_days`. Acceptable for now; may need
-  a slower-decaying window specifically for such slots if this proves
-  problematic in practice.
+  slot's samples never exceed `window_days`. **Addressed by §4a
+  (2026-08-25):** `recency_weight_i` is the "slower-decaying window"
+  mechanism this Con originally called for, without literally shrinking
+  `window_days` (see §4a's Pro above) — though it is a decay applied
+  *within* the fixed window, not a variable-length window, so a slot's
+  raw sample *count* is unchanged; only each sample's influence on the
+  fit is. A slot whose low confidence stems purely from sparse data
+  (not from a stale seasonal regime) sees no benefit from this setting.
+- **Con (§4a, 2026-08-25):** At any `recency_decay_max > 0`, the oldest
+  days in the window contribute less to the fit — this is the intended
+  effect, but it also means the *effective* sample size (the pool-weight
+  sum ADR-001 §2's confidence already measures) is smaller than the raw
+  `window_days` count, most noticeably for a freshly-configured string
+  still in the §2 cold-start regime, where every sample already carries
+  proportionally more weight. `recency_decay_max`'s default of 50% was
+  chosen as a moderate starting point for exactly this reason, not
+  validated against real installations yet — the same caveat ADR-011
+  §2's `neighbor_fitting_cutoff` default already carries.
 
 See ADR-011's own Consequences for the trade-offs specific to temporal
 smoothing and neighbor-regime exclusion (formerly this document's

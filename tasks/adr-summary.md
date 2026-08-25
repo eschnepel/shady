@@ -121,10 +121,19 @@ only pure-tier exceptions — tested against a real `hass` fixture.
   Global regression-method choice (`linear`/`kernel`/`wls2` default/
   `wls3`), same for every string.
 - **Confidence:** normalized sum of sample weights in a slot's pool
-  (`Σ magnitude_weight_i · time_weight_i`) — method-independent. Daily
-  exposed confidence = `FC_i`-weighted average across a day's slots.
+  (`Σ magnitude_weight_i · time_weight_i · recency_weight_i`) — method-
+  independent. Daily exposed confidence = `FC_i`-weighted average across
+  a day's slots.
 - **Rolling training window:** default 28 days (`window_days`,
   config-flow), re-fit nightly.
+- **Recency weighting within the window (ADR-001 §4a):** each training
+  day additionally weighted by `recency_weight_i = 1 -
+  (day_age_i/(window_days-1)) · recency_decay_max` — `1.0` at the most
+  recent day (yesterday, the window's effective date), down to `1 -
+  recency_decay_max` at the oldest day; `recency_decay_max` default
+  `0.5` (50%, global, config-flow), `0` disables it. Lets the fit adapt
+  faster to a changing regime (e.g. a falling-leaves autumn) within the
+  existing window, without shrinking `window_days` itself.
 - **Output clamp:** predicted value clamped to `[0, FC]`, or
   `[0, min(FC, inverter_limit)]` if clipping-exclusion configured — this
   is the **final** step of the per-slot pipeline, applied exactly once,
@@ -273,7 +282,7 @@ inverter limit, temperature-source override, temp coefficient, rated DC
 capacity) → **`add_another`** loop. Full field list lives in ADR-010;
 key global defaults: `window_days=28`, `regression_method=wls2`,
 `smoothing_radius=1`, `neighbor_fitting_cutoff=0.25`,
-`clipping_threshold=0.98`, `max_uplift_c=25`,
+`recency_decay_max=0.5`, `clipping_threshold=0.98`, `max_uplift_c=25`,
 `temperature_regression_method=wls2`, `intraday_correction_mode=off`,
 `intraday_correction_cutoff=0.10`, `window_slots=24`, `ramp_slots=12`.
 **No latitude/longitude/elevation field anywhere.** Options flow mirrors

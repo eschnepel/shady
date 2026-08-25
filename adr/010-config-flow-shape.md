@@ -16,6 +16,9 @@ a global "ambient-to-cell max uplift" field in "settings", and a
 per-string "rated DC capacity" field in "add_string_advanced". Closes a
 gap where ADR-003b called the first of these "configurable" with no
 matching field here, and the second had no config-flow source at all.
+**2026-08-25** — added `recency_decay_max` (global, default 50%) to
+"settings", introduced by ADR-001 §4a's new day-recency sample
+weighting.
 
 ---
 
@@ -62,6 +65,11 @@ Step "settings" (first):
     neighbor series may have before being excluded from a slot's training
     pool; the sentinel `-1%` switches to always-rescale instead of
     exclude, per ADR-011 §3)
+  - Recency decay, `recency_decay_max` (default 50%, global; see
+    ADR-001 §4a — the maximum downweight applied to the oldest day in
+    the rolling training window, decreasing linearly to `0%` at the most
+    recent day; `0%` disables recency weighting entirely, every day in
+    the window counting equally)
   - Clipping threshold, % of inverter limit (default 98%, global; see
     ADR-003a §1 — applies to every string that has a converter/inverter AC
     power limit configured in "add_string_advanced" below; a string
