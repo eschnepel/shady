@@ -382,7 +382,7 @@ class TestRecalculateButtonPress:
         async def _boom(now: datetime | None = None) -> None:
             raise RuntimeError("synthetic refit failure")
 
-        coordinator.async_refit = _boom  # type: ignore[method-assign]
+        coordinator.async_refit = _boom
         button = ShadyRecalculateButton(coordinator, coordinator.entry)
 
         _run(button.async_press())  # must not raise
