@@ -444,6 +444,89 @@ class TestManualBaselineShape:
         assert data["baseline_shape"] == "sensor_dict"
 
 
+class TestRecencyDecayMax:
+    """`TASK-0009-patch-2`: `recency_decay_max` (ADR-001 §4a, ADR-010) —
+    the maximum downweight applied to the oldest day in the rolling
+    training window."""
+
+    def test_default_applies_when_absent(self) -> None:
+        hass = FakeHomeAssistant([])
+        flow = ShadyConfigFlow()
+        flow.hass = hass
+        form = flow_call(flow.async_step_settings, None)
+        field_names = {str(key) for key in form["data_schema"].schema}
+        assert "recency_decay_max" in field_names
+        defaults = _defaults_from_schema(form["data_schema"])
+        assert defaults["recency_decay_max"] == 0.5
+
+    def test_round_trips_through_options_flow_prefill(self) -> None:
+        hass = FakeHomeAssistant([_FORECAST_SOLAR_LIKE])
+        data = _finish_minimal_flow(hass)
+        assert data["recency_decay_max"] == 0.5
+
+        entry = FakeConfigEntry(data=data)
+        options_flow = ShadyOptionsFlow()
+        options_flow.hass = hass
+        options_flow.config_entry = entry
+        settings_form = flow_call(options_flow.async_step_init, None)
+        settings_defaults = _defaults_from_schema(settings_form["data_schema"])
+        assert settings_defaults["recency_decay_max"] == 0.5
+        settings_defaults["recency_decay_max"] = 0.75
+        result = flow_call(options_flow.async_step_settings, settings_defaults)
+        add_string_defaults = _defaults_from_schema(result["data_schema"])
+        add_string_defaults["configure_advanced"] = False
+        result = flow_call(options_flow.async_step_add_string, add_string_defaults)
+        add_another_defaults = _defaults_from_schema(result["data_schema"])
+        add_another_defaults["add_another"] = False
+        final = flow_call(options_flow.async_step_add_another, add_another_defaults)
+        assert final["data"]["recency_decay_max"] == 0.75
+
+    def test_zero_is_accepted(self) -> None:
+        hass = FakeHomeAssistant([_FORECAST_SOLAR_LIKE])
+        flow = ShadyConfigFlow()
+        flow.hass = hass
+        settings_form = flow_call(flow.async_step_settings, None)
+        settings_defaults = _defaults_from_schema(settings_form["data_schema"])
+        settings_defaults["recency_decay_max"] = 0.0
+        result = flow_call(flow.async_step_settings, settings_defaults)
+        assert result["step_id"] == "add_string"
+
+    def test_prefill_falls_back_to_default_for_pre_patch_entry(self) -> None:
+        """An entry created before this patch has no `recency_decay_max`
+        key at all — prefill must fall back to the default, no data
+        migration needed (same pattern every other field already
+        follows)."""
+        existing_entry = FakeConfigEntry(
+            data={
+                "baseline_entity_id": "sensor.forecast_solar_estimate",
+                "baseline_attribute": "wh_period",
+                "baseline_shape": "sensor_dict",
+                "temperature_aware": False,
+                "window_days": 28,
+                "regression_method": "wls2",
+                "smoothing_radius": 1,
+                "neighbor_fitting_cutoff": 0.25,
+                "clipping_threshold": 0.98,
+                "default_temperature_source": None,
+                "max_uplift_c": 25,
+                "weather_forecast_temperature_entity": None,
+                "temperature_regression_method": "wls2",
+                "intraday_correction_mode": "off",
+                "intraday_correction_cutoff": 0.10,
+                "window_slots": 24,
+                "ramp_slots": 12,
+                CONF_STRINGS: [],
+            }
+        )
+        hass = FakeHomeAssistant([])
+        flow = ShadyOptionsFlow()
+        flow.hass = hass
+        flow.config_entry = existing_entry
+        settings_form = flow_call(flow.async_step_init, None)
+        settings_defaults = _defaults_from_schema(settings_form["data_schema"])
+        assert settings_defaults["recency_decay_max"] == 0.5
+
+
 class TestOptionsFlowEditsAndChangesSettings:
     """Given `ShadyOptionsFlow`, when invoked on an existing config
     entry, it can add/edit strings and change any global setting,

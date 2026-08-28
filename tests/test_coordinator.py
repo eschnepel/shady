@@ -43,9 +43,14 @@ def _callback(func: Any) -> Any:
 
 
 class FakeState:
-    def __init__(self, entity_id: str, attributes: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        entity_id: str,
+        attributes: dict[str, Any] | None = None,
+        state: str = "unknown",
+    ) -> None:
         self.entity_id = entity_id
-        self.state = "unknown"
+        self.state = state
         self.attributes = attributes or {}
 
 
@@ -63,13 +68,23 @@ class FakeStates:
             return values
         return [s for s in values if s.entity_id.startswith(f"{domain}.")]
 
-    def set(self, entity_id: str, attributes: dict[str, Any] | None = None) -> None:
+    def set(
+        self,
+        entity_id: str,
+        attributes: dict[str, Any] | None = None,
+        state: float | str | None = None,
+    ) -> None:
         """Set/update an entity's state and fire any registered
         state-change listeners — a real (non-mock) stand-in for a live
         HA state-changed event, sufficient for what `coordinator.py`'s
         listeners actually read (they re-derive everything from current
-        state, never from the fired event's payload)."""
-        self._states[entity_id] = FakeState(entity_id, attributes)
+        state, never from the fired event's payload). `state` mirrors
+        real HA: always stored as a string (`_numeric_state`'s own
+        `float(state.state)` parse is what turns it back into a
+        number) — `None` keeps the pre-`TASK-0012` default of
+        `"unknown"`."""
+        resolved_state = "unknown" if state is None else str(state)
+        self._states[entity_id] = FakeState(entity_id, attributes, resolved_state)
         for listener in self._listeners.get(entity_id, []):
             listener(None)
 
@@ -79,6 +94,11 @@ class FakeHomeAssistant:
         self.states = FakeStates()
         self.statistics: dict[str, dict[datetime, float]] = {}
         self._pending_tasks: list[asyncio.Task[Any]] = []
+        # Backs `FakeStore` — a plain dict simulating on-disk persistence,
+        # so constructing a second coordinator against this same
+        # `FakeHomeAssistant` (a simulated restart) sees whatever the
+        # first one saved (ADR-005 §5/§6, ADR-007 §1, TASK-0012).
+        self.store_data: dict[str, Any] = {}
 
     async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
         return func(*args)
@@ -98,12 +118,32 @@ class FakeHomeAssistant:
             await asyncio.gather(*pending)
 
 
+class FakeStore:
+    """Real (non-`Mock`) stand-in for `homeassistant.helpers.storage
+    .Store` — backed by `hass.store_data` (see `FakeHomeAssistant`),
+    not an in-memory-only dict of its own, so a simulated restart
+    (constructing a second `FakeStore`/coordinator against the same
+    `hass`) actually observes a prior `async_save`."""
+
+    def __init__(self, hass: Any, version: int, key: str) -> None:
+        self._hass = hass
+        self._version = version
+        self._key = key
+
+    async def async_load(self) -> Any:
+        return self._hass.store_data.get(self._key)
+
+    async def async_save(self, data: Any) -> None:
+        self._hass.store_data[self._key] = data
+
+
 def _install_ha_stub() -> None:
     ha = ModuleType("homeassistant")
     ha_core = ModuleType("homeassistant.core")
     ha_config_entries = ModuleType("homeassistant.config_entries")
     ha_helpers = ModuleType("homeassistant.helpers")
     ha_helpers_event = ModuleType("homeassistant.helpers.event")
+    ha_helpers_storage = ModuleType("homeassistant.helpers.storage")
     ha_components = ModuleType("homeassistant.components")
     ha_recorder = ModuleType("homeassistant.components.recorder")
     ha_recorder_statistics = ModuleType("homeassistant.components.recorder.statistics")
@@ -164,10 +204,13 @@ def _install_ha_stub() -> None:
 
     ha_recorder_statistics.statistics_during_period = statistics_during_period  # type: ignore[attr-defined]
 
+    ha_helpers_storage.Store = FakeStore  # type: ignore[attr-defined]
+
     ha.core = ha_core  # type: ignore[attr-defined]
     ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
     ha.helpers = ha_helpers  # type: ignore[attr-defined]
     ha_helpers.event = ha_helpers_event  # type: ignore[attr-defined]
+    ha_helpers.storage = ha_helpers_storage  # type: ignore[attr-defined]
     ha.components = ha_components  # type: ignore[attr-defined]
     ha_components.recorder = ha_recorder  # type: ignore[attr-defined]
     ha_recorder.statistics = ha_recorder_statistics  # type: ignore[attr-defined]
@@ -177,6 +220,7 @@ def _install_ha_stub() -> None:
     sys.modules["homeassistant.config_entries"] = ha_config_entries
     sys.modules["homeassistant.helpers"] = ha_helpers
     sys.modules["homeassistant.helpers.event"] = ha_helpers_event
+    sys.modules["homeassistant.helpers.storage"] = ha_helpers_storage
     sys.modules["homeassistant.components"] = ha_components
     sys.modules["homeassistant.components.recorder"] = ha_recorder
     sys.modules["homeassistant.components.recorder.statistics"] = ha_recorder_statistics
@@ -210,6 +254,7 @@ _load("regression/wls2.py", "shady.regression.wls2")
 _load("regression/wls3.py", "shady.regression.wls3")
 _load("yield_correction.py", "shady.yield_correction")
 _load("forecast_adjust.py", "shady.forecast_adjust")
+_load("aggregation.py", "shady.aggregation")
 _load("cache.py", "shady.cache")
 _const_mod = _load("const.py", "shady.const")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
@@ -259,6 +304,7 @@ def _make_entry(**overrides: Any) -> Any:
         "regression_method": "wls2",
         "smoothing_radius": 0,
         "neighbor_fitting_cutoff": 0.25,
+        "recency_decay_max": 0.5,
         "clipping_threshold": 0.98,
         "default_temperature_source": None,
         "max_uplift_c": 25,
@@ -303,6 +349,44 @@ def _make_coordinator(entry: Any | None = None) -> tuple[Any, FakeHomeAssistant]
 
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
+
+
+def _set_state(
+    hass: FakeHomeAssistant,
+    entity_id: str,
+    attributes: dict[str, Any] | None = None,
+    state: float | str | None = None,
+) -> None:
+    """`FakeStates.set` inside a running event loop, draining whatever
+    fire-and-forget task the state-change listener schedules
+    afterward — necessary for any `_ACTUAL_YIELD_ENTITY`-family
+    `entity_id`, since `_handle_actual_yield_update` (ADR-005 §5) is a
+    synchronous `@callback` that calls `hass.async_create_task`, which
+    needs a running loop to attach to; a bare `hass.states.set(...)`
+    outside of `_run`/`asyncio.run` has none."""
+
+    async def _drive() -> None:
+        hass.states.set(entity_id, attributes, state)
+        await hass.drain()
+
+    _run(_drive())
+
+
+class TestRecencyDecayMaxWiring:
+    """`TASK-0010-patch-3`: `recency_decay_max` (ADR-001 §4a) reaches
+    `ShadyCoordinator` from `entry.data` exactly like its sibling
+    `neighbor_fitting_cutoff`, and flows through to `build_pool` at
+    `_fit_string`'s refit call site — `TestRecencyWeight`
+    (`tests/test_regression.py`) already covers the weighting math
+    itself, so this only needs to prove the wiring."""
+
+    def test_resolved_onto_the_coordinator_from_entry_data(self) -> None:
+        coordinator, _hass = _make_coordinator(_make_entry(recency_decay_max=0.2))
+        assert coordinator._recency_decay_max == 0.2
+
+    def test_default_entry_value_flows_through_unmodified(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator._recency_decay_max == 0.5
 
 
 class TestRefitSharedCodePath:
@@ -423,7 +507,17 @@ class TestRefitTriggersRecompute:
         _run(coordinator.async_refit(_NOW))
 
         assert coordinator._models == {}
-        assert coordinator.cache.validated_range(coordinator.forecast_sensor_id(0)) is None
+        # `validated_range` alone is no longer a reliable "nothing
+        # happened" check on its own: TASK-0012's `fc_sum()` (called
+        # from `_accumulate_fc_energy` at the end of every refit) also
+        # queries this same sensor_id via `get_time_range` — the same
+        # "validate before read" `fetch_fn` dispatch a never-pushed
+        # sensor's *any* query goes through, exactly like
+        # `ShadyForecastSensor.native_value` already does (ADR-007a
+        # §4) — not something recompute-specific. The invariant this
+        # test actually cares about — no recompute ever *pushed* a
+        # value — is `hass_pushed_values` returning empty.
+        assert hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0)) == {}
 
 
 class TestRecomputeOnBaselineUpdate:
@@ -605,3 +699,351 @@ class TestStringEnumeration:
         coordinator = ShadyCoordinator(hass, entry)
 
         assert coordinator.strings() == [(0, "Dach Süd"), (1, "Dach Nord")]
+
+
+# -- ADR-005 / TASK-0012: aggregate sensors + energy-integral totals -------
+
+_SECOND_ACTUAL_YIELD_ENTITY = "sensor.string_b_yield"
+
+
+def _push_forecast(coordinator: Any, string_index: int, timestamp: datetime, value: float) -> None:
+    """Test-only helper: writes one slot directly into a
+    `ShadyForecastSensor` cache key, bypassing the fit pipeline —
+    `Cache.push`'s real signature takes an index->value dict and a
+    `not_before_index` floor, not a single `(timestamp, value)` pair."""
+    index = Cache.index_for(timestamp)
+    coordinator.cache.push(coordinator.forecast_sensor_id(string_index), {index: value}, index)
+
+
+def _make_two_string_entry(**overrides: Any) -> Any:
+    return _make_entry(
+        **{
+            CONF_STRINGS: [
+                {
+                    "name": "Dach Süd",
+                    "baseline_entity_id": None,
+                    "baseline_attribute": None,
+                    "baseline_shape": None,
+                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                    "converter_limit_w": None,
+                    "temperature_source_entity_id": None,
+                    "temperature_coefficient_pct_per_c": -0.4,
+                    "rated_dc_capacity_wp": None,
+                },
+                {
+                    "name": "Dach Nord",
+                    "baseline_entity_id": None,
+                    "baseline_attribute": None,
+                    "baseline_shape": None,
+                    "actual_yield_entity_id": _SECOND_ACTUAL_YIELD_ENTITY,
+                    "converter_limit_w": None,
+                    "temperature_source_entity_id": None,
+                    "temperature_coefficient_pct_per_c": -0.4,
+                    "rated_dc_capacity_wp": None,
+                },
+            ],
+            **overrides,
+        }
+    )
+
+
+def _make_two_string_coordinator() -> tuple[Any, FakeHomeAssistant]:
+    entry = _make_two_string_entry()
+    hass = FakeHomeAssistant()
+    hass.states.set(
+        _BASELINE_ENTITY,
+        {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=3))},
+    )
+    hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+    hass.states.set(_SECOND_ACTUAL_YIELD_ENTITY, {})
+    _seed_actual_yield_statistics(hass, _YESTERDAY, _YESTERDAY + timedelta(days=1))
+    coordinator = ShadyCoordinator(hass, entry)
+    coordinator._now = lambda: _NOW
+    return coordinator, hass
+
+
+class TestPvSum:
+    """ADR-005 §1: `pv_sum()` sums the current actual-yield state
+    across every configured string, reading straight from live HA
+    state — independent of the fit/recompute cycle."""
+
+    def test_single_string_reads_its_actual_yield_state(self) -> None:
+        coordinator, hass = _make_coordinator()
+        _set_state(hass, _ACTUAL_YIELD_ENTITY, state=321.5)
+        assert coordinator.pv_sum() == 321.5
+
+    def test_sums_across_multiple_strings(self) -> None:
+        coordinator, hass = _make_two_string_coordinator()
+        _set_state(hass, _ACTUAL_YIELD_ENTITY, state=100.0)
+        _set_state(hass, _SECOND_ACTUAL_YIELD_ENTITY, state=50.0)
+        assert coordinator.pv_sum() == 150.0
+
+    def test_non_numeric_state_excluded_not_zeroed(self) -> None:
+        coordinator, hass = _make_two_string_coordinator()
+        _set_state(hass, _ACTUAL_YIELD_ENTITY, state=100.0)
+        _set_state(hass, _SECOND_ACTUAL_YIELD_ENTITY, state="unavailable")
+        assert coordinator.pv_sum() == 100.0
+
+    def test_all_missing_returns_none(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        # default fixture state is "unknown" (non-numeric)
+        assert coordinator.pv_sum() is None
+
+
+class TestFcSum:
+    """ADR-005 §2: `fc_sum(now)` sums the current-slot corrected
+    forecast across every configured string, reading from `cache.py`."""
+
+    def test_single_string_current_slot(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _push_forecast(coordinator, 0, _NOW, 200.0)
+        assert coordinator.fc_sum(_NOW) == 200.0
+
+    def test_sums_across_multiple_strings(self) -> None:
+        coordinator, _hass = _make_two_string_coordinator()
+        _push_forecast(coordinator, 0, _NOW, 200.0)
+        _push_forecast(coordinator, 1, _NOW, 300.0)
+        assert coordinator.fc_sum(_NOW) == 500.0
+
+    def test_unpushed_slot_returns_none(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator.fc_sum(_NOW) is None
+
+    def test_defaults_now_to_coordinator_clock(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _push_forecast(coordinator, 0, _NOW, 77.0)
+        assert coordinator.fc_sum() == 77.0
+
+
+class TestFcDayArray:
+    """ADR-005 §3: `fc_day_array(now)` returns today's 288
+    `(timestamp, cross-string-summed-value)` pairs via one
+    `get_time_range(group_by="slot")` call."""
+
+    def test_array_shape_and_timestamps(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        timestamps, values = coordinator.fc_day_array(_NOW)
+        assert len(timestamps) == 288
+        assert len(values) == 288
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        assert timestamps[0] == today_start
+        assert timestamps[1] == today_start + timedelta(minutes=5)
+        assert timestamps[-1] == today_start + timedelta(hours=23, minutes=55)
+
+    def test_sums_pushed_slots_across_strings(self) -> None:
+        coordinator, _hass = _make_two_string_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        slot = today_start + timedelta(hours=8)
+        _push_forecast(coordinator, 0, slot, 100.0)
+        _push_forecast(coordinator, 1, slot, 50.0)
+
+        _timestamps, values = coordinator.fc_day_array(_NOW)
+
+        slot_index = int((slot - today_start) / timedelta(minutes=5))
+        assert values[slot_index] == 150.0
+
+    def test_unpushed_slots_are_none(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _timestamps, values = coordinator.fc_day_array(_NOW)
+        assert all(value is None for value in values)
+
+
+class TestFcDayEnergyTotalAndRemaining:
+    """ADR-005 §3/§4: `fc_day_energy_total`/`fc_remaining_energy` are
+    pure post-processing of `fc_day_array`'s own output."""
+
+    def test_day_energy_total_matches_aggregation_module(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        _push_forecast(coordinator, 0, today_start, 600.0)
+
+        expected = 600.0 * 5 / 60  # one slot at 600W for 5 minutes, in Wh
+        assert coordinator.fc_day_energy_total(_NOW) == expected
+
+    def test_remaining_energy_excludes_past_slots(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        past_slot = today_start + timedelta(hours=1)  # before _NOW (10:00)
+        future_slot = today_start + timedelta(hours=12)  # after _NOW
+        _push_forecast(coordinator, 0, past_slot, 1000.0)
+        _push_forecast(coordinator, 0, future_slot, 600.0)
+
+        total = coordinator.fc_day_energy_total(_NOW)
+        remaining = coordinator.fc_remaining_energy(_NOW)
+
+        assert remaining < total
+        assert remaining == 600.0 * 5 / 60
+
+
+class TestEnergyAccumulation:
+    """ADR-005 §5/§6: `_accumulate_energy` advances `cache.py`'s
+    running totals via `aggregation.trapezoidal_energy_increment`, and
+    `_maybe_reset_energy_totals` is the idempotent day-boundary guard
+    both the midnight schedule and restore rely on."""
+
+    def test_first_sample_contributes_zero(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        assert coordinator.cache.energy_total("pv") == 0.0
+        assert coordinator.cache.last_energy_sample("pv") == (_NOW, 600.0)
+
+    def test_second_sample_adds_trapezoidal_increment(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        later = _NOW + timedelta(minutes=5)
+        coordinator._accumulate_energy("pv", later, 600.0)
+        # constant 600W for 5 minutes = 50 Wh
+        assert coordinator.cache.energy_total("pv") == 50.0
+
+    def test_pv_and_fc_totals_are_independent(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        coordinator._accumulate_energy("pv", _NOW + timedelta(minutes=5), 600.0)
+        coordinator._accumulate_energy("fc", _NOW, 100.0)
+        assert coordinator.cache.energy_total("pv") == 50.0
+        assert coordinator.cache.energy_total("fc") == 0.0
+
+    def test_maybe_reset_is_idempotent_within_a_day(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator._maybe_reset_energy_totals(_NOW) is True
+        assert coordinator._maybe_reset_energy_totals(_NOW) is False
+        assert coordinator._maybe_reset_energy_totals(_NOW + timedelta(hours=1)) is False
+
+    def test_maybe_reset_fires_again_on_a_new_day(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        coordinator._accumulate_energy("pv", _NOW + timedelta(minutes=5), 600.0)
+        assert coordinator.cache.energy_total("pv") == 50.0
+
+        next_day = _NOW + timedelta(days=1)
+        coordinator._accumulate_energy("pv", next_day, 600.0)
+        # reset cleared the total and the last-sample, so this sample
+        # is a fresh "first sample" — contributes zero, not a bridge
+        # across the reset boundary.
+        assert coordinator.cache.energy_total("pv") == 0.0
+        assert coordinator.cache.last_reset_date() == next_day.date()
+
+    def test_accumulate_fc_energy_skips_when_fc_sum_is_none(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._accumulate_fc_energy(_NOW)
+        assert coordinator.cache.energy_total("fc") == 0.0
+        assert coordinator.cache.last_energy_sample("fc") is None
+
+    def test_accumulate_fc_energy_uses_full_cross_string_total(self) -> None:
+        coordinator, _hass = _make_two_string_coordinator()
+        _push_forecast(coordinator, 0, _NOW, 200.0)
+        _push_forecast(coordinator, 1, _NOW, 300.0)
+        coordinator._accumulate_fc_energy(_NOW)
+        assert coordinator.cache.last_energy_sample("fc") == (_NOW, 500.0)
+
+
+class TestActualYieldTriggeredAccumulation:
+    """ADR-005 §5: a real actual-yield entity state change (via the new
+    `_register_actual_yield_listeners`) triggers PV energy accumulation
+    and schedules a persist — a real end-to-end path, not a direct
+    `_accumulate_energy` call."""
+
+    def test_state_change_accumulates_and_schedules_persist(self) -> None:
+        coordinator, hass = _make_coordinator()
+        _set_state(hass, _ACTUAL_YIELD_ENTITY, state=600.0)
+
+        assert coordinator.cache.last_energy_sample("pv") == (_NOW, 600.0)
+        assert hass.store_data  # persisted
+
+
+class TestEnergyRestorePersistence:
+    """ADR-005 §5/§6, ADR-007 §1: `async_restore_energy_state` loads
+    from `Store`, applies the startup idempotency check, and only then
+    registers the midnight-reset schedule; `_async_persist_energy_state`
+    is its write-side counterpart. A simulated restart is two
+    coordinators sharing one `FakeHomeAssistant` (and so one
+    `hass.store_data`)."""
+
+    def test_restore_with_nothing_stored_zeroes_and_sets_today(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_restore_energy_state())
+        assert coordinator.cache.energy_total("pv") == 0.0
+        assert coordinator.cache.last_reset_date() == _NOW.date()
+
+    def test_persist_then_restore_across_a_simulated_restart(self) -> None:
+        coordinator, hass = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        coordinator._accumulate_energy("pv", _NOW + timedelta(minutes=5), 600.0)
+        _run(coordinator._async_persist_energy_state())
+
+        entry = _make_entry()
+        coordinator2 = ShadyCoordinator(hass, entry)
+        coordinator2._now = lambda: _NOW + timedelta(minutes=5)
+        _run(coordinator2.async_restore_energy_state())
+
+        assert coordinator2.cache.energy_total("pv") == 50.0
+        # deliberately NOT restored — next accumulation starts fresh
+        assert coordinator2.cache.last_energy_sample("pv") is None
+
+    def test_restore_resets_if_stored_reset_date_is_in_the_past(self) -> None:
+        coordinator, hass = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        coordinator._accumulate_energy("pv", _NOW + timedelta(minutes=5), 600.0)
+        _run(coordinator._async_persist_energy_state())
+
+        entry = _make_entry()
+        coordinator2 = ShadyCoordinator(hass, entry)
+        next_day = _NOW + timedelta(days=1)
+        coordinator2._now = lambda: next_day
+        _run(coordinator2.async_restore_energy_state())
+
+        assert coordinator2.cache.energy_total("pv") == 0.0
+        assert coordinator2.cache.last_reset_date() == next_day.date()
+
+    def test_restore_not_called_from_init(self) -> None:
+        coordinator, hass = _make_coordinator()
+        # nothing loaded/registered until explicitly called
+        assert coordinator.cache.last_reset_date() is None
+        assert not hass.store_data
+
+
+class TestRecomputeTriggersFcAccumulation:
+    """ADR-005 §2/§6: both recompute paths — recalibration
+    (`_refit_sync`/`async_refit`) and baseline-update recompute
+    (`_async_recompute`) — accumulate one FC-energy increment after
+    recomputing, and schedule a persist afterward."""
+
+    def test_async_refit_accumulates_fc_energy_and_persists(self) -> None:
+        coordinator, hass = _make_coordinator()
+        # Simulate an earlier cycle having already frozen the current
+        # slot (`Cache.push`'s own `not_before_index` freezing means a
+        # brand-new coordinator's very first refit never has *this*
+        # exact slot written yet — see `TestRefitSharedCodePath`'s
+        # "current slot frozen" test for the same property from the
+        # opposite direction).
+        _push_forecast(coordinator, 0, _NOW, 111.0)
+        _run(coordinator.async_refit(_NOW))
+        assert coordinator.cache.last_energy_sample("fc") == (_NOW, 111.0)
+        # `async_refit` awaits the persist directly (it's already a
+        # coroutine on the event loop) — no separate drain needed.
+        assert hass.store_data
+
+    def test_async_recompute_accumulates_fc_energy_and_persists(self) -> None:
+        coordinator, hass = _make_coordinator()
+        _push_forecast(coordinator, 0, _NOW, 222.0)
+
+        async def _drive() -> None:
+            await coordinator._async_recompute(coordinator._strings, _NOW)
+            await hass.drain()
+
+        _run(_drive())
+        assert coordinator.cache.last_energy_sample("fc") == (_NOW, 222.0)
+        assert hass.store_data
+
+    def test_first_ever_refit_with_nothing_pre_frozen_skips_accumulation(self) -> None:
+        """Documents the edge case above explicitly: a truly fresh
+        coordinator's first-ever refit accumulates nothing (`fc_sum`
+        of the still-unwritten current slot is `None`) — not a bug,
+        just the natural consequence of `_predict_day`'s own
+        `not_before_index` freezing; the very next trigger (once this
+        slot has since been frozen by this run's own push) will find
+        something to accumulate."""
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        assert coordinator.cache.last_energy_sample("fc") is None
+        assert coordinator.cache.energy_total("fc") == 0.0

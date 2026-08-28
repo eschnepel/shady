@@ -287,3 +287,80 @@ class TestInvalidate:
         assert len(calls) == 2
         second_start, second_end = calls[1]
         assert (second_end - second_start) == timedelta(minutes=cache_mod.SLOT_MINUTES * 3)
+
+
+class TestEnergyIntegralTotals:
+    """Given the two energy-integral running totals (ADR-005 §5/§6,
+    TASK-0012) — the one restart-persisted cache in this module
+    (ADR-007 §1) — the accessors behave as a plain in-memory pair of
+    scalars per `EnergyKind`, independent of the index-addressable
+    time-series machinery covered by every other test class above."""
+
+    def test_fresh_instance_defaults(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+
+        assert cache.energy_total("pv") == 0.0
+        assert cache.energy_total("fc") == 0.0
+        assert cache.last_energy_sample("pv") is None
+        assert cache.last_energy_sample("fc") is None
+        assert cache.last_reset_date() is None
+
+    def test_set_and_get_energy_total_per_kind(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+
+        cache.set_energy_total("pv", 42.5)
+        assert cache.energy_total("pv") == 42.5
+        assert cache.energy_total("fc") == 0.0  # independent of "pv"
+
+    def test_set_and_get_last_energy_sample_per_kind(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        sample = (datetime(2026, 1, 1, tzinfo=UTC), 600.0)
+
+        cache.set_last_energy_sample("fc", sample)
+        assert cache.last_energy_sample("fc") == sample
+        assert cache.last_energy_sample("pv") is None  # independent of "fc"
+
+    def test_reset_zeroes_both_totals_and_clears_both_samples(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        cache.set_energy_total("pv", 10.0)
+        cache.set_energy_total("fc", 20.0)
+        cache.set_last_energy_sample("pv", (datetime(2026, 1, 1, tzinfo=UTC), 100.0))
+        cache.set_last_energy_sample("fc", (datetime(2026, 1, 1, tzinfo=UTC), 200.0))
+
+        cache.reset_energy_totals(datetime(2026, 1, 2, tzinfo=UTC).date())
+
+        assert cache.energy_total("pv") == 0.0
+        assert cache.energy_total("fc") == 0.0
+        assert cache.last_energy_sample("pv") is None
+        assert cache.last_energy_sample("fc") is None
+        assert cache.last_reset_date() == datetime(2026, 1, 2, tzinfo=UTC).date()
+
+    def test_restore_sets_totals_and_reset_date_but_not_samples(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        # Simulate a sample already present before restore runs — a
+        # brand-new `Cache` never has one, but this proves restore
+        # actively leaves whatever's there untouched rather than merely
+        # defaulting to `None` by omission.
+        cache.set_last_energy_sample("pv", (datetime(2026, 1, 1, tzinfo=UTC), 999.0))
+
+        cache.restore_energy_state(10.0, 20.0, datetime(2026, 1, 3, tzinfo=UTC).date())
+
+        assert cache.energy_total("pv") == 10.0
+        assert cache.energy_total("fc") == 20.0
+        assert cache.last_reset_date() == datetime(2026, 1, 3, tzinfo=UTC).date()
+        # Deliberately NOT restored/cleared (ADR-005 §5/§6): the next
+        # accumulation after a restart starts from `previous=None`.
+        assert cache.last_energy_sample("pv") == (datetime(2026, 1, 1, tzinfo=UTC), 999.0)
+
+    def test_kinds_are_independent_across_a_full_reset_restore_cycle(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        cache.restore_energy_state(1.0, 2.0, datetime(2026, 1, 1, tzinfo=UTC).date())
+        cache.set_last_energy_sample("pv", (datetime(2026, 1, 1, tzinfo=UTC), 50.0))
+        cache.set_last_energy_sample("fc", (datetime(2026, 1, 1, tzinfo=UTC), 60.0))
+
+        cache.reset_energy_totals(datetime(2026, 1, 2, tzinfo=UTC).date())
+
+        assert cache.energy_total("pv") == 0.0
+        assert cache.energy_total("fc") == 0.0
+        assert cache.last_energy_sample("pv") is None
+        assert cache.last_energy_sample("fc") is None

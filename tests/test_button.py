@@ -46,9 +46,14 @@ def _callback(func: Any) -> Any:
 
 
 class FakeState:
-    def __init__(self, entity_id: str, attributes: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        entity_id: str,
+        attributes: dict[str, Any] | None = None,
+        state: str = "unknown",
+    ) -> None:
         self.entity_id = entity_id
-        self.state = "unknown"
+        self.state = state
         self.attributes = attributes or {}
 
 
@@ -66,10 +71,33 @@ class FakeStates:
             return values
         return [s for s in values if s.entity_id.startswith(f"{domain}.")]
 
-    def set(self, entity_id: str, attributes: dict[str, Any] | None = None) -> None:
-        self._states[entity_id] = FakeState(entity_id, attributes)
+    def set(
+        self,
+        entity_id: str,
+        attributes: dict[str, Any] | None = None,
+        state: float | str | None = None,
+    ) -> None:
+        resolved_state = "unknown" if state is None else str(state)
+        self._states[entity_id] = FakeState(entity_id, attributes, resolved_state)
         for listener in self._listeners.get(entity_id, []):
             listener(None)
+
+
+class FakeStore:
+    """Real (non-`Mock`) stand-in for `homeassistant.helpers.storage
+    .Store` — backed by `hass.store_data` (see `FakeHomeAssistant`),
+    matching `test_coordinator.py`'s own copy of this stub."""
+
+    def __init__(self, hass: Any, version: int, key: str) -> None:
+        self._hass = hass
+        self._version = version
+        self._key = key
+
+    async def async_load(self) -> Any:
+        return self._hass.store_data.get(self._key)
+
+    async def async_save(self, data: Any) -> None:
+        self._hass.store_data[self._key] = data
 
 
 class FakeHomeAssistant:
@@ -78,6 +106,7 @@ class FakeHomeAssistant:
         self.statistics: dict[str, dict[datetime, float]] = {}
         self.data: dict[str, Any] = {}
         self._pending_tasks: list[asyncio.Task[Any]] = []
+        self.store_data: dict[str, Any] = {}
 
     async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
         return func(*args)
@@ -94,6 +123,7 @@ def _install_ha_stub() -> None:
     ha_config_entries = ModuleType("homeassistant.config_entries")
     ha_helpers = ModuleType("homeassistant.helpers")
     ha_helpers_event = ModuleType("homeassistant.helpers.event")
+    ha_helpers_storage = ModuleType("homeassistant.helpers.storage")
     ha_components = ModuleType("homeassistant.components")
     ha_recorder = ModuleType("homeassistant.components.recorder")
     ha_recorder_statistics = ModuleType("homeassistant.components.recorder.statistics")
@@ -161,10 +191,13 @@ def _install_ha_stub() -> None:
 
     ha_components_button.ButtonEntity = ButtonEntity  # type: ignore[attr-defined]
 
+    ha_helpers_storage.Store = FakeStore  # type: ignore[attr-defined]
+
     ha.core = ha_core  # type: ignore[attr-defined]
     ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
     ha.helpers = ha_helpers  # type: ignore[attr-defined]
     ha_helpers.event = ha_helpers_event  # type: ignore[attr-defined]
+    ha_helpers.storage = ha_helpers_storage  # type: ignore[attr-defined]
     ha.components = ha_components  # type: ignore[attr-defined]
     ha_components.recorder = ha_recorder  # type: ignore[attr-defined]
     ha_recorder.statistics = ha_recorder_statistics  # type: ignore[attr-defined]
@@ -175,6 +208,7 @@ def _install_ha_stub() -> None:
     sys.modules["homeassistant.config_entries"] = ha_config_entries
     sys.modules["homeassistant.helpers"] = ha_helpers
     sys.modules["homeassistant.helpers.event"] = ha_helpers_event
+    sys.modules["homeassistant.helpers.storage"] = ha_helpers_storage
     sys.modules["homeassistant.components"] = ha_components
     sys.modules["homeassistant.components.recorder"] = ha_recorder
     sys.modules["homeassistant.components.recorder.statistics"] = ha_recorder_statistics
@@ -199,6 +233,7 @@ _load("regression/wls2.py", "shady.regression.wls2")
 _load("regression/wls3.py", "shady.regression.wls3")
 _load("yield_correction.py", "shady.yield_correction")
 _load("forecast_adjust.py", "shady.forecast_adjust")
+_load("aggregation.py", "shady.aggregation")
 _load("cache.py", "shady.cache")
 _const_mod = _load("const.py", "shady.const")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
@@ -249,6 +284,7 @@ def _make_entry(**overrides: Any) -> Any:
         "regression_method": "wls2",
         "smoothing_radius": 0,
         "neighbor_fitting_cutoff": 0.25,
+        "recency_decay_max": 0.5,
         "clipping_threshold": 0.98,
         "default_temperature_source": None,
         "max_uplift_c": 25,

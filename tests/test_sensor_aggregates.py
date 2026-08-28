@@ -1,17 +1,14 @@
-"""Tests for `sensor.py`'s `ShadyForecastSensor` (ADR-002 §3/§5,
-TASK-0011).
+"""Tests for `sensor.py`'s six config-entry-level aggregate sensors
+(ADR-005, TASK-0012): `ShadyPvSumSensor`, `ShadyFcSumSensor`,
+`ShadyFcDaySumSensor`, `ShadyFcRemainingTodaySensor`,
+`ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`.
 
-`sensor.py` is HA-facing (real, non-`TYPE_CHECKING` imports of
-`homeassistant.components.sensor`/`homeassistant.const`) — outside
-ADR-000 §6's zero-mocking pure tier. This file extends `test_coordinator
-.py`'s hand-written `homeassistant` stub convention with the additional
-surface `sensor.py` touches: `homeassistant.components.sensor`'s
-`SensorEntity`/`SensorDeviceClass`/`SensorStateClass` and
-`homeassistant.const.UnitOfPower` — real (non-`Mock`) stand-ins,
-registered directly in `sys.modules` before file-path-loading the
-module under test. Fully self-contained (this task's own fixtures,
-independent of any other test file's `sys.modules` state), per that
-same established convention.
+Own independent `homeassistant` stub, per the same established
+convention as `test_button.py`/`test_sensor_forecast.py` — fully
+self-contained, not sharing `sys.modules` state with any other test
+file. `ShadyForecastSensor` itself (the per-string sensor) is
+`test_sensor_forecast.py`'s job; this file only covers the six
+aggregates `async_setup_entry` adds alongside it.
 """
 
 from __future__ import annotations
@@ -39,6 +36,26 @@ def _load(relative_path: str, module_name: str) -> ModuleType:
 
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
+
+
+def _set_state(
+    hass: Any,
+    entity_id: str,
+    attributes: dict[str, Any] | None = None,
+    state: float | str | None = None,
+) -> None:
+    """`FakeStates.set` inside a running event loop — necessary for
+    `_ACTUAL_YIELD_ENTITY`, since `_handle_actual_yield_update`
+    (ADR-005 §5) is a synchronous `@callback` that calls
+    `hass.async_create_task`, which needs a running loop to attach to;
+    a bare `hass.states.set(...)` outside of `_run`/`asyncio.run` has
+    none (matches `test_coordinator.py`'s own copy of this helper)."""
+
+    async def _drive() -> None:
+        hass.states.set(entity_id, attributes, state)
+        await hass.drain()
+
+    _run(_drive())
 
 
 # -- hand-written `homeassistant` stub (real stand-in, not a mock) ----------
@@ -88,8 +105,8 @@ class FakeStates:
 
 class FakeStore:
     """Real (non-`Mock`) stand-in for `homeassistant.helpers.storage
-    .Store` — backed by `hass.store_data` (see `FakeHomeAssistant`),
-    matching `test_coordinator.py`'s own copy of this stub."""
+    .Store` — backed by `hass.store_data`, matching every other test
+    file's copy of this stub."""
 
     def __init__(self, hass: Any, version: int, key: str) -> None:
         self._hass = hass
@@ -192,15 +209,12 @@ def _install_ha_stub() -> None:
 
     ha_recorder_statistics.statistics_during_period = statistics_during_period  # type: ignore[attr-defined]
 
-    # -- `homeassistant.components.sensor` (this file's own addition) ---
+    # -- `homeassistant.components.sensor` --
 
     class SensorEntity:
-        """Real (non-Mock) stand-in for the slice `sensor.py` actually
-        uses: nothing beyond being a plain base class carrying
-        `_attr_*` class/instance attributes — HA's own property
-        descriptors (`native_value` etc. falling back to `_attr_*`) are
-        not needed here since `ShadyForecastSensor` overrides every
-        relevant property itself."""
+        """Real (non-Mock) stand-in — nothing beyond a plain base class
+        carrying `_attr_*` attributes; every aggregate sensor overrides
+        every relevant property itself (ADR-000 §3's thin-glue rule)."""
 
     class SensorDeviceClass:
         POWER = "power"
@@ -252,9 +266,9 @@ def _install_ha_stub() -> None:
 
 _install_ha_stub()
 
-# Same `shady` top-level package trick `test_coordinator.py` established
-# (see its own comment) — required for coordinator.py's `from .regression
-# import kernel, linear, wls2, wls3` package-level import to resolve.
+# Same `shady` top-level package trick every other HA-facing test file
+# established — required for coordinator.py's `from .regression import
+# kernel, linear, wls2, wls3` package-level import to resolve.
 _shady_pkg = ModuleType("shady")
 _shady_pkg.__path__ = []
 sys.modules["shady"] = _shady_pkg
@@ -281,8 +295,6 @@ ShadyCoordinator = _coordinator_mod.ShadyCoordinator
 Cache = sys.modules["shady.cache"].Cache
 CONF_STRINGS = _const_mod.CONF_STRINGS
 DOMAIN = _const_mod.DOMAIN
-async_setup_entry = _sensor_mod.async_setup_entry
-ShadyForecastSensor = _sensor_mod.ShadyForecastSensor
 ShadyPvSumSensor = _sensor_mod.ShadyPvSumSensor
 ShadyFcSumSensor = _sensor_mod.ShadyFcSumSensor
 ShadyFcDaySumSensor = _sensor_mod.ShadyFcDaySumSensor
@@ -290,32 +302,19 @@ ShadyFcRemainingTodaySensor = _sensor_mod.ShadyFcRemainingTodaySensor
 ShadyPvEnergyIntegralSensor = _sensor_mod.ShadyPvEnergyIntegralSensor
 ShadyFcEnergyIntegralSensor = _sensor_mod.ShadyFcEnergyIntegralSensor
 
+_ha_components_sensor = sys.modules["homeassistant.components.sensor"]
+SensorDeviceClass = _ha_components_sensor.SensorDeviceClass
+SensorStateClass = _ha_components_sensor.SensorStateClass
+_ha_const = sys.modules["homeassistant.const"]
+UnitOfPower = _ha_const.UnitOfPower
+UnitOfEnergy = _ha_const.UnitOfEnergy
+
 # -- shared test fixture (mirrors test_coordinator.py's own) ---------------
 
 _NOW = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
 _YESTERDAY = datetime(2026, 6, 14, tzinfo=UTC)
 _BASELINE_ENTITY = "sensor.forecast_solar_estimate"
 _ACTUAL_YIELD_ENTITY = "sensor.string_a_yield"
-
-
-def _synthetic_wh_period(start: datetime, end: datetime) -> dict[str, float]:
-    out: dict[str, float] = {}
-    step = timedelta(minutes=5)
-    current = start
-    while current < end:
-        out[current.isoformat()] = 500.0 if 6 <= current.hour < 18 else 0.0
-        current += step
-    return out
-
-
-def _seed_actual_yield_statistics(hass: FakeHomeAssistant, start: datetime, end: datetime) -> None:
-    by_start: dict[datetime, float] = {}
-    step = timedelta(minutes=5)
-    current = start
-    while current < end:
-        by_start[current] = 400.0 if 6 <= current.hour < 18 else 0.0
-        current += step
-    hass.statistics[_ACTUAL_YIELD_ENTITY] = by_start
 
 
 def _make_entry(**overrides: Any) -> Any:
@@ -357,137 +356,209 @@ def _make_entry(**overrides: Any) -> Any:
     return config_entries_mod.ConfigEntry("test_entry", data)
 
 
-def _make_ready_coordinator() -> tuple[Any, FakeHomeAssistant, Any]:
-    """A coordinator that has already fit + pushed an initial forecast
-    (mirrors what `TASK-0016`'s real `__init__.py` will do via
-    `async_startup`, but calling `async_refit` directly here — this
-    task does not depend on `TASK-0016`)."""
+def _make_coordinator() -> tuple[Any, FakeHomeAssistant, Any]:
     hass = FakeHomeAssistant()
-    hass.states.set(
-        _BASELINE_ENTITY,
-        {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=3))},
-    )
+    hass.states.set(_BASELINE_ENTITY, {"wh_period": {}})
     hass.states.set(_ACTUAL_YIELD_ENTITY, {})
-    _seed_actual_yield_statistics(hass, _YESTERDAY, _YESTERDAY + timedelta(days=1))
     entry = _make_entry()
     coordinator = ShadyCoordinator(hass, entry)
     coordinator._now = lambda: _NOW
-    _run(coordinator.async_refit(_NOW))
     return coordinator, hass, entry
 
 
-class _FakeAddEntities:
-    def __init__(self) -> None:
-        self.added: list[Any] = []
-
-    def __call__(self, entities: Any) -> None:
-        self.added.extend(entities)
-
-
-class TestAsyncSetupEntry:
-    """Given `hass.data[DOMAIN][entry.entry_id]` already holds a
-    `ShadyCoordinator` for a config entry with one configured string,
-    When `sensor.py`'s `async_setup_entry` runs, Then one
-    `ShadyForecastSensor` per configured string is added, plus the six
-    config-entry-level aggregate sensors (ADR-005, TASK-0012)."""
-
-    def test_one_sensor_per_configured_string_plus_six_aggregates(self) -> None:
-        coordinator, hass, entry = _make_ready_coordinator()
-        hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-        add_entities = _FakeAddEntities()
-
-        _run(async_setup_entry(hass, entry, add_entities))
-
-        assert len(add_entities.added) == 7
-        forecast_sensors = [e for e in add_entities.added if isinstance(e, ShadyForecastSensor)]
-        assert len(forecast_sensors) == 1
-        aggregate_types = {
-            ShadyPvSumSensor,
-            ShadyFcSumSensor,
-            ShadyFcDaySumSensor,
-            ShadyFcRemainingTodaySensor,
-            ShadyPvEnergyIntegralSensor,
-            ShadyFcEnergyIntegralSensor,
-        }
-        aggregate_sensors = [e for e in add_entities.added if type(e) in aggregate_types]
-        assert len(aggregate_sensors) == 6
-        assert {type(e) for e in aggregate_sensors} == aggregate_types
+def _push_forecast(coordinator: Any, string_index: int, timestamp: datetime, value: float) -> None:
+    """Test-only helper: writes one slot directly into a
+    `ShadyForecastSensor` cache key — `Cache.push`'s real signature
+    takes an index->value dict and a `not_before_index` floor, not a
+    single `(timestamp, value)` pair."""
+    index = Cache.index_for(timestamp)
+    coordinator.cache.push(coordinator.forecast_sensor_id(string_index), {index: value}, index)
 
 
-class TestForecastSensorValue:
-    """Given a real, freshly-refit coordinator with seeded fake
-    recorder/provider data, When the sensor's state/attributes are
-    inspected, Then it exposes a plausible corrected value read
-    straight from `coordinator.cache` — no computation of its own
-    (ADR-000 §3)."""
+class TestSensorDeviceAndStateClasses:
+    """ADR-005's own device/state-class table: §1/§2 → POWER/WATT/
+    MEASUREMENT; §3/§4 → ENERGY/Wh/TOTAL; §5/§6 → ENERGY/Wh/
+    TOTAL_INCREASING."""
 
-    def test_native_value_matches_cache_directly(self) -> None:
-        coordinator, _hass, _entry = _make_ready_coordinator()
-        string_index, string_name = coordinator.strings()[0]
-        sensor = ShadyForecastSensor(coordinator, _entry, string_index, string_name)
-        # The exact `_NOW` slot is itself frozen by the refit that just
-        # ran against it (`not_before_index = index_for(now) + 1`,
-        # TASK-0010-patch-1) — legitimately `None` right at that instant,
-        # same as any other already-elapsed-or-elapsing slot. Query a
-        # few minutes later, matching a realistic poll shortly after a
-        # recompute, where the very next slot has a real pushed value.
-        query_time = _NOW + timedelta(minutes=5)
-        sensor._now = lambda: query_time
+    def test_pv_sum_is_power_measurement(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyPvSumSensor(coordinator, entry)
+        assert sensor._attr_device_class == SensorDeviceClass.POWER
+        assert sensor._attr_native_unit_of_measurement == UnitOfPower.WATT
+        assert sensor._attr_state_class == SensorStateClass.MEASUREMENT
 
-        expected = coordinator.cache.get_time_range(
-            [coordinator.forecast_sensor_id(string_index)], query_time, query_time, on_invalid="raw"
-        )[coordinator.forecast_sensor_id(string_index)][0]
+    def test_fc_sum_is_power_measurement(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyFcSumSensor(coordinator, entry)
+        assert sensor._attr_device_class == SensorDeviceClass.POWER
+        assert sensor._attr_native_unit_of_measurement == UnitOfPower.WATT
+        assert sensor._attr_state_class == SensorStateClass.MEASUREMENT
 
-        assert sensor.native_value == expected
-        assert isinstance(sensor.native_value, float)
-        assert sensor.native_value > 0.0  # 10:05, daytime, sunny synthetic fixture
+    def test_fc_day_sum_is_energy_total(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyFcDaySumSensor(coordinator, entry)
+        assert sensor._attr_device_class == SensorDeviceClass.ENERGY
+        assert sensor._attr_native_unit_of_measurement == UnitOfEnergy.WATT_HOUR
+        assert sensor._attr_state_class == SensorStateClass.TOTAL
 
-    def test_the_exact_recompute_instant_is_frozen_not_synthesized(self) -> None:
-        # Documents the `not_before_index` freeze (TASK-0010-patch-1):
-        # the sensor never invents a value for a frozen slot — it
-        # reports exactly what `coordinator.cache` holds, `None` here.
-        coordinator, _hass, _entry = _make_ready_coordinator()
-        string_index, string_name = coordinator.strings()[0]
-        sensor = ShadyForecastSensor(coordinator, _entry, string_index, string_name)
+    def test_fc_remaining_today_is_energy_total(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyFcRemainingTodaySensor(coordinator, entry)
+        assert sensor._attr_device_class == SensorDeviceClass.ENERGY
+        assert sensor._attr_native_unit_of_measurement == UnitOfEnergy.WATT_HOUR
+        assert sensor._attr_state_class == SensorStateClass.TOTAL
+
+    def test_pv_energy_integral_is_energy_total_increasing(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyPvEnergyIntegralSensor(coordinator, entry)
+        assert sensor._attr_device_class == SensorDeviceClass.ENERGY
+        assert sensor._attr_native_unit_of_measurement == UnitOfEnergy.WATT_HOUR
+        assert sensor._attr_state_class == SensorStateClass.TOTAL_INCREASING
+
+    def test_fc_energy_integral_is_energy_total_increasing(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyFcEnergyIntegralSensor(coordinator, entry)
+        assert sensor._attr_device_class == SensorDeviceClass.ENERGY
+        assert sensor._attr_native_unit_of_measurement == UnitOfEnergy.WATT_HOUR
+        assert sensor._attr_state_class == SensorStateClass.TOTAL_INCREASING
+
+
+class TestUniqueIds:
+    """Every aggregate sensor's unique_id is entry-scoped (one per
+    config entry, unlike `ShadyForecastSensor`'s per-string id)."""
+
+    def test_unique_ids_are_distinct_and_entry_scoped(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensors = [
+            ShadyPvSumSensor(coordinator, entry),
+            ShadyFcSumSensor(coordinator, entry),
+            ShadyFcDaySumSensor(coordinator, entry),
+            ShadyFcRemainingTodaySensor(coordinator, entry),
+            ShadyPvEnergyIntegralSensor(coordinator, entry),
+            ShadyFcEnergyIntegralSensor(coordinator, entry),
+        ]
+        unique_ids = [s._attr_unique_id for s in sensors]
+
+        assert len(set(unique_ids)) == 6  # all distinct
+        assert all(entry.entry_id in uid for uid in unique_ids)
+        assert all(uid.startswith(DOMAIN) for uid in unique_ids)
+
+
+class TestPvSumSensorValue:
+    """`ShadyPvSumSensor.native_value` — zero math of its own, reads
+    `coordinator.pv_sum()` directly on every access."""
+
+    def test_matches_coordinator_pv_sum_directly(self) -> None:
+        coordinator, hass, entry = _make_coordinator()
+        _set_state(hass, _ACTUAL_YIELD_ENTITY, state=321.5)
+        sensor = ShadyPvSumSensor(coordinator, entry)
+
+        assert sensor.native_value == coordinator.pv_sum() == 321.5
+
+    def test_none_when_coordinator_pv_sum_is_none(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyPvSumSensor(coordinator, entry)
+
+        assert sensor.native_value is None
+
+
+class TestFcSumSensorValue:
+    """`ShadyFcSumSensor.native_value` — reads `coordinator.fc_sum(now)`
+    at the sensor's own clock, directly."""
+
+    def test_matches_coordinator_fc_sum_directly(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        _push_forecast(coordinator, 0, _NOW, 456.0)
+        sensor = ShadyFcSumSensor(coordinator, entry)
+        sensor._now = lambda: _NOW
+
+        assert sensor.native_value == coordinator.fc_sum(_NOW) == 456.0
+
+    def test_none_when_slot_unpushed(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        sensor = ShadyFcSumSensor(coordinator, entry)
         sensor._now = lambda: _NOW
 
         assert sensor.native_value is None
 
-    def test_today_and_tomorrow_attributes_are_288_slot_arrays_from_cache(self) -> None:
-        coordinator, _hass, _entry = _make_ready_coordinator()
-        string_index, string_name = coordinator.strings()[0]
-        sensor = ShadyForecastSensor(coordinator, _entry, string_index, string_name)
+
+class TestFcDaySumSensorValue:
+    """`ShadyFcDaySumSensor` — state is `fc_day_energy_total`;
+    `extra_state_attributes` exposes `fc_day_array`'s own two arrays,
+    ISO-formatted for JSON-serializability."""
+
+    def test_native_value_matches_coordinator_directly(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        _push_forecast(coordinator, 0, today_start, 600.0)
+        sensor = ShadyFcDaySumSensor(coordinator, entry)
+        sensor._now = lambda: _NOW
+
+        assert sensor.native_value == coordinator.fc_day_energy_total(_NOW)
+        assert sensor.native_value == 600.0 * 5 / 60
+
+    def test_attributes_are_288_slot_arrays_matching_fc_day_array(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        slot = today_start + timedelta(hours=8)
+        _push_forecast(coordinator, 0, slot, 250.0)
+        sensor = ShadyFcDaySumSensor(coordinator, entry)
         sensor._now = lambda: _NOW
 
         attrs = sensor.extra_state_attributes
+        expected_timestamps, expected_values = coordinator.fc_day_array(_NOW)
 
-        assert set(attrs) == {"today", "tomorrow"}
-        assert len(attrs["today"]) == 288
-        assert len(attrs["tomorrow"]) == 288
-        # Some daytime slots already pushed by the refit-triggered recompute.
-        assert any(v is not None and v > 0.0 for v in attrs["today"])
-        assert any(v is not None and v > 0.0 for v in attrs["tomorrow"])
+        assert set(attrs) == {"slot_timestamps", "slot_values"}
+        assert len(attrs["slot_timestamps"]) == 288
+        assert len(attrs["slot_values"]) == 288
+        assert attrs["slot_timestamps"] == [ts.isoformat() for ts in expected_timestamps]
+        assert attrs["slot_values"] == expected_values
+        slot_index = int((slot - today_start) / timedelta(minutes=5))
+        assert attrs["slot_values"][slot_index] == 250.0
 
-    def test_unique_id_is_the_exact_cache_sensor_id(self) -> None:
-        coordinator, _hass, _entry = _make_ready_coordinator()
-        string_index, string_name = coordinator.strings()[0]
-        sensor = ShadyForecastSensor(coordinator, _entry, string_index, string_name)
 
-        assert sensor._attr_unique_id == coordinator.forecast_sensor_id(string_index)
+class TestFcRemainingTodaySensorValue:
+    """`ShadyFcRemainingTodaySensor` — pure post-processing of the same
+    array `ShadyFcDaySumSensor` builds; excludes past slots."""
 
-    def test_no_forecast_yet_reports_none_not_an_invented_value(self) -> None:
-        # A coordinator that has never been refit at all: nothing pushed.
-        hass = FakeHomeAssistant()
-        hass.states.set(
-            _BASELINE_ENTITY,
-            {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=3))},
-        )
-        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
-        entry = _make_entry()
-        coordinator = ShadyCoordinator(hass, entry)
-        string_index, string_name = coordinator.strings()[0]
-        sensor = ShadyForecastSensor(coordinator, entry, string_index, string_name)
+    def test_matches_coordinator_fc_remaining_energy_directly(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        past_slot = today_start + timedelta(hours=1)
+        future_slot = today_start + timedelta(hours=12)
+        _push_forecast(coordinator, 0, past_slot, 1000.0)
+        _push_forecast(coordinator, 0, future_slot, 600.0)
+        sensor = ShadyFcRemainingTodaySensor(coordinator, entry)
         sensor._now = lambda: _NOW
 
-        assert sensor.native_value is None
-        assert all(v is None for v in sensor.extra_state_attributes["today"])
+        assert sensor.native_value == coordinator.fc_remaining_energy(_NOW)
+        assert sensor.native_value == 600.0 * 5 / 60
+
+
+class TestEnergyIntegralSensorValues:
+    """`ShadyPvEnergyIntegralSensor`/`ShadyFcEnergyIntegralSensor` —
+    read `coordinator.cache.energy_total(...)` directly, zero math of
+    their own; advancing the total is `coordinator.py`'s job
+    (`_accumulate_energy`), not this sensor's."""
+
+    def test_pv_energy_integral_matches_cache_directly(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        coordinator.cache.set_energy_total("pv", 1234.5)
+        sensor = ShadyPvEnergyIntegralSensor(coordinator, entry)
+
+        assert sensor.native_value == coordinator.cache.energy_total("pv") == 1234.5
+
+    def test_fc_energy_integral_matches_cache_directly(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        coordinator.cache.set_energy_total("fc", 987.6)
+        sensor = ShadyFcEnergyIntegralSensor(coordinator, entry)
+
+        assert sensor.native_value == coordinator.cache.energy_total("fc") == 987.6
+
+    def test_integrals_reflect_real_accumulation_not_just_manual_set(self) -> None:
+        coordinator, _hass, entry = _make_coordinator()
+        coordinator._accumulate_energy("pv", _NOW, 600.0)
+        coordinator._accumulate_energy("pv", _NOW + timedelta(minutes=5), 600.0)
+        sensor = ShadyPvEnergyIntegralSensor(coordinator, entry)
+
+        assert sensor.native_value == 50.0  # 600W for 5 minutes = 50 Wh

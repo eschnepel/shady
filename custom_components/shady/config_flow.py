@@ -30,6 +30,7 @@ from .const import (
     CONF_MAX_UPLIFT_C,
     CONF_NEIGHBOR_FITTING_CUTOFF,
     CONF_RAMP_SLOTS,
+    CONF_RECENCY_DECAY_MAX,
     CONF_REGRESSION_METHOD,
     CONF_SMOOTHING_RADIUS,
     CONF_STRING_ACTUAL_YIELD_ENTITY,
@@ -55,6 +56,7 @@ from .const import (
     DEFAULT_MAX_UPLIFT_C,
     DEFAULT_NEIGHBOR_FITTING_CUTOFF,
     DEFAULT_RAMP_SLOTS,
+    DEFAULT_RECENCY_DECAY_MAX,
     DEFAULT_REGRESSION_METHOD,
     DEFAULT_SMOOTHING_RADIUS,
     DEFAULT_STRING_TEMPERATURE_COEFFICIENT,
@@ -174,6 +176,10 @@ def _settings_schema(candidates: list[BaselineCandidate], defaults: dict[str, An
                 default=defaults.get(CONF_NEIGHBOR_FITTING_CUTOFF, DEFAULT_NEIGHBOR_FITTING_CUTOFF),
             ): vol.Coerce(float),
             vol.Required(
+                CONF_RECENCY_DECAY_MAX,
+                default=defaults.get(CONF_RECENCY_DECAY_MAX, DEFAULT_RECENCY_DECAY_MAX),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+            vol.Required(
                 CONF_CLIPPING_THRESHOLD,
                 default=defaults.get(CONF_CLIPPING_THRESHOLD, DEFAULT_CLIPPING_THRESHOLD),
             ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
@@ -247,6 +253,7 @@ def _normalize_settings(
         CONF_REGRESSION_METHOD: user_input[CONF_REGRESSION_METHOD],
         CONF_SMOOTHING_RADIUS: user_input[CONF_SMOOTHING_RADIUS],
         CONF_NEIGHBOR_FITTING_CUTOFF: user_input[CONF_NEIGHBOR_FITTING_CUTOFF],
+        CONF_RECENCY_DECAY_MAX: user_input[CONF_RECENCY_DECAY_MAX],
         CONF_CLIPPING_THRESHOLD: user_input[CONF_CLIPPING_THRESHOLD],
         CONF_DEFAULT_TEMPERATURE_SOURCE: (
             str(user_input.get(CONF_DEFAULT_TEMPERATURE_SOURCE) or "").strip() or None
@@ -290,6 +297,7 @@ def _settings_defaults_from_entry_data(
         CONF_NEIGHBOR_FITTING_CUTOFF: data.get(
             CONF_NEIGHBOR_FITTING_CUTOFF, DEFAULT_NEIGHBOR_FITTING_CUTOFF
         ),
+        CONF_RECENCY_DECAY_MAX: data.get(CONF_RECENCY_DECAY_MAX, DEFAULT_RECENCY_DECAY_MAX),
         CONF_CLIPPING_THRESHOLD: data.get(CONF_CLIPPING_THRESHOLD, DEFAULT_CLIPPING_THRESHOLD),
         CONF_DEFAULT_TEMPERATURE_SOURCE: data.get(CONF_DEFAULT_TEMPERATURE_SOURCE) or "",
         CONF_MAX_UPLIFT_C: data.get(CONF_MAX_UPLIFT_C, DEFAULT_MAX_UPLIFT_C),

@@ -1,6 +1,6 @@
 # Task: Patch — Recency-Decay Config Field (`recency_decay_max`)
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-001 §4a, ADR-010]
 - **Dependencies:** [TASK-0009-config-flow]
 
@@ -72,3 +72,26 @@ human-directed). `TASK-0009` stays `done`, unreopened.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/const.py` → `CONF_RECENCY_DECAY_MAX = "recency_decay_max"`,
+  `DEFAULT_RECENCY_DECAY_MAX = 0.5`, placed between
+  `CONF_NEIGHBOR_FITTING_CUTOFF`/`DEFAULT_NEIGHBOR_FITTING_CUTOFF` and
+  `CONF_CLIPPING_THRESHOLD`/`DEFAULT_CLIPPING_THRESHOLD` — matching
+  ADR-010's own documented field order.
+- `custom_components/shady/config_flow.py` → `_settings_schema` gains a
+  `CONF_RECENCY_DECAY_MAX` field (`vol.All(vol.Coerce(float),
+  vol.Range(min=0, max=1))`, default `DEFAULT_RECENCY_DECAY_MAX`),
+  positioned between the `neighbor_fitting_cutoff` and
+  `clipping_threshold` fields; `_normalize_settings` and
+  `_settings_defaults_from_entry_data` both gain the matching
+  `CONF_RECENCY_DECAY_MAX` entry, mirroring `CONF_NEIGHBOR_FITTING_CUTOFF`'s
+  existing three touch points exactly. No change to `ShadyConfigFlow`/
+  `ShadyOptionsFlow` class bodies themselves (both consume the shared
+  module-level functions only).
+- `tests/test_config_flow.py` → new `TestRecencyDecayMax` class (4
+  tests): default-applies-when-absent, round-trips through
+  submit-then-options-flow-prefill (including a changed non-default
+  value), `0.0` accepted, and prefill falls back to the default for a
+  pre-patch entry with no `recency_decay_max` key at all. Full suite:
+  169/169 passing (`tests/test_config_flow.py`: 14/14). `mypy --strict`
+  clean on `config_flow.py`/`const.py`.
+- External dependencies added: none.

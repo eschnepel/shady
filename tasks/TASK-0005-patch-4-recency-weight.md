@@ -1,6 +1,6 @@
 # Task: Patch — `recency_weight_i` in `regression/base.py`'s `build_pool`
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-001 §2, ADR-001 §4a, ADR-011 §1]
 - **Dependencies:** [TASK-0005-regression-fitting-pipeline, TASK-0005-patch-1-ndarray-typing]
 
@@ -91,3 +91,27 @@ human-directed). `TASK-0005` stays `done`, unreopened.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/regression/base.py` → new module-level
+  `_recency_weight(window_days: int, recency_decay_max: float) ->
+  NDArray[np.float64]` helper (shape `(window_days,)`, linear from
+  `1 - recency_decay_max` at index `0` to `1.0` at index
+  `window_days - 1`; returns all-`1.0` for the `window_days <= 1`
+  degenerate case). `build_pool` gains a new **required**, last-position
+  parameter `recency_decay_max: float`; computes `recency_weight` once
+  via `_recency_weight(center_fc.shape[1], recency_decay_max)` before
+  the per-offset loop (identical for every offset block, per the
+  function's own docstring/contract) and folds it into
+  `combined_weight = magnitude_weight * time_weight *
+  recency_weight[None, :] * valid_mask`. No other public symbol changed;
+  `SamplePool`'s fields are unchanged (`confidence` already derives from
+  `weight.sum(axis=1)`, so it reflects the new factor automatically).
+- `tests/test_regression.py` → new `TestRecencyWeight` class (6 tests:
+  most-recent/oldest endpoint values, linear interpolation, `0.0`
+  reproduces pre-patch behavior, `window_days == 1` degenerate case,
+  identical weight across offset blocks, confidence reflects the decay).
+  All 10 pre-existing `build_pool` call sites updated with an explicit
+  `recency_decay_max=0.0` (behavior-preserving — verified no other test
+  assertions changed). Full suite: 177/177 passing
+  (`tests/test_regression.py`: 22/22). `mypy`/`ruff check`/`ruff format
+  --check` all clean.
+- External dependencies added: none.

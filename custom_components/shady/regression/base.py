@@ -164,25 +164,70 @@ def _median_ratio(
         return np.asarray(np.nanmedian(ratio, axis=1))
 
 
+def _recency_weight(window_days: int, recency_decay_max: float) -> NDArray[np.float64]:
+    """`recency_weight_i` (ADR-001 §4a): a per-training-day-column
+    downweight, `1.0` at the most recent day (last column, index
+    `window_days - 1`) down to `1 - recency_decay_max` at the oldest day
+    (first column, index `0`) — linear in between. A property of *which
+    calendar day* a column represents, computed once from `window_days`
+    alone (never per-row, never per-offset — every offset block shares
+    the exact same day-column layout by `build_pool`'s own input
+    contract, so this is reused identically for every offset).
+
+    `window_days == 1` is the one degenerate case (ADR-001 §4a): `1.0`
+    unconditionally, avoiding a `window_days - 1 == 0` division — there
+    is no second day to be relatively older or newer than.
+    """
+    if window_days <= 1:
+        return np.ones(window_days, dtype=np.float64)
+    day_position = np.arange(window_days, dtype=np.float64)
+    day_age = (window_days - 1) - day_position
+    return np.asarray(1.0 - (day_age / (window_days - 1)) * recency_decay_max)
+
+
 def build_pool(
     fc_by_offset: Mapping[int, NDArray[np.float64]],
     pv_by_offset: Mapping[int, NDArray[np.float64]],
     smoothing_radius: int,
     neighbor_fitting_cutoff: float,
+    recency_decay_max: float,
 ) -> SamplePool:
     """Build one batch's fully-weighted `SamplePool` from raw per-offset
     arrays (ADR-001 §2's `magnitude_weight_i`, ADR-011 §1's
-    `time_weight_i`, and ADR-011 §2/§3's neighbor exclusion/rescale).
+    `time_weight_i`, ADR-001 §4a's `recency_weight_i`, and ADR-011
+    §2/§3's neighbor exclusion/rescale).
 
     `fc_by_offset`/`pv_by_offset` must contain exactly the offsets
     `-smoothing_radius .. +smoothing_radius` (a `smoothing_radius=0` pool
     is just the center slot, reproducing ADR-001 §3a's
     strictly-independent-slots behavior).
+
+    **`recency_weight_i`'s own column semantics are inherited entirely
+    from the caller's array layout, not recomputed here.** Every
+    `fc_by_offset`/`pv_by_offset` array is `(n_slots, window_days)`,
+    oldest day first — the exact same fixed-length, calendar-anchored
+    window `cache.py`'s `get_regression_pools` always returns (ADR-008
+    §2's "Column layout" docstring), padded with `NaN` for any day the
+    window covers but a given sensor has no data for yet (before it was
+    configured, or before Shady itself started recording) rather than a
+    shorter array. `window_days` here is therefore always the
+    *configured* window length (`fc_by_offset[offset].shape[1]`), never
+    reduced to however many of those days actually hold valid data for a
+    freshly-added string — so a freshly-added string's few valid days
+    fall in the most-recent columns (small `day_age_i`, light discount),
+    the same rate of decay-per-calendar-day a string with a full window
+    gets, rather than being compressed to span only the days it actually
+    has. `valid_mask` (via `combined_weight`'s multiply, below) already
+    zeroes out any `NaN` day regardless of what `recency_weight_i` would
+    otherwise say for that column — the two concerns (how old vs. is it
+    real data at all) stay independent, exactly as `magnitude_weight_i`/
+    `time_weight_i` already do.
     """
     offsets = list(range(-smoothing_radius, smoothing_radius + 1))
     center_fc = fc_by_offset[0]
     center_valid = ~np.isnan(center_fc) & ~np.isnan(pv_by_offset[0])
     center_median = _median_ratio(center_fc, pv_by_offset[0], center_valid)
+    recency_weight = _recency_weight(center_fc.shape[1], recency_decay_max)
 
     fc_blocks: list[NDArray[np.float64]] = []
     pv_blocks: list[NDArray[np.float64]] = []
@@ -226,7 +271,7 @@ def build_pool(
                 magnitude_weight = np.where(excluded[:, None], 0.0, magnitude_weight)
 
         pv_contribution = raw_pv * neighbor_scale[:, None]
-        combined_weight = magnitude_weight * time_weight * valid_mask
+        combined_weight = magnitude_weight * time_weight * recency_weight[None, :] * valid_mask
 
         fc_blocks.append(np.where(valid_mask, raw_fc, 0.0))
         pv_blocks.append(np.where(valid_mask, pv_contribution, 0.0))

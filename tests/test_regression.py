@@ -15,6 +15,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import numpy as np
 import pytest
@@ -133,7 +134,11 @@ class TestClampInvariantAcrossAllStrategies:
     def test_clamp_holds_for_every_strategy_and_query(self) -> None:
         fc_by_offset, pv_by_offset = _hard_shading_edge_pool()
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         n_slots = fc_by_offset[0].shape[0]
 
@@ -162,7 +167,11 @@ class TestExtrapolationSafetyWls2Wls3:
     def test_extrapolation_beyond_training_range_stays_clamped(self) -> None:
         fc_by_offset, pv_by_offset = _clipping_ceiling_pool()
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         n_slots = fc_by_offset[0].shape[0]
         max_training_fc = max(arr.max() for arr in fc_by_offset.values())
@@ -196,7 +205,11 @@ class TestMagnitudeWeightSmoothNearZeroFC:
         fc_by_offset = {0: fc_values}
         pv_by_offset = {0: pv_values}
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=0, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         weights = pool.weight[0]
 
@@ -214,6 +227,97 @@ class TestMagnitudeWeightSmoothNearZeroFC:
         assert 0.0 < weights[1] < weights[2]
 
 
+# -- ADR-001 §4a: recency_weight_i ------------------------------------------
+
+
+class TestRecencyWeight:
+    """Given `build_pool`'s new `recency_decay_max` parameter, the
+    per-training-day-column `recency_weight_i` decays linearly from
+    `1.0` at the most recent day (last column) to `1 - recency_decay_max`
+    at the oldest (first column) — ADR-001 §4a, `TASK-0005-patch-4`."""
+
+    @staticmethod
+    def _isolated_pool(
+        window_days: int, recency_decay_max: float, smoothing_radius: int = 0
+    ) -> Any:
+        """A pool where `magnitude_weight_i` and `time_weight_i` are both
+        pinned at `1.0` for every sample (constant `FC` per offset row,
+        radius `0` unless overridden) — isolates `recency_weight_i` as
+        the *only* varying factor in `pool.weight`, mirroring
+        `TestMagnitudeWeightSmoothNearZeroFC`'s own isolation approach.
+
+        Returns `base_mod.build_pool`'s actual `SamplePool` — annotated
+        `Any`, not the real class, since `base_mod` itself is loaded
+        dynamically (via `_load`, not a static import), so mypy already
+        sees every attribute access on it as `Any`; declaring `object`
+        here (as this previously did) actively widened that back down,
+        masking `.weight`/`.confidence` on every caller below.
+        """
+        n_slots = 2
+        fc_by_offset = {}
+        pv_by_offset = {}
+        for offset in range(-smoothing_radius, smoothing_radius + 1):
+            fc_by_offset[offset] = np.full((n_slots, window_days), 500.0)
+            pv_by_offset[offset] = np.full((n_slots, window_days), 400.0)
+        return base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=smoothing_radius,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=recency_decay_max,
+        )
+
+    def test_most_recent_day_weight_1_and_oldest_matches_1_minus_decay(self) -> None:
+        window_days = 10
+        pool = self._isolated_pool(window_days, recency_decay_max=0.5)
+        # column 0 = oldest, column -1 = most recent (build_pool's own
+        # column-layout convention, matching cache.py's).
+        assert np.allclose(pool.weight[:, -1], 1.0)
+        assert np.allclose(pool.weight[:, 0], 0.5)
+
+    def test_linear_interpolation_between_the_two_ends(self) -> None:
+        window_days = 10
+        pool = self._isolated_pool(window_days, recency_decay_max=0.5)
+        # day_age=5 at column 4 (0-indexed, oldest=0): weight =
+        # 1 - (5/9) * 0.5.
+        expected = 1.0 - (5 / 9) * 0.5
+        assert np.allclose(pool.weight[:, 4], expected)
+
+    def test_recency_decay_max_zero_reproduces_pre_patch_output(self) -> None:
+        pool = self._isolated_pool(window_days=10, recency_decay_max=0.0)
+        assert np.allclose(pool.weight, 1.0)
+
+    def test_window_days_one_is_the_degenerate_case(self) -> None:
+        # Guards against a `window_days - 1 == 0` division; recency_weight_i
+        # is 1.0 unconditionally regardless of recency_decay_max.
+        pool = self._isolated_pool(window_days=1, recency_decay_max=0.9)
+        assert np.allclose(pool.weight, 1.0)
+
+    def test_identical_recency_weight_across_every_offset_block(self) -> None:
+        # recency_weight_i is a property of the calendar day, not of
+        # slot-of-day distance — the -1 and +1 offset blocks share the
+        # same |offset| (so the same time_weight_i too), so their raw
+        # weight blocks must be exactly equal if recency_weight_i is
+        # truly shared identically between them.
+        window_days = 8
+        pool = self._isolated_pool(window_days, recency_decay_max=0.5, smoothing_radius=1)
+        minus_one_block = pool.weight[:, 0:window_days]
+        center_block = pool.weight[:, window_days : 2 * window_days]
+        plus_one_block = pool.weight[:, 2 * window_days : 3 * window_days]
+        assert np.allclose(minus_one_block, plus_one_block)
+        # The center block only differs from a neighbor block by the
+        # time_weight_i factor (1.0 vs 0.5 at radius=1) — a constant
+        # multiplicative ratio, confirming recency_weight_i itself
+        # cancels out identically between them.
+        ratio = center_block / plus_one_block
+        assert np.allclose(ratio, 2.0)
+
+    def test_confidence_reflects_recency_weight_contribution(self) -> None:
+        undecayed = self._isolated_pool(window_days=10, recency_decay_max=0.0)
+        decayed = self._isolated_pool(window_days=10, recency_decay_max=0.5)
+        assert np.all(decayed.confidence < undecayed.confidence)
+
+
 # -- AC4: neighbor hard exclusion at a shading boundary ---------------------
 
 
@@ -228,7 +332,11 @@ class TestNeighborHardExclusion:
         window_days = fc_by_offset[0].shape[1]
 
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
 
         # Pool column layout: offsets concatenated in order [-1, 0, 1],
@@ -264,6 +372,7 @@ class TestNeighborRescale:
             pv_by_offset,
             smoothing_radius=1,
             neighbor_fitting_cutoff=base_mod.RESCALE_SENTINEL,
+            recency_decay_max=0.0,
         )
 
         deviating_fc = pool.fc[:, 2 * window_days : 3 * window_days]
@@ -297,7 +406,11 @@ class TestConfidenceMethodIndependence:
     def test_confidence_matches_across_all_strategies(self) -> None:
         fc_by_offset, pv_by_offset = _hard_shading_edge_pool()
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         n_slots = fc_by_offset[0].shape[0]
         fc_query = np.full(n_slots, 400.0)
@@ -331,7 +444,11 @@ class TestColdStartPassthrough:
         fc_by_offset = {o: np.full((n_slots, window_days), np.nan) for o in (-1, 0, 1)}
         pv_by_offset = {o: np.full((n_slots, window_days), np.nan) for o in (-1, 0, 1)}
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         assert np.array_equal(pool.confidence, np.zeros(n_slots))
 
@@ -353,7 +470,11 @@ class TestSmoothingRadiusZeroReproducesIndependentSlots:
         pv_by_offset = {0: np.full((n_slots, window_days), 200.0)}
 
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=0, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
 
         assert pool.fc.shape == (n_slots, window_days)
@@ -367,7 +488,11 @@ class TestEveryStrategyHandlesTheSharedFixtures:
     def test_hard_shading_edge_fixture(self, strategy: ModuleType) -> None:
         fc_by_offset, pv_by_offset = _hard_shading_edge_pool()
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         n_slots = fc_by_offset[0].shape[0]
         adjusted, confidence = strategy.fit(pool).predict(np.full(n_slots, 300.0))
@@ -377,7 +502,11 @@ class TestEveryStrategyHandlesTheSharedFixtures:
     def test_clipping_ceiling_fixture(self, strategy: ModuleType) -> None:
         fc_by_offset, pv_by_offset = _clipping_ceiling_pool()
         pool = base_mod.build_pool(
-            fc_by_offset, pv_by_offset, smoothing_radius=1, neighbor_fitting_cutoff=0.25
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
         )
         n_slots = fc_by_offset[0].shape[0]
         adjusted, confidence = strategy.fit(pool).predict(np.full(n_slots, 300.0))

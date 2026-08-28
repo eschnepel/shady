@@ -29,6 +29,42 @@ derating skipped entirely for now, exactly as ADR-003b §1's own stated
 dependency chain requires — not a shortcut invented here. `TASK-0014`'s
 own job is to extend this module's temperature resolution to cover that
 tier once its learned-model machinery exists.
+
+**Aggregate sensors and the energy-integral totals (ADR-005, TASK-0012):**
+`pv_sum`/`fc_sum`/`fc_day_array`/`fc_day_energy_total`/
+`fc_remaining_energy` are plain, poll-friendly methods — `sensor.py`'s
+six aggregate entities call them directly on every read, the same
+polling relationship `ShadyForecastSensor` already has with this module.
+The two energy-integral totals (§5/§6) are different: they are
+event-driven running sums that must survive a restart exactly, so they
+live in `cache.py` (restart-persisted, ADR-007 §1) and are only ever
+advanced by `_accumulate_energy`, called from three trigger points —
+`_refit_sync` (recalibration), `_async_recompute` (baseline-update
+recompute), and `_handle_actual_yield_update` (a new, separate
+actual-yield state-change listener; actual-yield entities are not
+`Provider`s, so they cannot reuse `_register_provider_listeners`).
+`_accumulate_energy` itself is deliberately **hass-free** — it only
+touches `self.cache` — because `_refit_sync` runs inside
+`hass.async_add_executor_job`'s executor thread, not on the event loop;
+it is therefore safe to call from there directly. Persisting the
+updated totals to `Store` is done differently depending on whether the
+trigger point already has an `await` of its own to attach to:
+`async_refit` and `_async_recompute` are themselves coroutines, already
+awaited/scheduled by their one respective caller, so each simply
+`await self._async_persist_energy_state()`s directly at the end of its
+own body — no detached task. `_handle_actual_yield_update` and
+`_handle_energy_reset`, by contrast, are synchronous `@callback`s with
+no `await` of their own to attach to, so those two are the only two
+places that genuinely need `hass.async_create_task(self.
+_async_persist_energy_state())` as a fire-and-forget schedule.
+`async_restore_energy_state` — the startup counterpart — is
+deliberately **not** called from `__init__`/`async_startup`: it needs a
+direct call from `__init__.py` (`TASK-0016`, does not exist yet),
+independent of `missing_required_entities()`'s gate, since the integral
+totals need no external entity to exist in order to restore. It also
+registers the midnight-reset schedule itself, at the very end (after
+its own idempotency check), so that schedule structurally cannot fire
+before the restore has run.
 """
 
 from __future__ import annotations
@@ -42,9 +78,16 @@ import numpy as np
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
+from homeassistant.helpers.storage import Store
 from numpy.typing import NDArray
 
-from .cache import SLOT_DURATION, SLOTS_PER_DAY, Cache
+from .aggregation import (
+    day_energy_total_wh,
+    remaining_energy_wh,
+    sum_values,
+    trapezoidal_energy_increment,
+)
+from .cache import SLOT_DURATION, SLOTS_PER_DAY, Cache, EnergyKind
 from .const import (
     CONF_BASELINE_ATTRIBUTE,
     CONF_BASELINE_ENTITY_ID,
@@ -53,6 +96,7 @@ from .const import (
     CONF_DEFAULT_TEMPERATURE_SOURCE,
     CONF_MAX_UPLIFT_C,
     CONF_NEIGHBOR_FITTING_CUTOFF,
+    CONF_RECENCY_DECAY_MAX,
     CONF_REGRESSION_METHOD,
     CONF_SMOOTHING_RADIUS,
     CONF_STRING_ACTUAL_YIELD_ENTITY,
@@ -97,6 +141,16 @@ _REGRESSION_STRATEGIES: dict[str, Any] = {
 }
 
 _STATISTICS_PERIOD = "5minute"
+
+# ADR-005 §3/§4: the last of today's 288 slots, 23:55 — matching
+# `sensor.py`'s own `_LAST_SLOT_OF_DAY` convention for `ShadyForecastSensor`'s
+# day-array attributes.
+_LAST_SLOT_OF_DAY = timedelta(hours=23, minutes=55)
+
+# `homeassistant.helpers.storage.Store`'s schema version for the
+# energy-integral totals (ADR-005 §5/§6, ADR-007 §1) — bump only on an
+# incompatible on-disk schema change.
+_ENERGY_STORE_VERSION = 1
 
 
 def _domain(entity_id: str) -> str:
@@ -187,6 +241,7 @@ class ShadyCoordinator:
         self._regression_method: str = data[CONF_REGRESSION_METHOD]
         self._smoothing_radius: int = data[CONF_SMOOTHING_RADIUS]
         self._neighbor_fitting_cutoff: float = data[CONF_NEIGHBOR_FITTING_CUTOFF]
+        self._recency_decay_max: float = data[CONF_RECENCY_DECAY_MAX]
         self._clipping_threshold: float = data[CONF_CLIPPING_THRESHOLD]
         self._max_uplift_c: float = data[CONF_MAX_UPLIFT_C]
         self._global_temperature_aware: bool = data.get(CONF_TEMPERATURE_AWARE, False)
@@ -232,6 +287,14 @@ class ShadyCoordinator:
                 self._ensure_temperature_provider(temperature_entity_id)
 
         self.cache = Cache(self._window_days, self._fetch_fn)
+        # ADR-005 §5/§6, ADR-007 §1 — the one restart-persisted cache in
+        # this design. Constructing `Store` is synchronous and cheap;
+        # actually loading from disk only happens in
+        # `async_restore_energy_state`, called by `__init__.py`
+        # (TASK-0016), not here (see module docstring).
+        self._energy_store: Store[dict[str, Any]] = Store(
+            self.hass, _ENERGY_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_energy_totals"
+        )
         self._models: dict[int, FittedModel] = {}
         # In-memory only (this task's own scope decision — see
         # Delivered Artifacts): every restart already implies "no model
@@ -250,6 +313,7 @@ class ShadyCoordinator:
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
         self._register_schedule()
         self._register_provider_listeners()
+        self._register_actual_yield_listeners()
 
     # -- construction helpers --------------------------------------------
 
@@ -322,6 +386,22 @@ class ShadyCoordinator:
         slot_count = int((end - start) / SLOT_DURATION)
         return [by_start.get(start + i * SLOT_DURATION) for i in range(slot_count)]
 
+    def _numeric_state(self, entity_id: str) -> float | None:
+        """The current numeric reading of `entity_id`'s live HA state
+        (ADR-005 §1's `ShadyPvSumSensor`) — `None` if the entity does
+        not currently exist, or its state string is not parseable as a
+        float (e.g. `"unknown"`/`"unavailable"`). HA state values are
+        always strings; this is the one place that ever parses one into
+        a `float` (`aggregation.sum_values` is only ever handed already-
+        numeric-or-`None` inputs, never a raw HA state string)."""
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return None
+        try:
+            return float(state.state)
+        except (TypeError, ValueError):
+            return None
+
     # -- startup ordering (ADR-002 §1a, consumed by TASK-0016) ----------
 
     def missing_required_entities(self) -> list[str]:
@@ -375,6 +455,14 @@ class ShadyCoordinator:
         """
         resolved_now = now if now is not None else self._now()
         await self.hass.async_add_executor_job(self._refit_sync, resolved_now)
+        # Already a coroutine, already being awaited by every caller
+        # (the manual button, `_handle_midnight`'s own
+        # `hass.async_create_task(self.async_refit(now))`) — awaited
+        # directly rather than a second detached
+        # `hass.async_create_task`, unlike the two *synchronous*
+        # `@callback` trigger points below, which have no `await` of
+        # their own to attach to.
+        await self._async_persist_energy_state()
 
     def _refit_sync(self, now: datetime) -> None:
         for string in self._strings:
@@ -389,6 +477,13 @@ class ShadyCoordinator:
                 # currently cached (TASK-0010-patch-1).
                 self._recompute_string(string, now)
         self._last_fit_at = now
+        # ADR-005 §2/§6: recalibration completion is a recompute
+        # trigger, exactly like a baseline-entity update — accumulate
+        # once here too. Hass-free (see module docstring): this method
+        # runs inside `async_refit`'s executor-thread dispatch, so the
+        # `Store` write itself is scheduled by `async_refit`, back on
+        # the event loop, not from here.
+        self._accumulate_fc_energy(now)
 
     def _fit_string(self, string: _StringConfig, now: datetime) -> FittedModel | None:
         baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
@@ -423,6 +518,7 @@ class ShadyCoordinator:
             corrected_pv_by_offset,
             self._smoothing_radius,
             self._neighbor_fitting_cutoff,
+            self._recency_decay_max,
         )
         strategy = _REGRESSION_STRATEGIES[self._regression_method]
         model: FittedModel = strategy.fit(pool)
@@ -491,9 +587,215 @@ class ShadyCoordinator:
         """
         return [(string.index, string.name) for string in self._strings]
 
+    # -- aggregate sensors (ADR-005 §1-§4, TASK-0012) ---------------------
+    #
+    # All four below are plain, poll-friendly methods — `sensor.py`'s
+    # `ShadyPvSumSensor`/`ShadyFcSumSensor`/`ShadyFcDaySumSensor`/
+    # `ShadyFcRemainingTodaySensor` call these directly on every read,
+    # the same relationship `ShadyForecastSensor` already has with this
+    # module (ADR-005's own "sensor.py stays thin" note).
+
+    def pv_sum(self) -> float | None:
+        """ADR-005 §1: the current actual-yield state, summed across
+        every configured string — a plain state-tracking aggregate,
+        independent of the coordinator's fit/recompute cycle."""
+        return sum_values(
+            self._numeric_state(string.actual_yield_entity_id) for string in self._strings
+        )
+
+    def fc_sum(self, now: datetime | None = None) -> float | None:
+        """ADR-005 §2: the current-slot corrected forecast, summed
+        across every configured string — one `get_time_range` call
+        (single-slot range) over every `ShadyForecastSensor` cache key
+        at once."""
+        resolved_now = now if now is not None else self._now()
+        sensor_ids = [self.forecast_sensor_id(index) for index, _name in self.strings()]
+        if not sensor_ids:
+            return None
+        raw = self.cache.get_time_range(sensor_ids, resolved_now, resolved_now, on_invalid="raw")
+        return sum_values(
+            value if isinstance(value := raw[sensor_id][0], float) else None
+            for sensor_id in sensor_ids
+        )
+
+    def fc_day_array(
+        self, now: datetime | None = None
+    ) -> tuple[list[datetime], list[float | None]]:
+        """ADR-005 §3: today's 288 `(timestamp, cross-string-summed
+        corrected-forecast)` pairs — including already-past slots — via
+        one `get_time_range(..., group_by="slot")` call, which already
+        returns "for this slot, every string's value" ready to sum
+        directly (ADR-007a §5). `ShadyFcDaySumSensor`'s own state
+        (`fc_day_energy_total`) and `ShadyFcRemainingTodaySensor`
+        (`fc_remaining_energy`) both build on this same array — no
+        second data-retention mechanism (ADR-005 §4)."""
+        resolved_now = now if now is not None else self._now()
+        today_start = datetime(resolved_now.year, resolved_now.month, resolved_now.day, tzinfo=UTC)
+        slot_timestamps = [today_start + i * SLOT_DURATION for i in range(SLOTS_PER_DAY)]
+
+        sensor_ids = [self.forecast_sensor_id(index) for index, _name in self.strings()]
+        if not sensor_ids:
+            return slot_timestamps, [None] * SLOTS_PER_DAY
+
+        slots = self.cache.get_time_range(
+            sensor_ids,
+            today_start,
+            today_start + _LAST_SLOT_OF_DAY,
+            on_invalid="raw",
+            group_by="slot",
+        )
+        slot_values: list[float | None] = [
+            sum_values(value if isinstance(value, float) else None for value in slot.values())
+            for slot in slots
+        ]
+        return slot_timestamps, slot_values
+
+    def fc_day_energy_total(self, now: datetime | None = None) -> float:
+        """ADR-005 §3's own sensor state — not a sum of Watts, but
+        `Σ (P_i × 5/60)` in Wh over `fc_day_array`'s `slot_values`."""
+        _timestamps, slot_values = self.fc_day_array(now)
+        return day_energy_total_wh(slot_values)
+
+    def fc_remaining_energy(self, now: datetime | None = None) -> float:
+        """ADR-005 §4: the same energy calculation, restricted to
+        `fc_day_array`'s slots at/after `now` — pure post-processing of
+        the exact same array §3 already produced."""
+        resolved_now = now if now is not None else self._now()
+        slot_timestamps, slot_values = self.fc_day_array(resolved_now)
+        return remaining_energy_wh(slot_timestamps, slot_values, resolved_now)
+
+    # -- energy-integral totals (ADR-005 §5/§6, TASK-0012) ----------------
+
+    def _maybe_reset_energy_totals(self, now: datetime) -> bool:
+        """Idempotent day-boundary guard (ADR-005 §5/§6's own
+        "Restart-during-the-reset-window idempotency" note) — resets
+        both energy-integral totals iff `cache.py`'s `last_reset_date`
+        is not already `now`'s calendar date, and reports whether a
+        reset actually happened. Called from three places: every
+        `_accumulate_energy` call (so a delayed/missed midnight trigger
+        can never leave a stale total to accumulate onto), the midnight
+        schedule itself, and `async_restore_energy_state` — the same
+        check performs the reset regardless of which of the three
+        triggers it fires from, including the pathological case where
+        more than one lands in the same narrow window."""
+        today = now.date()
+        if self.cache.last_reset_date() == today:
+            return False
+        self.cache.reset_energy_totals(today)
+        return True
+
+    def _accumulate_energy(self, kind: EnergyKind, now: datetime, power: float) -> None:
+        """The stateful half of ADR-005 §5/§6's running total: reads
+        `cache.py`'s last remembered sample for `kind`, adds
+        `aggregation.trapezoidal_energy_increment`'s Wh increment onto
+        `cache.py`'s running total, and remembers `(now, power)` as the
+        new last sample. Deliberately **hass-free** — only touches
+        `self.cache` — see the module docstring for why: this is called
+        from `_refit_sync`, which runs inside an executor thread, not
+        on the event loop."""
+        self._maybe_reset_energy_totals(now)
+        previous = self.cache.last_energy_sample(kind)
+        increment = trapezoidal_energy_increment(previous, (now, power))
+        self.cache.set_energy_total(kind, self.cache.energy_total(kind) + increment)
+        self.cache.set_last_energy_sample(kind, (now, power))
+
+    def _accumulate_fc_energy(self, now: datetime) -> None:
+        """Shared by every recompute trigger (`_refit_sync`,
+        `_async_recompute`) — ADR-005 §2's "same trigger as the
+        per-string corrected-forecast sensors" applied to §6's integral:
+        re-reads the *current, full* cross-string `fc_sum()` (reflecting
+        every string, not just whichever ones this particular trigger
+        touched) and accumulates one increment from it."""
+        total = self.fc_sum(now)
+        if total is not None:
+            self._accumulate_energy("fc", now, total)
+
+    async def _async_persist_energy_state(self) -> None:
+        """Writes both energy-integral totals + `last_reset_date` to
+        `Store` (ADR-005 §5/§6, ADR-007 §1's restart-persistence). Must
+        run on the event loop — `async_refit`/`_async_recompute` await
+        this directly (they're coroutines already on the event loop);
+        `_handle_actual_yield_update`/`_handle_energy_reset` (plain
+        synchronous `@callback`s) schedule it via
+        `hass.async_create_task` instead, never from inside
+        `_accumulate_energy`'s hass-free body itself."""
+        last_reset = self.cache.last_reset_date() or self._now().date()
+        await self._energy_store.async_save(
+            {
+                "pv_total": self.cache.energy_total("pv"),
+                "fc_total": self.cache.energy_total("fc"),
+                "last_reset_date": last_reset.isoformat(),
+            }
+        )
+
+    async def async_restore_energy_state(self) -> None:
+        """Restart-persistence entry point (ADR-005 §5/§6) — loads
+        whatever was last saved (if anything) from `Store`, applies the
+        startup idempotency check, and only then registers the
+        midnight-reset schedule (see module docstring for why this
+        ordering matters). **Not** called from `__init__`/
+        `async_startup` — `__init__.py` (`TASK-0016`) must call this
+        directly; it does not exist yet."""
+        stored = await self._energy_store.async_load()
+        if stored is not None:
+            self.cache.restore_energy_state(
+                float(stored["pv_total"]),
+                float(stored["fc_total"]),
+                date.fromisoformat(stored["last_reset_date"]),
+            )
+        self._maybe_reset_energy_totals(self._now())
+        self._register_energy_reset_schedule()
+
+    def _register_energy_reset_schedule(self) -> None:
+        """ADR-005 §5/§6's fourth, independent schedule — right at the
+        day boundary (`hour=0, minute=0, second=0`), deliberately not
+        reusing ADR-002 §1's `minute=1`-offset recalibration trigger nor
+        ADR-006 §1a's 5-minute poll (module docstring / ADR-005's own
+        "deliberately not reusing either of those triggers" note)."""
+        self._unsub.append(
+            async_track_time_change(
+                self.hass, self._handle_energy_reset, hour=0, minute=0, second=0
+            )
+        )
+
+    @callback  # type: ignore[untyped-decorator]
+    def _handle_energy_reset(self, now: datetime) -> None:
+        if self._maybe_reset_energy_totals(now):
+            self.hass.async_create_task(self._async_persist_energy_state())
+
+    def _register_actual_yield_listeners(self) -> None:
+        """A new state-change listener over every configured string's
+        actual-yield entity, separate from `_register_provider_listeners`
+        (actual-yield entities are plain user-selected entities, not
+        `Provider`s — ADR-012 §4's generic loop has no notion of them).
+        Drives `_handle_actual_yield_update`, which both `pv_sum()`
+        implicitly reflects on its next poll and §5's PV energy integral
+        accumulates from directly."""
+        if not self._actual_yield_entity_ids:
+            return
+        self._unsub.append(
+            async_track_state_change_event(
+                self.hass, list(self._actual_yield_entity_ids), self._handle_actual_yield_update
+            )
+        )
+
+    @callback  # type: ignore[untyped-decorator]
+    def _handle_actual_yield_update(self, _event: Any) -> None:
+        now = self._now()
+        total = self.pv_sum()
+        if total is not None:
+            self._accumulate_energy("pv", now, total)
+        self.hass.async_create_task(self._async_persist_energy_state())
+
     async def _async_recompute(self, strings: list[_StringConfig], now: datetime) -> None:
         for string in strings:
             self._recompute_string(string, now)
+        self._accumulate_fc_energy(now)
+        # Already a coroutine, already awaited/scheduled by its one
+        # caller (`_make_listener`'s `hass.async_create_task(self.
+        # _async_recompute(...))`) — awaited directly here too, same
+        # reasoning as `async_refit`.
+        await self._async_persist_energy_state()
 
     def _recompute_string(self, string: _StringConfig, now: datetime) -> None:
         model = self._models.get(string.index)

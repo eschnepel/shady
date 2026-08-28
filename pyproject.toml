@@ -46,6 +46,22 @@ warn_unused_ignores = true
 
 [tool.ruff]
 line-length = 100
+# Deliberately pinned one Python feature-release behind
+# `requires-python`/`[tool.mypy] python_version` (both 3.14): PEP 758
+# (Python 3.14) made parentheses around a multi-exception `except`
+# clause optional, and `ruff format` — inferring its target grammar
+# from `requires-python` when `target-version` isn't set explicitly —
+# was stripping the (still perfectly valid, just no longer mandatory)
+# parentheses from every `except (A, B):` in this codebase. That
+# unparenthesized form is real Python 3.14 syntax, not a mistake, but
+# every dev/CI environment this project has actually been exercised
+# in so far only has Python 3.12/3.13 available, where it's a hard
+# `SyntaxError`. Pinning `ruff`'s own target-version to `py313` keeps
+# the formatter emitting the parenthesized, 3.13-and-earlier-compatible
+# form regardless of what `requires-python` says the *runtime* needs —
+# a purely cosmetic choice for `ruff format`/`ruff check`, independent
+# of what interpreter actually executes the code.
+target-version = "py313"
 
 [tool.ruff.lint]
 extend-select = ["E", "F"]

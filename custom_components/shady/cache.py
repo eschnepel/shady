@@ -13,6 +13,15 @@ This module implements the storage core: the three-state (`float | None
 `get_pinned_slot_pool` (ADR-007a §6), is deliberately out of scope here
 — added alongside its own caller, TASK-0015.
 
+Also owns the two energy-integral running totals (ADR-005 §5/§6,
+TASK-0012) — plain in-memory `float`/`last_reset_date` fields, not part
+of the index-addressable time-series design above (a single scalar per
+kind needs none of that machinery). This is the **one** cache instance
+in this module that is restart-persisted (ADR-007 §1) — `cache.py`
+itself stays plain in-memory either way, per the module's own no-`hass`
+rule; `coordinator.py` is the one that reads/writes Home Assistant's
+`Store` helper and calls `restore_energy_state`/back onto this module.
+
 **`fetch_fn` calling convention** (established here, binding for every
 caller — `coordinator.py`, and matching `providers/base.py`'s `Provider.
 fetch` signature, ADR-012 §1): `fetch_fn(sensor_id, start, end)` returns
@@ -36,7 +45,7 @@ ADR-008 §2.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal, overload
 
 import numpy as np
@@ -53,6 +62,12 @@ EPOCH = datetime(2020, 1, 1, tzinfo=UTC)
 
 FetchFn = Callable[[str, datetime, datetime], list[float | None | str]]
 OnInvalid = Literal["skip", "raw"] | float
+
+# The two energy-integral running totals (ADR-005 §5/§6) — the one
+# restart-persisted cache in this module (ADR-007 §1). `coordinator.py`
+# is the only caller, for both of the source sums each kind integrates:
+# "pv" tracks `pv_sum()` (§1), "fc" tracks `fc_sum()` (§2).
+EnergyKind = Literal["pv", "fc"]
 
 
 def _shape(value: float | None | str, on_invalid: OnInvalid) -> tuple[bool, float | None | str]:
@@ -100,6 +115,18 @@ class Cache:
         self._list_offset: dict[str, int] = {}
         self._validated: dict[str, tuple[int, int | None]] = {}
         self._shadow: dict[str, NDArray[np.float64]] = {}
+
+        # -- energy-integral totals (ADR-005 §5/§6, ADR-007 §1) --
+        # In-memory defaults for a brand-new instance; `restore_energy_state`
+        # overwrites these from `coordinator.py`'s storage-backed restart
+        # persistence (never called from here — `cache.py` stays plain
+        # in-memory, per its own module docstring).
+        self._energy_totals: dict[EnergyKind, float] = {"pv": 0.0, "fc": 0.0}
+        self._last_energy_samples: dict[EnergyKind, tuple[datetime, float] | None] = {
+            "pv": None,
+            "fc": None,
+        }
+        self._last_reset_date: date | None = None
 
     # -- index <-> timestamp (ADR-007a §1) -----------------------------------
 
@@ -471,3 +498,70 @@ class Cache:
             pools[sensor_id] = gathered.transpose(0, 2, 1).reshape(SLOTS_PER_DAY, -1)
 
         return pools
+
+    # -- energy-integral totals (ADR-005 §5/§6) -------------------------------
+
+    def energy_total(self, kind: EnergyKind) -> float:
+        """The current running Wh total for `kind` ("pv" or "fc") —
+        `coordinator.py`'s `ShadyPvEnergyIntegralSensor`/
+        `ShadyFcEnergyIntegralSensor` read this directly."""
+        return self._energy_totals[kind]
+
+    def set_energy_total(self, kind: EnergyKind, value: float) -> None:
+        """Write back `kind`'s running total — `coordinator.py` calls
+        this after adding a `trapezoidal_energy_increment` (ADR-005
+        §5/§6's implementation notes)."""
+        self._energy_totals[kind] = value
+
+    def last_energy_sample(self, kind: EnergyKind) -> tuple[datetime, float] | None:
+        """The `(timestamp, power)` sample last accumulated for `kind`,
+        or `None` if there is no prior sample to form a trapezoidal
+        interval with yet — either genuinely the first sample ever, or
+        the first one since a reset (midnight or restart) cleared it."""
+        return self._last_energy_samples[kind]
+
+    def set_last_energy_sample(
+        self, kind: EnergyKind, sample: tuple[datetime, float] | None
+    ) -> None:
+        """Remember the sample just accumulated, for the next
+        `trapezoidal_energy_increment` call's `previous` argument."""
+        self._last_energy_samples[kind] = sample
+
+    def last_reset_date(self) -> date | None:
+        """The calendar date (HA's local timezone, per `coordinator.py`'s
+        own `now.date()`) both totals were last zeroed for — `None` if
+        never reset/restored at all yet (a brand-new instance, before
+        `coordinator.py`'s startup idempotency check has run). Backs the
+        restart-during-the-reset-window idempotency check (ADR-005 §5/§6
+        Implementation notes)."""
+        return self._last_reset_date
+
+    def reset_energy_totals(self, today: date) -> None:
+        """Zero both energy-integral totals and clear both remembered
+        last-samples (ADR-005 §5/§6's midnight reset). Clearing the
+        last-samples — not just zeroing the totals — is what actually
+        matters here: the next `trapezoidal_energy_increment` call for
+        either kind then starts from `previous=None` and so contributes
+        zero, rather than bridging an interval across the reset using a
+        now-stale pre-reset sample. `today` becomes the new
+        `last_reset_date`, closing the idempotency check for this day
+        regardless of whether this call came from the midnight schedule,
+        startup, or (in the pathological both-in-one-window case) both.
+        """
+        self._energy_totals = {"pv": 0.0, "fc": 0.0}
+        self._last_energy_samples = {"pv": None, "fc": None}
+        self._last_reset_date = today
+
+    def restore_energy_state(self, pv_total: float, fc_total: float, last_reset_date: date) -> None:
+        """Restart-persistence entry point (ADR-005 §5/§6, ADR-007 §1) —
+        `coordinator.py`'s `async_restore_energy_state` calls this with
+        whatever it loaded from storage. Deliberately does **not**
+        restore either `last_energy_sample`: they stay `None` (this
+        instance's fresh-construction default), so the first
+        accumulation after a restart always starts from `previous=None`
+        — exactly like a fresh midnight reset — rather than bridging a
+        trapezoidal increment across the restart gap using a sample
+        that is now stale by an unknown, possibly-large amount of time.
+        """
+        self._energy_totals = {"pv": pv_total, "fc": fc_total}
+        self._last_reset_date = last_reset_date
