@@ -1,9 +1,10 @@
 """`aggregation.py` — pure cross-string aggregation math (ADR-005,
-TASK-0012).
+TASK-0012) plus per-string intraday-deviation-correction math (ADR-006
+§5, TASK-0013).
 
 No `hass` import, no per-string knowledge of *which* string a value
-came from (ADR-005's own module-diagram note) — only lists of numbers
-in, one number or array out. Two families of pure logic:
+came from (ADR-005's own module-diagram note) — only numbers in, one
+number or array out. Three families of pure logic:
 
 - **Cross-string sums** (`sum_values`, §1/§2) and the per-slot-to-daily-
   energy conversion built on top of it (`slot_energy_wh`,
@@ -11,11 +12,20 @@ in, one number or array out. Two families of pure logic:
 - **The trapezoidal energy-increment calculation** (§5/§6's
   implementation notes): given a previous `(timestamp, power)` sample
   and a new one, the Wh increment between them.
+- **Intraday deviation correction** (ADR-006 §1a/§1b/§2/§5):
+  `ramp_weight` (the `w(t)` ramp), `intraday_correction_factor` (the
+  ratio-clamp-and-ramp math in one function), and `crossfade`
+  (Blending's old/new linear blend) — all per-string scalars, called
+  once (Ramping) or twice (Blending, once per side) per string per
+  5-minute tick by `coordinator.py`, never per-slot: the same
+  `effective_factor`/`w` applies uniformly across every one of a
+  string's future slots at a given computation instant (ADR-006 §4).
 
 `coordinator.py` is the only caller (ADR-005's module diagram: "calls
-`aggregation.py` for all six sensors") — `sensor.py` stays thin,
-reading only whatever `coordinator.py` already computed via this
-module, never calling into it directly.
+`aggregation.py` for all six sensors"; ADR-006 §5's module-placement
+note for the three functions above) — `sensor.py` stays thin, reading
+only whatever `coordinator.py` already computed via this module, never
+calling into it directly.
 """
 
 from __future__ import annotations
@@ -102,3 +112,79 @@ def trapezoidal_energy_increment(
     if elapsed_hours <= 0:
         return 0.0
     return (previous_power + current_power) / 2.0 * elapsed_hours
+
+
+# -- ADR-006 §1a/§1b/§2/§5: intraday deviation correction --------------------
+
+
+def ramp_weight(active_slots_since_reset: int, ramp_slots: int) -> float:
+    """`w(t) = min(1, active_slots_since_reset / ramp_slots)` (ADR-006
+    §1a) — the linear ramp shared by Ramping's own ramp-in, every
+    provider-update restart under either state, and Blending's
+    `w_blend` (§1b: "the same counter, same duration as
+    effective_factor_new's own w").
+
+    `ramp_slots <= 0` defensively (ADR-000 §8) returns `1.0` (fully
+    ramped immediately) rather than raising a `ZeroDivisionError` — a
+    config-flow value of `0` would otherwise be indistinguishable from
+    a crash; `active_slots_since_reset <= 0` returns `0.0` (not yet
+    started) directly, without dividing at all.
+    """
+    if ramp_slots <= 0:
+        return 1.0
+    if active_slots_since_reset <= 0:
+        return 0.0
+    return min(1.0, active_slots_since_reset / ramp_slots)
+
+
+def intraday_correction_factor(
+    pv_energy_window: float,
+    fc_energy_window: float,
+    ramp_weight: float,
+    intraday_correction_cutoff: float,
+) -> float:
+    """`effective_factor(t)` (ADR-006 §1a/§2) in one function: the
+    trailing-window ratio `pv_energy_window / fc_energy_window`,
+    clamped to `[1 - intraday_correction_cutoff, 1 +
+    intraday_correction_cutoff]`, then ramped in via `ramp_weight` —
+    `1 + ramp_weight × (clamped_ratio - 1)`. At `ramp_weight == 0` this
+    is exactly `1` (no correction applied yet, ADR-006 §1a); at
+    `ramp_weight == 1` it is the full clamped ratio.
+
+    `fc_energy_window <= 0` (no meaningful denominator — e.g. right at
+    a reset point, before any forecast energy has accumulated in the
+    still-emptying window) treats the raw ratio as `1.0` — "no
+    correction basis" — rather than raising or dividing by zero,
+    matching this design's established defensive-clamp philosophy
+    (ADR-000 §8) for unexpected/degenerate numeric input.
+
+    Called once per string, per 5-minute tick, under Ramping, and
+    twice (once per side — the frozen old side and the live new side)
+    under Blending (ADR-006 §5) — never per-slot: the same
+    `effective_factor` this returns is applied uniformly across every
+    one of that string's future slots for this tick (ADR-006 §4).
+    """
+    ratio = 1.0 if fc_energy_window <= 0 else pv_energy_window / fc_energy_window
+    clamped_ratio = min(
+        1.0 + intraday_correction_cutoff, max(1.0 - intraday_correction_cutoff, ratio)
+    )
+    return 1.0 + ramp_weight * (clamped_ratio - 1.0)
+
+
+def crossfade(old_prediction: float, new_prediction: float, ramp_weight: float) -> float:
+    """Blending's linear old/new blend (ADR-006 §1b):
+    `(1 - ramp_weight) × old_prediction + ramp_weight × new_prediction`.
+
+    `old_prediction` is `old_fc_value(t) × effective_factor_frozen` —
+    the pre-update reverse-transformed value, still unclamped, times
+    the ratio snapshot frozen the instant before the update fired.
+    `new_prediction` is `new_fc_value(t) × effective_factor_new(t)` —
+    the same shape, freshly ramping from the update. `ramp_weight` here
+    is `w_blend`, driven by the same counter and duration as the new
+    side's own ramp (ADR-006 §1b) — at `ramp_weight == 0` this returns
+    `old_prediction` unchanged (nothing new has taken over yet); at
+    `ramp_weight == 1` it returns `new_prediction` exactly, the point at
+    which Blending converges to the identical steady state Ramping
+    would show for the same slot.
+    """
+    return (1.0 - ramp_weight) * old_prediction + ramp_weight * new_prediction

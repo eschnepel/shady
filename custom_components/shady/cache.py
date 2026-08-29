@@ -45,6 +45,7 @@ ADR-008 §2.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal, overload
 
@@ -68,6 +69,53 @@ OnInvalid = Literal["skip", "raw"] | float
 # is the only caller, for both of the source sums each kind integrates:
 # "pv" tracks `pv_sum()` (§1), "fc" tracks `fc_sum()` (§2).
 EnergyKind = Literal["pv", "fc"]
+
+
+@dataclass(frozen=True)
+class IntradayBasis:
+    """One reset cycle's pre-intraday-correction basis for a string's
+    future slots (ADR-006 §1a/§1b, TASK-0013): `values` is the
+    reverse-transformed, still-unclamped per-slot prediction — exactly
+    what ADR-006 calls `fc_value(t)` (Ramping) / `old_fc_value(t)` or
+    `new_fc_value(t)` (Blending); `fc` is the raw baseline forecast for
+    the same slots, kept alongside since the one final output clamp
+    (`forecast_adjust.clamp_output`) needs a per-slot upper bound. Both
+    keyed by this module's own absolute slot index (`Cache.index_for`).
+    """
+
+    values: dict[int, float]
+    fc: dict[int, float]
+    inverter_limit: float | None
+
+
+@dataclass(frozen=True)
+class IntradayState:
+    """Short-lived, per-string ramp/crossfade state (ADR-006 §1b/§5) —
+    the "simple dict store" §5 calls for, distinct from the
+    time-series-shaped stores above. Deliberately **not**
+    restart-persisted (ADR-007's existing accepted-gap trade-off,
+    ADR-006 §1b's own note): a lost ramp or crossfade simply restarts
+    from the next recompute rather than resuming, since none of this
+    state has a recorder-backed equivalent to reload from.
+
+    `reset_at`/`active_slots_since_reset` back `ramp_weight`'s own `w`;
+    `ratio_string`/`effective_factor` are the most recently computed
+    live values (ADR-006 §4's `intraday_ratio`/derived
+    `intraday_ramp_weight` transparency attributes read straight off
+    this). `frozen_basis`/`frozen_effective_factor` are Blending-only
+    (`None` under Ramping, and under Blending's own first-reset-of-a-
+    crossfade-sequence case, ADR-006 §1b — "nothing yet to blend
+    against") — the frozen old-side snapshot, taken the instant before
+    the provider update that started the current crossfade.
+    """
+
+    reset_at: datetime
+    active_slots_since_reset: int
+    basis: IntradayBasis
+    ratio_string: float | None
+    effective_factor: float
+    frozen_basis: IntradayBasis | None = None
+    frozen_effective_factor: float | None = None
 
 
 def _shape(value: float | None | str, on_invalid: OnInvalid) -> tuple[bool, float | None | str]:
@@ -127,6 +175,12 @@ class Cache:
             "fc": None,
         }
         self._last_reset_date: date | None = None
+
+        # -- intraday ramp/crossfade state (ADR-006 §1b/§5, TASK-0013) --
+        # Short-lived, per-string-index, never restart-persisted (see
+        # `IntradayState`'s own docstring) — a plain dict store, unlike
+        # every time-series-shaped cache above.
+        self._intraday_state: dict[int, IntradayState] = {}
 
     # -- index <-> timestamp (ADR-007a §1) -----------------------------------
 
@@ -565,3 +619,25 @@ class Cache:
         """
         self._energy_totals = {"pv": pv_total, "fc": fc_total}
         self._last_reset_date = last_reset_date
+
+    # -- intraday ramp/crossfade state (ADR-006 §1b/§5) ------------------
+
+    def intraday_state(self, string_index: int) -> IntradayState | None:
+        """This string's current ramp/crossfade state, or `None` if
+        intraday correction is off, or no recompute has produced a
+        basis for it yet since setup (or since this state was last
+        cleared)."""
+        return self._intraday_state.get(string_index)
+
+    def set_intraday_state(self, string_index: int, state: IntradayState | None) -> None:
+        """Write back `string_index`'s ramp/crossfade state —
+        `coordinator.py` calls this at every reset point (a fresh
+        recompute) and at every 5-minute tick. `state=None` clears it
+        (never needed by TASK-0013's own coordinator logic today, which
+        always has a fresh `IntradayState` to write instead, but kept
+        symmetric with `set_last_energy_sample`'s own `| None` shape for
+        a future caller that genuinely needs to clear it)."""
+        if state is None:
+            self._intraday_state.pop(string_index, None)
+        else:
+            self._intraday_state[string_index] = state

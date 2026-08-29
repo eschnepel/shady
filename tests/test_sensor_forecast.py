@@ -153,6 +153,12 @@ def _install_ha_stub() -> None:
     ) -> Any:
         return lambda: None
 
+    def async_track_time_interval(hass: Any, action: Any, interval: Any) -> Any:
+        # Same non-auto-firing convention as `async_track_time_change`
+        # above (TASK-0013) -- tests that need the intraday tick call
+        # `_handle_intraday_tick` directly.
+        return lambda: None
+
     def async_track_state_change_event(hass: Any, entity_ids: list[str], action: Any) -> Any:
         for entity_id in entity_ids:
             hass.states._listeners.setdefault(entity_id, []).append(action)
@@ -166,6 +172,7 @@ def _install_ha_stub() -> None:
         return _unsub
 
     ha_helpers_event.async_track_time_change = async_track_time_change  # type: ignore[attr-defined]
+    ha_helpers_event.async_track_time_interval = async_track_time_interval  # type: ignore[attr-defined]
     ha_helpers_event.async_track_state_change_event = (  # type: ignore[attr-defined]
         async_track_state_change_event
     )
@@ -461,7 +468,15 @@ class TestForecastSensorValue:
 
         attrs = sensor.extra_state_attributes
 
-        assert set(attrs) == {"today", "tomorrow"}
+        assert set(attrs) == {
+            "today",
+            "tomorrow",
+            "values_raw",
+            "intraday_ratio",
+            "intraday_state",
+            "intraday_ramp_weight",
+            "intraday_blend_active",
+        }
         assert len(attrs["today"]) == 288
         assert len(attrs["tomorrow"]) == 288
         # Some daytime slots already pushed by the refit-triggered recompute.

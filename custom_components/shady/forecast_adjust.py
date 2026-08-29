@@ -22,13 +22,19 @@ multiplicative reverse-transform, regardless of the true corrected
 value) — so this module always calls `predict_unclamped()` and owns the
 one true final clamp itself.
 
-**Note for future tasks (carried over from this task's own spec):**
-ADR-006 §1b's canonical ordering is raw-predict -> reverse-transform ->
-intraday correction -> clamp, last. Intraday correction does not exist
-yet at this task's time of implementation (TASK-0013) — the clamp is
-implemented as the final step after the reverse-transform for now;
-TASK-0013 will need to extend this module to insert its own correction
-ahead of the clamp.
+**TASK-0013 update:** `reverse_transformed_forecast` below splits steps
+1-2 (raw predict + reverse-transform) out of what used to be
+`adjust_forecast`'s single body, still unclamped and not yet
+intraday-corrected — the exact value ADR-006 §1a/§1b call
+`fc_value(t)`/`old_fc_value(t)`/`new_fc_value(t)`. `coordinator.py`
+calls this directly so it can insert its own intraday-correction step
+(Ramping's single multiply, or Blending's two-sided crossfade,
+`aggregation.py`'s `intraday_correction_factor`/`crossfade`, ADR-006
+§5) between this and `clamp_output` — exactly ADR-006 §1b's canonical
+ordering. `adjust_forecast` itself is unchanged (behaviorally and in
+its public signature) for callers with no intraday step to insert —
+now implemented on top of `reverse_transformed_forecast` + this
+module's own `clamp_output`.
 """
 
 from __future__ import annotations
@@ -59,17 +65,17 @@ def clamp_output(
     return np.asarray(np.clip(adjusted, 0.0, upper))
 
 
-def adjust_forecast(
+def reverse_transformed_forecast(
     model: FittedModel,
     fc: NDArray[np.float64],
     target_cell_temperature: float | NDArray[np.float64] | None,
     coefficient_per_c: float | None,
-    inverter_limit: float | None = None,
     *,
     provider_already_corrects: bool = False,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """`fc`, shape `(n_slots,)` -> `(adjusted_forecast, confidence)`, both
-    shape `(n_slots,)` — the full ADR-006 §1b pipeline for one string:
+    """`fc`, shape `(n_slots,)` -> `(reverse_transformed, confidence)`,
+    both shape `(n_slots,)` — steps 1-2 only of ADR-006 §1b's pipeline,
+    still unclamped and not yet intraday-corrected:
 
     1. `model.predict_unclamped(fc)` — the raw, not-yet-clamped
        prediction (`TASK-0005-patch-2`), with the model's own cold-start
@@ -82,10 +88,9 @@ def adjust_forecast(
        `None` or `provider_already_corrects` is set — this function
        passes its own per-string configuration straight through and
        implements none of those conditions itself.
-    3. `clamp_output` — the one final clamp, last.
 
-    `target_cell_temperature`, `coefficient_per_c`, `inverter_limit`,
-    and `provider_already_corrects` are this string's own resolved
+    `target_cell_temperature`, `coefficient_per_c`, and
+    `provider_already_corrects` are this string's own resolved
     per-string configuration — resolving *what* they are (e.g. running
     `yield_correction.uplift_ambient_to_cell` for an ambient/weather
     temperature tier, or deciding a string is unconfigured) is the
@@ -94,6 +99,38 @@ def adjust_forecast(
     raw, confidence = model.predict_unclamped(fc)
     reverse_transformed = apply_derate_to_prediction(
         raw,
+        target_cell_temperature,
+        coefficient_per_c,
+        provider_already_corrects=provider_already_corrects,
+    )
+    return np.asarray(reverse_transformed, dtype=np.float64), confidence
+
+
+def adjust_forecast(
+    model: FittedModel,
+    fc: NDArray[np.float64],
+    target_cell_temperature: float | NDArray[np.float64] | None,
+    coefficient_per_c: float | None,
+    inverter_limit: float | None = None,
+    *,
+    provider_already_corrects: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """`fc`, shape `(n_slots,)` -> `(adjusted_forecast, confidence)`, both
+    shape `(n_slots,)` — the full ADR-006 §1b pipeline for one string,
+    for callers with no intraday-correction step to insert:
+    `reverse_transformed_forecast` (steps 1-2 above), then
+    `clamp_output` — the one final clamp, last. `coordinator.py`
+    (TASK-0013) calls the two halves separately instead, so it can
+    insert its own intraday-correction step in between; this function's
+    own behavior and signature are otherwise unchanged from before that
+    task (ADR-006 §1a's `effective_factor` reduces to `1` when intraday
+    correction is off or absent, so composing the two unconditionally
+    would also be correct — this composition just avoids any
+    intraday-specific plumbing for call sites that don't need it).
+    """
+    reverse_transformed, confidence = reverse_transformed_forecast(
+        model,
+        fc,
         target_cell_temperature,
         coefficient_per_c,
         provider_already_corrects=provider_already_corrects,

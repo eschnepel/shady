@@ -65,37 +65,70 @@ totals need no external entity to exist in order to restore. It also
 registers the midnight-reset schedule itself, at the very end (after
 its own idempotency check), so that schedule structurally cannot fire
 before the restore has run.
+
+**Intraday deviation correction (ADR-006, TASK-0013):** a fifth,
+independent schedule — `_register_intraday_schedule`'s 5-minute poll —
+only registered when `intraday_correction_mode` is not `"off"`
+(`__init__`; ADR-006 §1's "nothing computed or retained" when
+Disabled). `_recompute_string` (every baseline-provider update AND
+every recalibration alike — ADR-006 §1b's own "not a special case"
+note) is a *reset point*: `_apply_intraday_reset` establishes a fresh
+per-string `IntradayState`/`IntradayBasis` in `cache.py` at
+`effective_factor == 1` (`w == 0`), freezing the previous *same-day*
+basis as Blending's old crossfade side, if any. The 5-minute tick
+(`_advance_intraday_string`) re-derives `w`/`ratio_string`/
+`effective_factor` from the trailing window against that *unchanged*
+basis and re-pushes — it never re-runs the regression model or the
+temperature reverse-transform. `_compute_intraday_output` applies
+Ramping's single multiply or Blending's two-sided crossfade
+(`aggregation.py`'s `intraday_correction_factor`/`crossfade`) ahead of
+the *one* final output clamp (`forecast_adjust.clamp_output`),
+canonically ordered per ADR-006 §1b. Like the energy-integral tick,
+`_async_intraday_tick` dispatches the actual work via
+`hass.async_add_executor_job` — `_intraday_energy_window` reads the
+actual-yield entity's recorder-backed history, the same blocking-I/O
+concern as `_fetch_actual_yield_statistics`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import callback
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from numpy.typing import NDArray
 
 from .aggregation import (
+    crossfade,
     day_energy_total_wh,
+    intraday_correction_factor,
+    ramp_weight,
     remaining_energy_wh,
     sum_values,
     trapezoidal_energy_increment,
 )
-from .cache import SLOT_DURATION, SLOTS_PER_DAY, Cache, EnergyKind
+from .cache import SLOT_DURATION, SLOTS_PER_DAY, Cache, EnergyKind, IntradayBasis, IntradayState
 from .const import (
     CONF_BASELINE_ATTRIBUTE,
     CONF_BASELINE_ENTITY_ID,
     CONF_BASELINE_SHAPE,
     CONF_CLIPPING_THRESHOLD,
     CONF_DEFAULT_TEMPERATURE_SOURCE,
+    CONF_INTRADAY_CORRECTION_CUTOFF,
+    CONF_INTRADAY_CORRECTION_MODE,
     CONF_MAX_UPLIFT_C,
     CONF_NEIGHBOR_FITTING_CUTOFF,
+    CONF_RAMP_SLOTS,
     CONF_RECENCY_DECAY_MAX,
     CONF_REGRESSION_METHOD,
     CONF_SMOOTHING_RADIUS,
@@ -111,11 +144,16 @@ from .const import (
     CONF_STRINGS,
     CONF_TEMPERATURE_AWARE,
     CONF_WINDOW_DAYS,
+    CONF_WINDOW_SLOTS,
+    DEFAULT_INTRADAY_CORRECTION_CUTOFF,
+    DEFAULT_INTRADAY_CORRECTION_MODE,
+    DEFAULT_RAMP_SLOTS,
     DEFAULT_STRING_TEMPERATURE_COEFFICIENT,
+    DEFAULT_WINDOW_SLOTS,
     DOMAIN,
     TEMPERATURE_SOURCE_NONE,
 )
-from .forecast_adjust import adjust_forecast
+from .forecast_adjust import clamp_output, reverse_transformed_forecast
 from .providers.base import Provider
 from .providers.discovery import BaselineProvider
 from .providers.temperature import TemperatureProvider
@@ -244,6 +282,21 @@ class ShadyCoordinator:
         self._recency_decay_max: float = data[CONF_RECENCY_DECAY_MAX]
         self._clipping_threshold: float = data[CONF_CLIPPING_THRESHOLD]
         self._max_uplift_c: float = data[CONF_MAX_UPLIFT_C]
+        # ADR-006 §1/§2/§3, TASK-0013 — `.get(..., DEFAULT_*)` rather
+        # than `data[...]` since these four fields postdate ADR-010's
+        # original config-flow delivery (TASK-0009-patch-2's own
+        # precedent for `recency_decay_max`, retained here even though
+        # `config_flow.py` itself always writes all four with defaults
+        # baked in — defends a hand-built `ConfigEntry.data` dict, e.g.
+        # in a test fixture, that omits them).
+        self._intraday_correction_mode: str = data.get(
+            CONF_INTRADAY_CORRECTION_MODE, DEFAULT_INTRADAY_CORRECTION_MODE
+        )
+        self._intraday_correction_cutoff: float = data.get(
+            CONF_INTRADAY_CORRECTION_CUTOFF, DEFAULT_INTRADAY_CORRECTION_CUTOFF
+        )
+        self._window_slots: int = data.get(CONF_WINDOW_SLOTS, DEFAULT_WINDOW_SLOTS)
+        self._ramp_slots: int = data.get(CONF_RAMP_SLOTS, DEFAULT_RAMP_SLOTS)
         self._global_temperature_aware: bool = data.get(CONF_TEMPERATURE_AWARE, False)
         self._default_temperature_source: str | None = data.get(CONF_DEFAULT_TEMPERATURE_SOURCE)
         self._global_baseline_entity_id: str | None = data.get(CONF_BASELINE_ENTITY_ID)
@@ -314,6 +367,12 @@ class ShadyCoordinator:
         self._register_schedule()
         self._register_provider_listeners()
         self._register_actual_yield_listeners()
+        if self._intraday_correction_mode != "off":
+            # ADR-006 §1: "Disabled (default)... nothing computed or
+            # retained" — the 5-minute poll itself is only registered
+            # (zero extra cost otherwise) when a state actually needs
+            # it, matching ADR-004 §1's diagnostics-switch philosophy.
+            self._register_intraday_schedule()
 
     # -- construction helpers --------------------------------------------
 
@@ -578,6 +637,17 @@ class ShadyCoordinator:
         """
         return f"{DOMAIN}_forecast_{self.entry.entry_id}_string_{string_index}"
 
+    def raw_forecast_sensor_id(self, string_index: int) -> str:
+        """ADR-006 §4's `values_raw` transparency series (TASK-0013) —
+        a second, independent `cache.py` time-series key alongside
+        `forecast_sensor_id`, holding the pre-intraday-correction
+        reverse-transformed values. Populated only while intraday
+        correction is active (`_apply_intraday_reset`); `sensor.py`
+        reads it the same way it already reads `forecast_sensor_id`'s
+        own `today`/`tomorrow` arrays — never pushed to, and therefore
+        all-`None`, when intraday correction is off."""
+        return f"{self.forecast_sensor_id(string_index)}_raw"
+
     def strings(self) -> list[tuple[int, str]]:
         """Public `(index, name)` pairs, one per configured string, in
         `CONF_STRINGS` order (TASK-0010-patch-2) — lets `sensor.py`
@@ -820,18 +890,47 @@ class ShadyCoordinator:
         for ts, value in series:
             by_day.setdefault(ts.date(), {})[_slot_of_day(ts)] = value
 
-        pushed: dict[int, float] = {}
+        # ADR-006 §1a/§1b's `fc_value(t)`: the reverse-transformed,
+        # still-unclamped prediction for every future slot across every
+        # day in the horizon, assembled once (not per-day) so a single
+        # intraday `effective_factor`/crossfade applies uniformly across
+        # the whole horizon (ADR-006 §4), not separately per day.
+        values_by_index: dict[int, float] = {}
+        fc_by_index: dict[int, float] = {}
         for day, slot_values in by_day.items():
-            pushed.update(self._predict_day(string, day, slot_values, now))
+            day_values, day_fc = self._predict_day_basis(string, day, slot_values, now)
+            values_by_index.update(day_values)
+            fc_by_index.update(day_fc)
+
+        if not values_by_index:
+            return
+
+        if self._intraday_correction_mode == "off":
+            pushed = self._clamp_basis(values_by_index, fc_by_index, string.converter_limit_w)
+        else:
+            pushed = self._apply_intraday_reset(string, now, values_by_index, fc_by_index)
 
         if not pushed:
             return
         not_before_index = Cache.index_for(now) + 1
         self.cache.push(self.forecast_sensor_id(string.index), pushed, not_before_index)
 
-    def _predict_day(
+    def _predict_day_basis(
         self, string: _StringConfig, day: date, slot_values: dict[int, float], now: datetime
-    ) -> dict[int, float]:
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        """Steps 1-2 of the ADR-006 §1b pipeline
+        (`forecast_adjust.reverse_transformed_forecast`) for one day of
+        one string — everything the pre-TASK-0013 `_predict_day` used
+        to do up to (not including) the final clamp, split out so
+        `_recompute_string` can insert its own intraday-correction step
+        ahead of that clamp. Returns `(reverse_transformed_by_index,
+        raw_fc_by_index)`, both restricted to slots at/after `now`
+        (already-past slots are never recomputed, ADR-002 §3) — the raw
+        `fc` values are carried alongside since `forecast_adjust
+        .clamp_output`'s per-slot upper bound needs them, whether the
+        clamp happens immediately (`_clamp_basis`) or later, after an
+        intraday correction/crossfade (`_compute_intraday_output`).
+        """
         model = self._models[string.index]
         day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
         fc_array = np.full(SLOTS_PER_DAY, np.nan, dtype=np.float64)
@@ -859,25 +958,255 @@ class ShadyCoordinator:
             )
             target_cell_temperature = np.asarray(uplifted, dtype=np.float64)
 
-        adjusted, _confidence = adjust_forecast(
+        reverse_transformed, _confidence = reverse_transformed_forecast(
             model,
             fc_array,
             target_cell_temperature,
             coefficient_per_c,
-            string.converter_limit_w,
             provider_already_corrects=provider_already_corrects,
         )
 
         now_index = Cache.index_for(now)
-        result: dict[int, float] = {}
+        values: dict[int, float] = {}
+        fc_by_index: dict[int, float] = {}
         for slot in slot_values:
             index = Cache.index_for(day_start) + slot
             if index < now_index:
                 continue
-            value = float(adjusted[slot])
+            value = float(reverse_transformed[slot])
             if not np.isnan(value):
-                result[index] = value
-        return result
+                values[index] = value
+                fc_by_index[index] = float(fc_array[slot])
+        return values, fc_by_index
+
+    def _clamp_basis(
+        self, values: dict[int, float], fc: dict[int, float], inverter_limit: float | None
+    ) -> dict[int, float]:
+        """ADR-006 §1b's one final output clamp, applied directly to a
+        pre-clamp basis with no intraday correction in between (the
+        `intraday_correction_mode == "off"` path) — equivalent to the
+        pre-TASK-0013 `adjust_forecast` pipeline's own last step."""
+        indices = sorted(values)
+        if not indices:
+            return {}
+        values_arr = np.array([values[index] for index in indices], dtype=np.float64)
+        fc_arr = np.array([fc[index] for index in indices], dtype=np.float64)
+        clamped = clamp_output(values_arr, fc_arr, inverter_limit)
+        return {index: float(clamped[position]) for position, index in enumerate(indices)}
+
+    # -- intraday deviation correction (ADR-006, TASK-0013) --------------
+
+    def _apply_intraday_reset(
+        self,
+        string: _StringConfig,
+        now: datetime,
+        values: dict[int, float],
+        fc: dict[int, float],
+    ) -> dict[int, float]:
+        """A reset point (ADR-006 §1/§1b): a fresh basis for this
+        string's future slots has just been computed, whether this is
+        the string's first basis of the day or a later
+        baseline-provider-triggered/recalibration-triggered recompute —
+        ADR-006 §1b's own "not a special case requiring separate
+        handling" note means both are handled by this one path.
+        `active_slots_since_reset` restarts at `0` here, so
+        `effective_factor` is exactly `1` (ADR-006 §1a): Ramping simply
+        shows the plain new value, unadjusted, until the next 5-minute
+        tick begins ramping it in; Blending freezes whatever basis
+        existed *from earlier today* (if any) as the crossfade's old
+        side — a basis left over from a previous calendar day is never
+        frozen against, since that is exactly ADR-006 §1b's "first
+        activation of the day" case, where Ramping and Blending must
+        behave identically (nothing yet to blend against).
+        """
+        previous = self.cache.intraday_state(string.index)
+        basis = IntradayBasis(values=values, fc=fc, inverter_limit=string.converter_limit_w)
+
+        frozen_basis: IntradayBasis | None = None
+        frozen_effective_factor: float | None = None
+        if (
+            self._intraday_correction_mode == "blending"
+            and previous is not None
+            and previous.reset_at.date() == now.date()
+        ):
+            frozen_basis = previous.basis
+            frozen_effective_factor = previous.effective_factor
+
+        state = IntradayState(
+            reset_at=now,
+            active_slots_since_reset=0,
+            basis=basis,
+            ratio_string=None,
+            effective_factor=1.0,
+            frozen_basis=frozen_basis,
+            frozen_effective_factor=frozen_effective_factor,
+        )
+        self.cache.set_intraday_state(string.index, state)
+
+        # ADR-006 §4's `values_raw` transparency series — the
+        # pre-correction basis itself, pushed once per reset (not on
+        # every 5-minute tick, since the basis doesn't change between
+        # resets); a second, independent cache key alongside
+        # `forecast_sensor_id` (`raw_forecast_sensor_id`).
+        self.cache.push(self.raw_forecast_sensor_id(string.index), values, Cache.index_for(now) + 1)
+        return self._compute_intraday_output(state)
+
+    def _compute_intraday_output(self, state: IntradayState) -> dict[int, float]:
+        """Ramping's single multiply, or Blending's two-sided crossfade
+        (ADR-006 §1a/§1b/§5), followed by the one final output clamp
+        (ADR-006 §1b's canonical ordering: correction, then clamp,
+        exactly once, never per crossfade side) — shared by both the
+        reset path (`_apply_intraday_reset`, `w == 0`) and the
+        5-minute-tick path (`_advance_intraday_string`, `w` evolving).
+        """
+        indices = sorted(state.basis.values)
+        if not indices:
+            return {}
+        new_values = np.array([state.basis.values[index] for index in indices], dtype=np.float64)
+        new_prediction = new_values * state.effective_factor
+
+        if state.frozen_basis is not None and state.frozen_effective_factor is not None:
+            frozen = state.frozen_basis
+            displayed = np.array(
+                [
+                    crossfade(
+                        frozen.values[index] * state.frozen_effective_factor,
+                        float(new_prediction[position]),
+                        ramp_weight(state.active_slots_since_reset, self._ramp_slots),
+                    )
+                    if index in frozen.values
+                    else float(new_prediction[position])
+                    for position, index in enumerate(indices)
+                ],
+                dtype=np.float64,
+            )
+        else:
+            displayed = new_prediction
+
+        fc_arr = np.array([state.basis.fc[index] for index in indices], dtype=np.float64)
+        clamped = clamp_output(displayed, fc_arr, state.basis.inverter_limit)
+        return {index: float(clamped[position]) for position, index in enumerate(indices)}
+
+    def _intraday_energy_window(
+        self, string: _StringConfig, start: datetime, now: datetime
+    ) -> tuple[float, float]:
+        """ADR-006 §1a's `pv_energy_window`/`fc_energy_window`: the
+        trailing-window energy sums for a string's own actual-yield
+        entity and its own (already-corrected) `ShadyForecastSensor`,
+        via `cache.py`'s ordinary `get_time_range` accessor (ADR-007a
+        §5) — never a second, bespoke recorder-read path (ADR-000 §9).
+        Must only be called off the event loop (module docstring): the
+        actual-yield entity's read here is recorder-backed, exactly
+        like `_fetch_actual_yield_statistics`.
+        """
+        if now <= start:
+            return 0.0, 0.0
+        forecast_sensor_id = self.forecast_sensor_id(string.index)
+        sensor_ids = [string.actual_yield_entity_id, forecast_sensor_id]
+        raw = self.cache.get_time_range(sensor_ids, start, now, on_invalid="raw")
+        pv_values = [
+            v if isinstance(v, float) else None for v in raw[string.actual_yield_entity_id]
+        ]
+        fc_values = [v if isinstance(v, float) else None for v in raw[forecast_sensor_id]]
+        return day_energy_total_wh(pv_values), day_energy_total_wh(fc_values)
+
+    def _advance_intraday_string(self, string: _StringConfig, now: datetime) -> None:
+        """The 5-minute tick's per-string body (ADR-006 §1a) — re-derives
+        `w`/`ratio_string`/`effective_factor` from the *current* trailing
+        window and re-applies them against the *unchanged* basis
+        established at the string's last reset (`_apply_intraday_reset`);
+        never re-runs the regression model or the temperature
+        reverse-transform (those only change at a genuine recompute).
+        A string with no basis yet (mode just turned on and no recompute
+        has run since, or no model fitted yet) is skipped — the next
+        recompute will establish one.
+        """
+        state = self.cache.intraday_state(string.index)
+        if state is None:
+            return
+
+        now_index = Cache.index_for(now)
+        is_active = state.basis.fc.get(now_index, 0.0) != 0.0
+        active_slots_since_reset = state.active_slots_since_reset + (1 if is_active else 0)
+
+        window_start = max(state.reset_at, now - self._window_slots * SLOT_DURATION)
+        pv_window, fc_window = self._intraday_energy_window(string, window_start, now)
+        ratio_string = 1.0 if fc_window <= 0 else pv_window / fc_window
+        w = ramp_weight(active_slots_since_reset, self._ramp_slots)
+        effective_factor = intraday_correction_factor(
+            pv_window, fc_window, w, self._intraday_correction_cutoff
+        )
+
+        new_state = replace(
+            state,
+            active_slots_since_reset=active_slots_since_reset,
+            ratio_string=ratio_string,
+            effective_factor=effective_factor,
+        )
+        if new_state.frozen_basis is not None:
+            w_blend = ramp_weight(active_slots_since_reset, self._ramp_slots)
+            if w_blend >= 1.0:
+                # The crossfade has fully converged to the new side
+                # (ADR-006 §1b) — clearing here is equivalent to
+                # `_compute_intraday_output` computing `crossfade(...,
+                # w_blend=1.0)` every tick from here on, just without
+                # redoing that (harmless but pointless) work forever.
+                new_state = replace(new_state, frozen_basis=None, frozen_effective_factor=None)
+
+        self.cache.set_intraday_state(string.index, new_state)
+        pushed = self._compute_intraday_output(new_state)
+        if pushed:
+            self.cache.push(self.forecast_sensor_id(string.index), pushed, now_index + 1)
+
+    def _register_intraday_schedule(self) -> None:
+        """ADR-006 §1a's independent 5-minute poll — only registered
+        when intraday correction is active (see `__init__`); ADR-004
+        §2's diagnostic-slot advance reuses this exact same trigger
+        rather than introducing a third, near-identical schedule."""
+        self._unsub.append(
+            async_track_time_interval(self.hass, self._handle_intraday_tick, timedelta(minutes=5))
+        )
+
+    @callback  # type: ignore[untyped-decorator]
+    def _handle_intraday_tick(self, now: datetime) -> None:
+        self.hass.async_create_task(self._async_intraday_tick(now))
+
+    async def _async_intraday_tick(self, now: datetime) -> None:
+        """Dispatched off the event loop (module docstring: recorder
+        access via `cache.py`'s injected `fetch_fn` is blocking I/O) —
+        `_intraday_energy_window` reads the actual-yield entity's
+        recorder-backed history, mirroring `async_refit`'s own
+        `hass.async_add_executor_job` pattern exactly."""
+        await self.hass.async_add_executor_job(self._intraday_tick_sync, now)
+
+    def _intraday_tick_sync(self, now: datetime) -> None:
+        for string in self._strings:
+            self._advance_intraday_string(string, now)
+
+    def intraday_attributes(self, string_index: int) -> dict[str, Any]:
+        """ADR-006 §4's four scalar transparency attributes
+        (`values_raw` is a time-series array; `sensor.py` reads it
+        directly off `raw_forecast_sensor_id`, mirroring how it already
+        reads `today`/`tomorrow` off `forecast_sensor_id`).
+        `intraday_state` always mirrors the configured mode, even
+        `"off"`, per ADR-006 §4's own naming note; the other three are
+        `None`/`False` whenever there is no active per-string state yet
+        (mode off, or no recompute has run since setup)."""
+        state = self.cache.intraday_state(string_index)
+        return {
+            "intraday_ratio": state.ratio_string if state is not None else None,
+            "intraday_state": self._intraday_correction_mode,
+            "intraday_ramp_weight": (
+                ramp_weight(state.active_slots_since_reset, self._ramp_slots)
+                if state is not None
+                else None
+            ),
+            "intraday_blend_active": bool(
+                state is not None
+                and state.frozen_basis is not None
+                and self._intraday_correction_mode == "blending"
+            ),
+        }
 
     # -- generic provider-push loop (ADR-012 §4) -------------------------
 

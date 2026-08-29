@@ -103,7 +103,10 @@ exposes.
   - Private (not a Consumed Interface for any other task, listed for
     completeness): `_StringConfig`, `_fetch_fn`,
     `_fetch_actual_yield_statistics`, `_fit_string`,
-    `_apply_training_corrections`, `_recompute_string`, `_predict_day`,
+    `_apply_training_corrections`, `_recompute_string`, `_predict_day`
+    (renamed `_predict_day_basis` by `TASK-0013`, which also split its
+    former final-clamp step into a sibling `_clamp_basis` — see the
+    scope-decision note below),
     `_push_provider_series`, `_make_listener`, `_now` (injectable
     clock — a plain callable attribute, not part of any public
     contract).
@@ -127,9 +130,14 @@ exposes.
   entirely for now, exactly matching ADR-003b §1's own stated
   dependency chain. `TASK-0014`'s own job is to extend
   `_resolve_weather_temperature_entity`/`_apply_training_corrections`/
-  `_predict_day` to cover that tier once its learned-model machinery
-  exists — flagged here as a known extension point, not a task-graph
-  gap requiring a new task right now (`TASK-0014` already covers it).
+  `_predict_day` (renamed `_predict_day_basis` by `TASK-0013`, which
+  also split the old function's final-clamp step out into a sibling
+  `_clamp_basis` — same extension point, corrected name; not a
+  Scenario C patch, since this was never a formal Consumed Interface,
+  as this section's own opening line already says) to cover that tier
+  once its learned-model machinery exists — flagged here as a known
+  extension point, not a task-graph gap requiring a new task right now
+  (`TASK-0014` already covers it).
 - **Scope decision, this task:** `_last_fit_at` (ADR-002 §1's ">24h
   old" branch) is in-memory only, not persisted across Home Assistant
   restarts. Every restart already implies "no model fitted yet" in a

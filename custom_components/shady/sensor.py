@@ -1,8 +1,9 @@
 """`sensor.py` — `ShadyForecastSensor`, one per configured string
-(ADR-002 §3, ADR-002 §5, TASK-0011); plus the six config-entry-level
-aggregate sensors (ADR-005, TASK-0012): `ShadyPvSumSensor`,
-`ShadyFcSumSensor`, `ShadyFcDaySumSensor`, `ShadyFcRemainingTodaySensor`,
-`ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`.
+(ADR-002 §3, ADR-002 §5, TASK-0011; ADR-006 §4 transparency attributes,
+TASK-0013); plus the six config-entry-level aggregate sensors (ADR-005,
+TASK-0012): `ShadyPvSumSensor`, `ShadyFcSumSensor`, `ShadyFcDaySumSensor`,
+`ShadyFcRemainingTodaySensor`, `ShadyPvEnergyIntegralSensor`,
+`ShadyFcEnergyIntegralSensor`.
 
 Thin HA glue only (ADR-000 §3): every value is read directly from
 `coordinator.py` — either a plain coordinator method call
@@ -100,7 +101,9 @@ class ShadyForecastSensor(SensorEntity):  # type: ignore[misc]
         string_name: str,
     ) -> None:
         self._coordinator = coordinator
+        self._string_index = string_index
         self._sensor_id = coordinator.forecast_sensor_id(string_index)
+        self._raw_sensor_id = coordinator.raw_forecast_sensor_id(string_index)
         self._attr_unique_id = self._sensor_id
         self._attr_name = f"{string_name} Forecast"
         # Injectable clock (a plain callable, not a `Mock`) — mirrors
@@ -127,19 +130,29 @@ class ShadyForecastSensor(SensorEntity):  # type: ignore[misc]
         today_start = self._today_start(now)
         tomorrow_start = today_start + _ONE_DAY
 
-        def _day_array(day_start: datetime) -> list[float | None]:
+        def _day_array(sensor_id: str, day_start: datetime) -> list[float | None]:
             raw = self._coordinator.cache.get_time_range(
-                [self._sensor_id],
+                [sensor_id],
                 day_start,
                 day_start + _LAST_SLOT_OF_DAY,
                 on_invalid="raw",
-            )[self._sensor_id]
+            )[sensor_id]
             return [value if isinstance(value, float) else None for value in raw]
 
-        return {
-            "today": _day_array(today_start),
-            "tomorrow": _day_array(tomorrow_start),
+        attributes: dict[str, Any] = {
+            "today": _day_array(self._sensor_id, today_start),
+            "tomorrow": _day_array(self._sensor_id, tomorrow_start),
+            # ADR-006 §4's `values_raw` (TASK-0013) — that string's
+            # pre-intraday-correction future values, same `today`/
+            # `tomorrow` shape as above; all-`None` (never pushed to)
+            # whenever intraday correction is off.
+            "values_raw": {
+                "today": _day_array(self._raw_sensor_id, today_start),
+                "tomorrow": _day_array(self._raw_sensor_id, tomorrow_start),
+            },
         }
+        attributes.update(self._coordinator.intraday_attributes(self._string_index))
+        return attributes
 
 
 class ShadyPvSumSensor(SensorEntity):  # type: ignore[misc]
