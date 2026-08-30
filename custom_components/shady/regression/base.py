@@ -191,6 +191,8 @@ def build_pool(
     smoothing_radius: int,
     neighbor_fitting_cutoff: float,
     recency_decay_max: float,
+    *,
+    apply_magnitude_weight: bool = True,
 ) -> SamplePool:
     """Build one batch's fully-weighted `SamplePool` from raw per-offset
     arrays (ADR-001 §2's `magnitude_weight_i`, ADR-011 §1's
@@ -222,6 +224,16 @@ def build_pool(
     otherwise say for that column — the two concerns (how old vs. is it
     real data at all) stay independent, exactly as `magnitude_weight_i`/
     `time_weight_i` already do.
+
+    `apply_magnitude_weight=False` (`TASK-0005-patch-5`, ADR-003c §2)
+    drops the `magnitude_weight_i` factor entirely (every valid sample
+    weighted `1.0` before `time_weight_i`/`recency_weight_i`/validity)
+    for a second, non-PV reuse of this same fitting machinery — a
+    predictor that is routinely negative (e.g. a temperature forecast)
+    has no near-zero degeneracy analogous to `FC`'s, and `FC`-shaped
+    magnitude weighting would actively corrupt such a predictor's sample
+    weights rather than merely fail to help. Defaults to `True`
+    (today's ADR-001 §2 behavior) so no existing caller is affected.
     """
     offsets = list(range(-smoothing_radius, smoothing_radius + 1))
     center_fc = fc_by_offset[0]
@@ -238,7 +250,11 @@ def build_pool(
         raw_pv = pv_by_offset[offset]
         valid_mask = ~np.isnan(raw_fc) & ~np.isnan(raw_pv)
 
-        magnitude_weight = _magnitude_weight(raw_fc, valid_mask)
+        magnitude_weight = (
+            _magnitude_weight(raw_fc, valid_mask)
+            if apply_magnitude_weight
+            else valid_mask.astype(np.float64)
+        )
         time_weight = 1.0 - abs(offset) / (smoothing_radius + 1)
 
         pv_contribution = raw_pv

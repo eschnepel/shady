@@ -19,16 +19,22 @@ recompute never touch the recorder (`BaselineProvider`/`TemperatureProvider`
 only read `hass.states`, an in-memory, non-blocking lookup) and so run
 directly on the event loop.
 
-**Temperature derating scope, this task (ADR-003b §1/§1a):** only the
-weather-integration tier is implemented here — the module/cell and
-ambient-sensor tiers' forward+reverse correction structurally depends on
-ADR-003c's learned per-slot temperature-forecast model, which does not
-exist yet (`TASK-0014`, still `todo`). A string whose resolved
-temperature source is a `sensor.*` entity is therefore left with
-derating skipped entirely for now, exactly as ADR-003b §1's own stated
-dependency chain requires — not a shortcut invented here. `TASK-0014`'s
-own job is to extend this module's temperature resolution to cover that
-tier once its learned-model machinery exists.
+**Temperature derating scope (ADR-003b §1/§1a, ADR-003c):** all three
+tiers are implemented. `weather` (a `weather.*`-domain resolved source)
+reads/forecasts natively, unchanged since the original delivery. `cell`
+(a per-string `temperature_source_entity_id` override, `sensor.*`
+domain — ADR-003b §1a's dedicated module/cell sensor) and `ambient` (the
+global `default_temperature_source`, `sensor.*` domain — one
+property-wide reading) both need ADR-003c's learned per-slot
+temperature-forecast model for a target-slot forecast, since neither has
+a native one (`TASK-0014`) — `cell` is used directly, with no uplift;
+`ambient` passes through the same `uplift_ambient_to_cell` transform a
+live ambient reading would. Both, per ADR-003c §5, are silently skipped
+(exactly as if no temperature source were configured) when no global
+`weather_forecast_temperature_entity` predictor is configured —
+`_resolve_temperature_entity` is the one place that rule is enforced,
+so every downstream caller only ever sees "configured and forecastable"
+or `None`, never a half-configured in-between state.
 
 **Aggregate sensors and the energy-integral totals (ADR-005, TASK-0012):**
 `pv_sum`/`fc_sum`/`fc_day_array`/`fc_day_energy_total`/
@@ -95,7 +101,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from homeassistant.components.recorder.statistics import statistics_during_period
@@ -143,6 +149,8 @@ from .const import (
     CONF_STRING_TEMPERATURE_SOURCE,
     CONF_STRINGS,
     CONF_TEMPERATURE_AWARE,
+    CONF_TEMPERATURE_REGRESSION_METHOD,
+    CONF_WEATHER_FORECAST_TEMPERATURE_ENTITY,
     CONF_WINDOW_DAYS,
     CONF_WINDOW_SLOTS,
     DEFAULT_INTRADAY_CORRECTION_CUTOFF,
@@ -156,7 +164,7 @@ from .const import (
 from .forecast_adjust import clamp_output, reverse_transformed_forecast
 from .providers.base import Provider
 from .providers.discovery import BaselineProvider
-from .providers.temperature import TemperatureProvider
+from .providers.temperature import TemperatureProvider, TemperatureTier
 from .regression import kernel, linear, wls2, wls3
 from .regression.base import FittedModel, build_pool
 from .yield_correction import derate_actual_to_reference, exclude_clipped, uplift_ambient_to_cell
@@ -250,6 +258,28 @@ class _StringConfig:
         return self.baseline_entity_id is not None
 
 
+@dataclass(frozen=True)
+class _TemperatureResolution:
+    """A string's resolved temperature source (ADR-003b §1/§1a,
+    `TASK-0014`). `tier="weather"` reads/forecasts natively (unchanged
+    since the original, weather-only delivery). `tier="cell"`
+    (a per-string override — a dedicated module/cell sensor) and
+    `tier="ambient"` (the global default — one property-wide sensor)
+    both instead need ADR-003c's learned per-slot model for a
+    target-slot forecast, since neither has a native one; `cell` alone
+    skips `yield_correction.uplift_ambient_to_cell` (ADR-003b §1a's
+    table: a module/cell sensor already reads the thing the uplift
+    formula exists to estimate). There is no separate config field
+    distinguishing `cell` from `ambient` — scope (per-string override
+    vs. global default) *is* the distinction, the same precedence
+    `_resolve_temperature_entity` already applies to pick the entity
+    id itself.
+    """
+
+    entity_id: str
+    tier: Literal["weather", "cell", "ambient"]
+
+
 def _resolve_string(index: int, raw: dict[str, Any]) -> _StringConfig:
     return _StringConfig(
         index=index,
@@ -299,6 +329,20 @@ class ShadyCoordinator:
         self._ramp_slots: int = data.get(CONF_RAMP_SLOTS, DEFAULT_RAMP_SLOTS)
         self._global_temperature_aware: bool = data.get(CONF_TEMPERATURE_AWARE, False)
         self._default_temperature_source: str | None = data.get(CONF_DEFAULT_TEMPERATURE_SOURCE)
+        # ADR-003c §3/§7, TASK-0014: the dedicated global predictor
+        # entity for the cell/ambient-tier learned model, and its own
+        # independent regression-method choice — both already part of
+        # config_flow.py's original settings-step schema (Required with
+        # a config-flow-baked default for the method; Optional,
+        # normalized empty-string -> `None`, for the entity), so
+        # `data[...]`/`data.get(...)` follow the same convention as
+        # every other original-delivery field above, not the
+        # `.get(..., DEFAULT_*)` defensive style the ADR-006/§1's later
+        # four fields use for a hand-built `ConfigEntry.data` fixture.
+        self._weather_forecast_temperature_entity_id: str | None = data.get(
+            CONF_WEATHER_FORECAST_TEMPERATURE_ENTITY
+        )
+        self._temperature_regression_method: str = data[CONF_TEMPERATURE_REGRESSION_METHOD]
         self._global_baseline_entity_id: str | None = data.get(CONF_BASELINE_ENTITY_ID)
         self._global_baseline_attribute: str | None = data.get(CONF_BASELINE_ATTRIBUTE)
         self._global_baseline_shape: BaselineShape | None = data.get(CONF_BASELINE_SHAPE)
@@ -323,6 +367,20 @@ class ShadyCoordinator:
                 self._global_baseline_attribute,
                 self._global_baseline_shape,
             )
+        if self._weather_forecast_temperature_entity_id is not None:
+            # ADR-003c §3/§7, TASK-0014: registered once, globally, up
+            # front — same pattern as the global baseline provider just
+            # above — regardless of whether any string actually ends
+            # up on the `cell`/`ambient` tier that consumes it as a
+            # predictor (`_fit_temperature_string`); registering it
+            # unconditionally here is what makes the generic
+            # `forward()`-push loop (ADR-012 §4, `_register_provider_
+            # listeners`) pick it up automatically below, with no new
+            # coordinator listener code (this task's own Consumed
+            # Interfaces note).
+            self._ensure_temperature_provider(
+                self._weather_forecast_temperature_entity_id, "weather"
+            )
 
         for string in self._strings:
             self._actual_yield_entity_ids.add(string.actual_yield_entity_id)
@@ -335,9 +393,12 @@ class ShadyCoordinator:
             if baseline_entity_id is not None:
                 self._baseline_entity_strings.setdefault(baseline_entity_id, []).append(string)
 
-            temperature_entity_id = self._resolve_weather_temperature_entity(string)
-            if temperature_entity_id is not None:
-                self._ensure_temperature_provider(temperature_entity_id)
+            resolution = self._resolve_temperature_entity(string)
+            if resolution is not None:
+                provider_tier: TemperatureTier = (
+                    "weather" if resolution.tier == "weather" else "sensor"
+                )
+                self._ensure_temperature_provider(resolution.entity_id, provider_tier)
 
         self.cache = Cache(self._window_days, self._fetch_fn)
         # ADR-005 §5/§6, ADR-007 §1 — the one restart-persisted cache in
@@ -349,6 +410,15 @@ class ShadyCoordinator:
             self.hass, _ENERGY_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_energy_totals"
         )
         self._models: dict[int, FittedModel] = {}
+        # ADR-003c §2, TASK-0014: one fitted per-slot temperature model
+        # per `cell`/`ambient`-tier string (keyed by `string.index`,
+        # same convention as `self._models`) — absent for a `weather`-
+        # tier string (never needs one) or a string with no resolved
+        # temperature source at all. Same in-memory-only scope decision
+        # as `self._models` (see its own comment just above): a restart
+        # already implies "no model fitted yet", which is exactly
+        # ADR-002 §1's startup safety net regardless.
+        self._temperature_models: dict[int, FittedModel] = {}
         # In-memory only (this task's own scope decision — see
         # Delivered Artifacts): every restart already implies "no model
         # fitted yet" below, which alone satisfies ADR-002 §1's startup
@@ -383,23 +453,47 @@ class ShadyCoordinator:
             return
         self._entity_providers[entity_id] = BaselineProvider(self.hass, entity_id, attribute, shape)
 
-    def _ensure_temperature_provider(self, entity_id: str) -> None:
+    def _ensure_temperature_provider(self, entity_id: str, tier: TemperatureTier) -> None:
         if entity_id in self._entity_providers:
             return
-        self._entity_providers[entity_id] = TemperatureProvider(self.hass, entity_id, "weather")
+        self._entity_providers[entity_id] = TemperatureProvider(self.hass, entity_id, tier)
 
-    def _resolve_weather_temperature_entity(self, string: _StringConfig) -> str | None:
-        """This task's temperature-source resolution (module docstring):
-        weather tier only. `None` for an unset/disabled/sensor-tier
-        source alike — the caller cannot and need not distinguish those
-        cases further (all three mean "no derating for this string").
+    def _resolve_temperature_entity(self, string: _StringConfig) -> _TemperatureResolution | None:
+        """ADR-003b §1/§1a's full three-tier resolution, `TASK-0014`
+        (extends this module's original weather-only version — see the
+        module docstring). Same override/default precedence as before:
+        `weather`-domain resolves natively regardless of which of the
+        two supplied it (unchanged); a `sensor.*`-domain resolution is
+        `cell` when it came from this string's own
+        `temperature_source_entity_id` override (a dedicated
+        module/cell sensor) or `ambient` when it came from the global
+        `default_temperature_source` (one property-wide reading) — the
+        *scope* it came from is the only thing distinguishing the two,
+        there is no separate tier-selecting config field (see
+        `_TemperatureResolution`'s own docstring).
+
+        `None` for an unset/disabled source (the `TEMPERATURE_SOURCE_
+        NONE` sentinel), unchanged — and, ADR-003c §5's "no predictor,
+        no correction" rule, also `None` for an otherwise-valid `cell`/
+        `ambient` resolution when no global `weather_forecast_
+        temperature_entity` predictor is configured: this is the one
+        place that rule is enforced, so every caller below only ever
+        sees "configured and forecastable" or `None`, never needing its
+        own separate predictor-presence check.
         """
         entity_id = string.temperature_source_entity_id or self._default_temperature_source
         if entity_id is None or entity_id == TEMPERATURE_SOURCE_NONE:
             return None
-        if _domain(entity_id) != "weather":
+        if _domain(entity_id) == "weather":
+            return _TemperatureResolution(entity_id, "weather")
+        if self._weather_forecast_temperature_entity_id is None:
             return None
-        return entity_id
+        is_per_string_override = (
+            string.temperature_source_entity_id is not None
+            and string.temperature_source_entity_id != TEMPERATURE_SOURCE_NONE
+        )
+        tier: Literal["cell", "ambient"] = "cell" if is_per_string_override else "ambient"
+        return _TemperatureResolution(entity_id, tier)
 
     def _provider_already_corrects(self, string: _StringConfig) -> bool:
         """ADR-003b §1c: a per-string baseline override is
@@ -528,12 +622,17 @@ class ShadyCoordinator:
             model = self._fit_string(string, now)
             if model is not None:
                 self._models[string.index] = model
+                temperature_model = self._fit_temperature_string(string, now)
+                if temperature_model is not None:
+                    self._temperature_models[string.index] = temperature_model
                 # Recalibration completion is itself a recompute trigger
                 # (ADR-002 §2, trigger 1) — reuses the exact same
                 # `_recompute_string` path §2's second trigger (a
                 # baseline-entity update) already runs, applying the
-                # freshly-fitted model to whatever baseline data is
-                # currently cached (TASK-0010-patch-1).
+                # freshly-fitted model(s) — the shading model, and, for
+                # a `cell`/`ambient`-tier string, the temperature model
+                # too (TASK-0014) — to whatever baseline/predictor data
+                # is currently cached (TASK-0010-patch-1).
                 self._recompute_string(string, now)
         self._last_fit_at = now
         # ADR-005 §2/§6: recalibration completion is a recompute
@@ -550,9 +649,9 @@ class ShadyCoordinator:
             return None
 
         sensor_ids = [baseline_entity_id, string.actual_yield_entity_id]
-        temperature_entity_id = self._resolve_weather_temperature_entity(string)
-        if temperature_entity_id is not None:
-            sensor_ids.append(temperature_entity_id)
+        resolution = self._resolve_temperature_entity(string)
+        if resolution is not None:
+            sensor_ids.append(resolution.entity_id)
 
         pools = self.cache.get_regression_pools(sensor_ids, self._smoothing_radius, reference=now)
         fc_by_offset = _split_by_offset(
@@ -563,13 +662,17 @@ class ShadyCoordinator:
         )
 
         temperature_by_offset: dict[int, NDArray[np.float64]] | None = None
-        if temperature_entity_id is not None:
+        if resolution is not None:
             temperature_by_offset = _split_by_offset(
-                pools[temperature_entity_id], self._smoothing_radius, self._window_days
+                pools[resolution.entity_id], self._smoothing_radius, self._window_days
             )
 
         corrected_pv_by_offset = self._apply_training_corrections(
-            string, fc_by_offset, pv_by_offset, temperature_by_offset
+            string,
+            fc_by_offset,
+            pv_by_offset,
+            temperature_by_offset,
+            resolution.tier if resolution is not None else None,
         )
 
         pool = build_pool(
@@ -583,24 +686,99 @@ class ShadyCoordinator:
         model: FittedModel = strategy.fit(pool)
         return model
 
+    def _fit_temperature_string(self, string: _StringConfig, now: datetime) -> FittedModel | None:
+        """ADR-003c §2, `TASK-0014`: this string's own per-slot
+        temperature-forecast model — `None` when its resolved source is
+        `weather` tier (forecasts natively already, ADR-003c §1) or
+        unresolved at all (`_resolve_temperature_entity` already folds
+        in ADR-003c §5's "no predictor configured" case, so no separate
+        check is needed here).
+
+        Predictor (`X`) is the dedicated global `weather_forecast_
+        temperature_entity` (§3, a second `TemperatureProvider`
+        instance, reused as-is — TASK-0004). Target (`Y`) is this
+        tier's own already-resolved sensor (§2 — "already flows through
+        `cache.py` unchanged": the exact same entity id `_fit_string`
+        above already reads for the training-time uplift/derate
+        correction, not a new series).
+
+        Reuses `regression/`'s fitting mechanics only, not its
+        PV-specific sample-validity assumptions (§2): `smoothing_
+        radius=0` opts out of ADR-011's temporal smoothing/neighbor-
+        regime exclusion entirely (a single, center-only offset never
+        reaches that neighbor-only code path — no `build_pool` change
+        needed for this part), and `apply_magnitude_weight=False`
+        (`TASK-0005-patch-5`) opts out of ADR-001 §2's near-zero-`FC`
+        downweighting, which does not make sense for a routinely-
+        negative predictor. `recency_decay_max` reuses the exact same
+        global value the shading fit above uses — this task's own
+        documented decision (Delivered Artifacts): temperature does
+        have a plausible recency-relevant regime-shift argument of its
+        own (e.g. a stretch of colder/warmer days), so the existing
+        global default is a reasonable starting behavior for both fits
+        alike, and introducing a second, so-far-unrequested per-model
+        setting was judged not worth the extra config-flow surface
+        for a first cut. A follow-up ADR could split it later if
+        empirical tuning wants that.
+        """
+        resolution = self._resolve_temperature_entity(string)
+        if resolution is None or resolution.tier == "weather":
+            return None
+        assert self._weather_forecast_temperature_entity_id is not None
+
+        predictor_id = self._weather_forecast_temperature_entity_id
+        target_id = resolution.entity_id
+        pools = self.cache.get_regression_pools([predictor_id, target_id], 0, reference=now)
+        predictor_by_offset = _split_by_offset(pools[predictor_id], 0, self._window_days)
+        target_by_offset = _split_by_offset(pools[target_id], 0, self._window_days)
+
+        pool = build_pool(
+            predictor_by_offset,
+            target_by_offset,
+            smoothing_radius=0,
+            # Inert at radius 0 — ADR-011's neighbor-only code path
+            # never runs with a single, center-only offset block.
+            # Passed only because `build_pool`'s signature requires a
+            # value; any value would produce an identical pool here.
+            neighbor_fitting_cutoff=self._neighbor_fitting_cutoff,
+            recency_decay_max=self._recency_decay_max,
+            apply_magnitude_weight=False,
+        )
+        strategy = _REGRESSION_STRATEGIES[self._temperature_regression_method]
+        model: FittedModel = strategy.fit(pool)
+        return model
+
     def _apply_training_corrections(
         self,
         string: _StringConfig,
         fc_by_offset: dict[int, NDArray[np.float64]],
         pv_by_offset: dict[int, NDArray[np.float64]],
         temperature_by_offset: dict[int, NDArray[np.float64]] | None,
+        temperature_tier: Literal["weather", "cell", "ambient"] | None,
     ) -> dict[int, NDArray[np.float64]]:
         """ADR-003a §1/§2 (clipping) then ADR-003b §1/§1a (temperature
-        derating, weather tier only this task — see module docstring),
-        applied per offset, in that order (`yield_correction.py`'s own
-        module docstring: exclude clipped before deriving to reference).
+        derating, all three tiers as of `TASK-0014`), applied per
+        offset, in that order (`yield_correction.py`'s own module
+        docstring: exclude clipped before deriving to reference).
+        `weather`/`ambient` both pass their raw reading through
+        `uplift_ambient_to_cell` before deriving (unchanged for
+        `weather`; same formula, just training-time-resolved for
+        `ambient`); `cell` uses its own reading directly, never
+        evaluating that formula at all (ADR-003b §1a) — and is
+        therefore, alone among the three, not gated on
+        `rated_dc_capacity_wp` (the uplift formula's own required
+        input) being configured.
         """
         provider_already_corrects = self._provider_already_corrects(string)
         coefficient_per_c = string.temperature_coefficient_pct_per_c / 100.0
+        needs_uplift = temperature_tier in ("weather", "ambient")
         use_temperature = (
             temperature_by_offset is not None
-            and string.rated_dc_capacity_wp is not None
             and not provider_already_corrects
+            and (
+                temperature_tier == "cell"
+                or (needs_uplift and string.rated_dc_capacity_wp is not None)
+            )
         )
 
         corrected: dict[int, NDArray[np.float64]] = {}
@@ -609,14 +787,17 @@ class ShadyCoordinator:
             cell_temperature: NDArray[np.float64] | None = None
             if use_temperature:
                 assert temperature_by_offset is not None
-                assert string.rated_dc_capacity_wp is not None
-                uplifted = uplift_ambient_to_cell(
-                    temperature_by_offset[offset],
-                    fc_by_offset[offset],
-                    string.rated_dc_capacity_wp,
-                    self._max_uplift_c,
-                )
-                cell_temperature = np.asarray(uplifted, dtype=np.float64)
+                if needs_uplift:
+                    assert string.rated_dc_capacity_wp is not None
+                    uplifted = uplift_ambient_to_cell(
+                        temperature_by_offset[offset],
+                        fc_by_offset[offset],
+                        string.rated_dc_capacity_wp,
+                        self._max_uplift_c,
+                    )
+                    cell_temperature = np.asarray(uplifted, dtype=np.float64)
+                else:
+                    cell_temperature = temperature_by_offset[offset]
             corrected[offset] = np.asarray(
                 derate_actual_to_reference(
                     excluded,
@@ -939,24 +1120,13 @@ class ShadyCoordinator:
 
         provider_already_corrects = self._provider_already_corrects(string)
         coefficient_per_c = string.temperature_coefficient_pct_per_c / 100.0
-        temperature_entity_id = self._resolve_weather_temperature_entity(string)
+        resolution = self._resolve_temperature_entity(string)
 
         target_cell_temperature: NDArray[np.float64] | None = None
-        if (
-            temperature_entity_id is not None
-            and string.rated_dc_capacity_wp is not None
-            and not provider_already_corrects
-        ):
-            temp_provider = self._entity_providers[temperature_entity_id]
-            assert isinstance(temp_provider, TemperatureProvider)
-            raw_temps = temp_provider.fetch(day_start, day_start + timedelta(days=1))
-            ambient = np.array(
-                [v if isinstance(v, float) else np.nan for v in raw_temps], dtype=np.float64
+        if resolution is not None and not provider_already_corrects:
+            target_cell_temperature = self._predict_target_slot_temperature(
+                string, resolution, fc_array, day_start
             )
-            uplifted = uplift_ambient_to_cell(
-                ambient, fc_array, string.rated_dc_capacity_wp, self._max_uplift_c
-            )
-            target_cell_temperature = np.asarray(uplifted, dtype=np.float64)
 
         reverse_transformed, _confidence = reverse_transformed_forecast(
             model,
@@ -978,6 +1148,73 @@ class ShadyCoordinator:
                 values[index] = value
                 fc_by_index[index] = float(fc_array[slot])
         return values, fc_by_index
+
+    def _predict_target_slot_temperature(
+        self,
+        string: _StringConfig,
+        resolution: _TemperatureResolution,
+        fc_array: NDArray[np.float64],
+        day_start: datetime,
+    ) -> NDArray[np.float64] | None:
+        """ADR-003b §1b's `target_cell_temperature` for one day's 288
+        slots, dispatched by tier (`TASK-0014`). `weather` reads the
+        entity's own native forecast, unchanged since the original,
+        weather-only delivery. `cell`/`ambient` instead feed the
+        weather-forecast predictor's own forecast through this string's
+        fitted per-slot temperature model (ADR-003c §2, `_fit_
+        temperature_string`) to get `predicted_temp` — a forecast for a
+        slot this string's own sensor has no live reading for yet.
+        `cell` returns `predicted_temp` directly (ADR-003c §4: no
+        uplift on top of an already-cell-equivalent estimate); `ambient`
+        (like `weather`) passes it through the same `uplift_ambient_
+        to_cell` transform a live ambient reading would, gated on
+        `rated_dc_capacity_wp` being configured (ADR-003b §1a) — `cell`
+        alone is never gated on that field, since it never evaluates
+        the uplift formula at all.
+
+        `None` when the correction cannot be produced this call: no
+        `rated_dc_capacity_wp` for a tier that needs uplift, or (a
+        cold-start edge case — every other call site already assumes
+        `_fit_temperature_string` has run at least once, the same
+        assumption `self._models[string.index]`'s own direct-index
+        lookup above makes for the shading model) no temperature model
+        fitted yet for this string.
+        """
+        if resolution.tier == "weather":
+            if string.rated_dc_capacity_wp is None:
+                return None
+            provider = self._entity_providers.get(resolution.entity_id)
+            assert isinstance(provider, TemperatureProvider)
+            raw_temps = provider.fetch(day_start, day_start + timedelta(days=1))
+            ambient = np.array(
+                [v if isinstance(v, float) else np.nan for v in raw_temps], dtype=np.float64
+            )
+            uplifted = uplift_ambient_to_cell(
+                ambient, fc_array, string.rated_dc_capacity_wp, self._max_uplift_c
+            )
+            return np.asarray(uplifted, dtype=np.float64)
+
+        temperature_model = self._temperature_models.get(string.index)
+        if temperature_model is None:
+            return None
+        assert self._weather_forecast_temperature_entity_id is not None
+        predictor = self._entity_providers.get(self._weather_forecast_temperature_entity_id)
+        assert isinstance(predictor, TemperatureProvider)
+        raw_predictor = predictor.fetch(day_start, day_start + timedelta(days=1))
+        predictor_values = np.array(
+            [v if isinstance(v, float) else np.nan for v in raw_predictor], dtype=np.float64
+        )
+        predicted_temp, _model_confidence = temperature_model.predict_unclamped(predictor_values)
+
+        if resolution.tier == "cell":
+            return np.asarray(predicted_temp, dtype=np.float64)
+
+        if string.rated_dc_capacity_wp is None:
+            return None
+        uplifted = uplift_ambient_to_cell(
+            predicted_temp, fc_array, string.rated_dc_capacity_wp, self._max_uplift_c
+        )
+        return np.asarray(uplifted, dtype=np.float64)
 
     def _clamp_basis(
         self, values: dict[int, float], fc: dict[int, float], inverter_limit: float | None

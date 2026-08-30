@@ -26,7 +26,8 @@ like a second reset's).
 from __future__ import annotations
 
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any
 
 import numpy as np
 import pytest
@@ -46,7 +47,7 @@ clamp_output = _forecast_adjust_mod.clamp_output
 
 
 def _reseed_pv_to_match_pushed_forecast(
-    coordinator: object, hass: object, now: object, ratio: float, since: object
+    coordinator: Any, hass: Any, now: datetime, ratio: float, since: datetime
 ) -> None:
     """Re-seed actual-yield statistics for every 5-minute slot from
     `since` up to and including `now`, at exactly `ratio x` whatever is
@@ -58,13 +59,13 @@ def _reseed_pv_to_match_pushed_forecast(
     correction applied) never silently drifts a later tick's window
     ratio away from `ratio`.
     """
-    sensor_id = coordinator.forecast_sensor_id(0)  # type: ignore[attr-defined]
+    sensor_id = coordinator.forecast_sensor_id(0)
     pushed = hass_pushed_values(coordinator, sensor_id)
     ts = since
     while ts <= now:
         index = Cache.index_for(ts)
         if index in pushed:
-            hass.statistics[_ACTUAL_YIELD_ENTITY][ts] = pushed[index] * ratio  # type: ignore[attr-defined]
+            hass.statistics[_ACTUAL_YIELD_ENTITY][ts] = pushed[index] * ratio
         ts += timedelta(minutes=5)
 
 

@@ -227,6 +227,94 @@ class TestMagnitudeWeightSmoothNearZeroFC:
         assert 0.0 < weights[1] < weights[2]
 
 
+# -- TASK-0005-patch-5: apply_magnitude_weight=False (ADR-003c §2) ---------
+
+
+class TestOptionalMagnitudeWeight:
+    """Given `build_pool`'s `apply_magnitude_weight` parameter, When it is
+    `False`, Then every valid sample's weight is entirely unaffected by
+    its own raw predictor value (ADR-003c §2's second, non-PV reuse of
+    `build_pool` — a predictor that is routinely negative, unlike `FC`,
+    has no analogous near-zero degeneracy and must not be weighted as if
+    it did)."""
+
+    def test_false_reduces_weight_to_valid_mask_at_radius_zero(self) -> None:
+        # smoothing_radius=0 (TASK-0014's own shape: no ADR-011 neighbor
+        # smoothing/exclusion reused either) and recency_decay_max=0.0
+        # isolate apply_magnitude_weight as the only varying factor —
+        # combined_weight should reduce to exactly valid_mask.
+        predictor = np.array([[-10.0, -0.001, 0.0, 0.001, 10.0, np.nan]])
+        target = predictor * 2.0
+        pool = base_mod.build_pool(
+            {0: predictor},
+            {0: target},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=False,
+        )
+        expected_valid = np.array([[1.0, 1.0, 1.0, 1.0, 1.0, 0.0]])
+        assert np.array_equal(pool.weight, expected_valid)
+
+    def test_true_default_reproduces_pre_patch_output_unmodified(self) -> None:
+        # The exact fixture TestMagnitudeWeightSmoothNearZeroFC already
+        # exercises, called with the new parameter omitted — confirms
+        # the default is fully behavior-preserving.
+        fc_values = np.array([[0.0, 0.001, 1.0, 10.0, 100.0, 500.0, 1000.0]])
+        pv_values = fc_values * 0.6
+        with_default = base_mod.build_pool(
+            {0: fc_values},
+            {0: pv_values},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        with_explicit_true = base_mod.build_pool(
+            {0: fc_values},
+            {0: pv_values},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=True,
+        )
+        assert np.array_equal(with_default.weight, with_explicit_true.weight)
+
+    def test_negative_predictor_values_uncorrupted_only_when_false(self) -> None:
+        # A predictor row with both sub-freezing (negative) and
+        # above-freezing (positive) values — an ordinary, non-degenerate
+        # temperature forecast, ADR-003c §2's own motivating example.
+        # The pre-patch/True default's masked_fc / row_max ratio divides
+        # by this row's *positive* max, so its negative-valued entries
+        # get *negative* sample weight — mathematically invalid for a
+        # weighted fit (inverting, not merely discounting, that sample's
+        # contribution), not just "unwanted downweighting" of an
+        # otherwise-ordinary reading. apply_magnitude_weight=False must
+        # sidestep this entirely, returning the plain valid mask
+        # regardless of sign.
+        predictor = np.array([[-5.0, -1.0, 5.0, 10.0]])
+        target = predictor * 0.5
+        corrupted = base_mod.build_pool(
+            {0: predictor},
+            {0: target},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=True,
+        )
+        uncorrupted = base_mod.build_pool(
+            {0: predictor},
+            {0: target},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=False,
+        )
+        # The bug this patch prevents: negative sample weights leak
+        # straight into the WLS normal equations when True.
+        assert np.any(corrupted.weight < 0.0)
+        assert np.array_equal(uncorrupted.weight, np.ones_like(uncorrupted.weight))
+
+
 # -- ADR-001 §4a: recency_weight_i ------------------------------------------
 
 
