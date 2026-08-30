@@ -4,7 +4,9 @@
 **Status:** Accepted
 **Amended:** 2026-07-05 — §3 (module diagram/prose) and §5 updated to
 reflect `cache.py` (ADR-007) and `aggregation.py` (ADR-005) once
-accepted, and to cross-reference `ShadyDiagnosticsSwitch` (ADR-004 §1).
+accepted, and to cross-reference the diagnostics-gating entity (ADR-004
+§1) — originally `ShadyDiagnosticsSwitch`, since 2026-08-30
+`ShadyDiagnosticModeSelect`, see below.
 **2026-08-14** — §3 (`providers/`, `config_flow.py` pointers) updated
 for ADR-001's split into ADR-009/ADR-010.
 **2026-08-19** — §7 amended to require `adr/INDEX.md` be kept in sync
@@ -21,6 +23,13 @@ wording but now resolves correctly for both modules, since §2 already
 points here rather than re-enumerating. §3's `coordinator.py` bullet
 updated to note the provider-push listeners ADR-012 §4 added, alongside
 its existing scheduling triggers.
+**2026-08-30** — §2's mypy-suppression module list and §3's diagram/prose
+updated for ADR-004's amendment: `switch.py` is removed (nothing else in
+the project used the `switch` platform); `select.py` (`ShadyDiagnosticModeSelect`)
+takes its place in the HA-facing entity-glue tier. §6's zero-mocking list
+gains the new pure package `diagnostics/` (`base.py` and
+`compare_regressions.py`), mirroring how `providers/base.py` was added on
+2026-08-20 for the same reason (ADR-012 §1).
 
 ## Amendment — 2026-08-22
 
@@ -100,6 +109,11 @@ ignore[misc]`), and `untyped-decorator` errors are attached to the
 `@callback` line itself, not the `def` line below it — mypy's reported line
 number is authoritative and should never be guessed at.
 
+The HA-facing modules this suppression applies to are `config_flow.py`,
+`sensor.py`, `coordinator.py`, `select.py` (`ShadyDiagnosticModeSelect`,
+ADR-004 §1, replacing `switch.py` as of the 2026-08-30 amendment), and
+`button.py`.
+
 The modules held to this full, unsuppressed strict standard are exactly
 the zero-Home-Assistant-import, pure-Python tier — see §6 for the
 canonical list. A module belongs to this typing tier if and only if it
@@ -116,17 +130,21 @@ flowchart BT
     regression["regression/"]
     forecast_adjust["forecast_adjust.py"]
     aggregation["aggregation.py"]
+    diagnostics["diagnostics/"]
     cache["cache.py"]
     coordinator["coordinator.py"]
-    entity_glue["sensor.py / config_flow.py / switch.py / button.py"]
+    entity_glue["sensor.py / config_flow.py / select.py / button.py"]
     init["__init__.py"]
 
     yield_correction --> providers
     regression --> yield_correction
     forecast_adjust --> regression
     aggregation --> forecast_adjust
+    diagnostics --> aggregation
+    diagnostics --> regression
     cache --> aggregation
     coordinator --> cache
+    coordinator --> diagnostics
     entity_glue --> coordinator
     init --> entity_glue
     forecast_adjust -.->|"reverse transform, ADR-003b §1b/§2"| yield_correction
@@ -156,7 +174,18 @@ flowchart BT
 - **`forecast_adjust.py`** — pure logic: applies a string's fitted
   per-slot model to its raw baseline series.
 - **`aggregation.py`** — pure logic: cross-string sums, whole-day arrays,
-  trapezoidal energy-increment calculation; see ADR-005.
+  trapezoidal energy-increment calculation, and the diagnostic accuracy
+  calculation (mode-independent, ADR-004 §5) — see ADR-005/ADR-004.
+- **`diagnostics/`** (`base.py`, `compare_regressions.py`) — pure logic:
+  shared `DiagnosticMode` base class (mirrors `providers/base.py`'s
+  `Provider` ABC, ADR-012 §1) plus one concrete mode today,
+  `CompareRegressionsMode`; see ADR-004 §1/§5 (Amendment, 2026-08-30) for
+  the source of truth. Calls `regression/` for its own extra per-slot
+  fitting and `aggregation.py` for the accuracy calculation; imports
+  neither `cache.py` nor `homeassistant.*` — `coordinator.py` builds each
+  mode's input context from already-fetched cache data and persists
+  whatever a mode's `extra_fit()` returns, the same division of labor it
+  already has for `push()`-ing a provider's `forward()` result.
 - **`cache.py`** — pure logic: index-addressable time-series store,
   generic over any `sensor_id` (used for FC/PV history and the
   day-snapshot array, and, per ADR-003c, weather-forecast/cell-or-ambient
@@ -170,10 +199,18 @@ flowchart BT
   provider (push-only — a second, distinct kind of registration from the
   scheduling triggers, see ADR-012 §4), calls the pure layer including
   `cache.py`, decides which cache instances get restart-persisted, pushes
-  results to sensors — the only module that imports `cache.py`.
-- **`sensor.py` / `config_flow.py` / `switch.py` / `button.py`** — HA
+  results to sensors — the only module that imports `cache.py`. Also
+  holds the `_DIAGNOSTIC_MODES` registry (mirrors the existing
+  `_REGRESSION_STRATEGIES` lookup) and dispatches to the currently
+  selected `DiagnosticMode`'s `extra_fit()` generically at the
+  recalibration trigger (ADR-004 §1/§5, Amendment 2026-08-30) — a third
+  dispatch shape alongside scheduling triggers and provider listeners,
+  all three registered/checked once in `coordinator.py` rather than
+  scattered per caller.
+- **`sensor.py` / `config_flow.py` / `select.py` / `button.py`** — HA
   entity glue. `config_flow.py` implements the flow shape in ADR-010;
-  `switch.py` is `ShadyDiagnosticsSwitch` (ADR-004 §1); `button.py` is
+  `select.py` is `ShadyDiagnosticModeSelect` (ADR-004 §1, replacing
+  `switch.py` as of the 2026-08-30 amendment); `button.py` is
   `ShadyRecalculateButton` (ADR-002 §5).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
@@ -260,7 +297,9 @@ from TASK-0006 onward uses the convention from the outset.
 
 - Every module in `providers/base.py`, `providers/normalize.py`,
   `yield_correction.py`, `regression/`, `forecast_adjust.py`,
-  `aggregation.py`, and `cache.py` is unit-tested with **zero mocking**
+  `aggregation.py`, `cache.py`, and `diagnostics/` (`base.py`,
+  `compare_regressions.py`, ADR-004 §1/§5 Amendment, 2026-08-30) is
+  unit-tested with **zero mocking**
   — no `unittest.mock`, no fake `hass` object. Because they have no
   Home Assistant dependency, tests call the real functions with real
   dataclass instances and assert on real return values. This is only

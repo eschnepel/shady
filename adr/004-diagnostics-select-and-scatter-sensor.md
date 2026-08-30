@@ -1,7 +1,167 @@
-# ADR-004 – Diagnostics: Enable Switch and Scatter-Series Sensors (Per-String and Summed)
+# ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
 **Date:** 2026-07-05
 **Status:** Accepted
+**Amended:** 2026-08-30 — §1 revised: the single on/off `ShadyDiagnosticsSwitch`
+is replaced by a `ShadyDiagnosticModeSelect` dropdown (`select.py`), and the
+diagnostic calculation itself moves behind a new `DiagnosticMode` base class
+(new pure package `diagnostics/`, mirroring `providers/base.py`'s `Provider`
+ABC, ADR-012 §1) so a future mode is a new subclass, not a rewrite of this
+ADR's gating mechanism. §2/§2a/§2b/§3/§4's behavior — the one scatter/accuracy
+mode this ADR actually specifies — is unchanged; only its home (a concrete
+`CompareRegressionsMode`) and how it's enabled (a select option, not a
+boolean) move. §5 updated to match. See the Amendment block below for full
+rationale, and ADR-013 (new, Proposed) for two further diagnostic modes
+sketched to validate this base class's shape against needs beyond this ADR's
+own scope.
+
+---
+
+## Amendment — 2026-08-30
+
+**Reason:** §1's original design gated diagnostics behind a single boolean
+switch with the one "compare regressions" behavior implemented inline
+against it. Two problems, raised together: (1) a boolean has no room for a
+second diagnostic mode without a breaking rework of the entity itself; (2)
+the comparison logic in §2/§2a/§2b/§4 was never behind a reusable interface,
+so a second mode would either duplicate it or entangle itself with it. This
+project already has exactly this shape solved once, for external-series
+sourcing (ADR-012's `Provider` ABC): a shared base class with required and
+optional overridable methods, dispatched off a config value, so a new
+concrete case is additive. No `TASK-0015a`/`TASK-0015b` code exists yet
+(status `todo`), so
+this is a pre-implementation redesign, not a patch to delivered code.
+
+**Decision:**
+- **Entity:** `switch.py`'s `ShadyDiagnosticsSwitch` is replaced by
+  `select.py`'s `ShadyDiagnosticModeSelect` (HA `SelectEntity`), one per
+  config entry. `switch.py` is removed from the project entirely — nothing
+  else in this codebase uses the `switch` platform. Options are declared
+  once in `const.py`: `DIAGNOSTIC_MODES: tuple[str, ...]` and
+  `DEFAULT_DIAGNOSTIC_MODE = "off"` — the same shape `REGRESSION_METHODS`/
+  `DEFAULT_REGRESSION_METHOD` already use for the (separate, config-flow-set)
+  regression-method choice. Today's values: `"off"` (default) and
+  `"compare_regressions"`. Display labels come from `translations/*.json`
+  (ADR-000 §8), not hardcoded strings. Adding a future mode is one new
+  option string + one translation entry + one new `DiagnosticMode` subclass
+  (below) — no change to `select.py` itself.
+- **New pure package `diagnostics/`** (mirrors `providers/`, ADR-012 §1):
+  - `diagnostics/base.py` defines `DiagnosticMode`, an actual `ABC` (not a
+    `Protocol` — same reasoning ADR-012 §1 gives: `coordinator.py` needs to
+    call it generically without knowing which concrete mode it's talking
+    to), plus the plain dataclasses its methods use:
+
+    ```python
+    @dataclass(frozen=True)
+    class DiagnosticSlotSample:
+        """One slot's already-resolved comparison inputs. `predicted` is
+        keyed by whatever this mode compares — regression-method name for
+        CompareRegressionsMode, provider name for a future provider-
+        comparison mode (ADR-013). `actual` is None for a slot that hasn't
+        elapsed yet (mirrors §2a's future-pin handling). `pool` is the
+        optional historical scatter data (§2) — meaningful for a
+        single-slot scatter-style mode, left None for a mode with no
+        scatter concept of its own (e.g. a whole-day mode, ADR-013)."""
+        slot_of_day: int
+        predicted: Mapping[str, float]
+        actual: float | None
+        pool: Mapping[str, list[tuple[float, float]]] | None = None
+
+    @dataclass(frozen=True)
+    class DiagnosticContext:
+        """One or more slots' already-fetched comparison inputs — never
+        raw HA/recorder access, that's coordinator.py's job before this is
+        built. A single-slot mode (CompareRegressionsMode, this ADR)
+        receives exactly one sample; a whole-day mode (ADR-013, not yet
+        scheduled) receives 288 — same shape, different cardinality, no
+        base-class change needed either way."""
+        samples: Sequence[DiagnosticSlotSample]
+
+    @dataclass(frozen=True)
+    class DiagnosticResult:
+        """Pure, sensor-ready payload — sensor.py sets `state`/extends its
+        attributes with `attributes` directly, no further shaping."""
+        state: str
+        attributes: dict[str, Any]
+
+    @dataclass(frozen=True)
+    class DiagnosticFitResult:
+        """Whatever a mode's extra fitting produced, per compared source
+        (method or provider name) — coordinator.py is the one that writes
+        this into cache.py, same division of labor `push()` already has
+        for provider forward() results (ADR-012 §4): the mode computes,
+        the coordinator persists."""
+        predictions: Mapping[str, float]
+
+    class DiagnosticMode(ABC):
+        key: ClassVar[str]
+
+        @abstractmethod
+        def compute(self, context: DiagnosticContext) -> DiagnosticResult:
+            """Pure. No HA import — zero-mocking tier (ADR-000 §6)."""
+
+        def extra_fit(self, context: DiagnosticFitContext) -> DiagnosticFitResult | None:
+            """Optional, pure. Whatever extra per-slot fitting this mode
+            needs beyond the default recalibration (ADR-002 §1) — e.g.
+            fitting `regression/`'s other three strategies for the
+            diagnosed slot, for `CompareRegressionsMode`. Run at the
+            recalibration trigger while this mode is active; the returned
+            `DiagnosticFitResult` (or `None`) is what `coordinator.py`
+            caches, mirroring how it already handles a provider's
+            `forward()` result (ADR-012 §4) — build/cache stays in
+            `coordinator.py`, the mode only computes. Base default:
+            `None` — "nothing extra needed," the same role `None` already
+            plays for `Provider.forward()` (ADR-012 §1), generalizing
+            this ADR's original §1 zero-cost-when-off guarantee to "zero
+            cost for any mode that doesn't need extra fitting."
+            """
+            return None
+    ```
+
+    This mirrors ADR-012's *pattern* — an `ABC` with one required pure
+    method and one optional, no-op-by-default hook, dispatched generically
+    by `coordinator.py` — not its mechanics: a provider's `forward()` is a
+    live push listener on an external entity; a mode's `extra_fit()` runs
+    at the recalibration trigger instead. Different triggers, same shape.
+  - `diagnostics/compare_regressions.py` — `CompareRegressionsMode
+    (DiagnosticMode)`, `key = "compare_regressions"`. Everything §2/§2a/§2b
+    of this ADR already specify moves here **verbatim, no behavior
+    change**: `compute()` builds the `series`/`accuracy` payload from a
+    one-sample `DiagnosticContext`; `extra_fit()` is §4's four-method fit
+    for the one diagnosed slot.
+  - **Accuracy stays in `aggregation.py`, not this package** (§5's original
+    placement is correct and unchanged) — its definition (`1 -
+    |predicted-actual|/actual`, clamped to `[0, 1]`) is independent of
+    which mode or scope calls it, exactly the same function whether the
+    caller is comparing regression methods at one slot (this ADR),
+    regression methods across a whole day, or providers across a whole day
+    (both ADR-013, sketched below). Moving it into `diagnostics/` would
+    have coupled a genuinely mode-independent formula to one specific
+    mode's module for no reason.
+  - `coordinator.py` gets a private module-level registry, same shape as
+    the existing `_REGRESSION_STRATEGIES: dict[str, module]` lookup:
+    `_DIAGNOSTIC_MODES: dict[str, DiagnosticMode] = {"compare_regressions":
+    CompareRegressionsMode()}`. `"off"` is a reserved key and is never
+    registered — it is the *absence* of an active mode, not a
+    `DiagnosticMode` subclass with a no-op body, the same way a provider
+    with nothing to push simply never registers a listener (ADR-012 §4)
+    rather than registering a no-op one.
+- **`sensor.py` stays thin (ADR-000 §5):** `ShadyDiagnosticsSensor`/
+  `ShadyDiagnosticsSumSensor` look up the select's current option in
+  `_DIAGNOSTIC_MODES`; if found, build that mode's `DiagnosticContext` and
+  call `.compute()`, then set `state`/`attributes` from the returned
+  `DiagnosticResult` directly; if not found (`"off"` or unset), report
+  `disabled` exactly as §1 always specified. No mode-specific branching
+  left inline in `sensor.py`.
+- **Everything else in this ADR is unchanged** — the pinned-slot
+  auto-tracking/pin-override semantics (§2a), the shared config-entry-wide
+  diagnosed-slot state, the summed sensor (§2b), the historical-pool
+  caching cadence (§3), and the four-method fitting cost (§4, now
+  `CompareRegressionsMode.extra_fit()`) all describe the exact same
+  behavior as before — only the entity type and the module boundary around
+  that behavior change.
+
+**Decided by:** human (explicit instruction), confirmed by Lead Agent.
 
 ---
 
@@ -20,19 +180,29 @@ opt-in diagnostic feature.
 
 ## Decision
 
-### 1 — A dedicated enable switch, default off
+### 1 — A dedicated diagnostic-mode select, default off (revised 2026-08-30)
 
-A single `ShadyDiagnosticsSwitch` entity (one per config entry) gates all
-diagnostic sensors — every per-string `ShadyDiagnosticsSensor` (§2) and
-the config-entry-level `ShadyDiagnosticsSumSensor` (§2b) alike. It
+A single `ShadyDiagnosticModeSelect` entity (one per config entry) gates
+all diagnostic sensors — every per-string `ShadyDiagnosticsSensor` (§2)
+and the config-entry-level `ShadyDiagnosticsSumSensor` (§2b) alike. It
 defaults to **off**. While off, diagnostic sensors exist (so they don't
 appear/disappear from the entity registry, which HA handles awkwardly)
 but report `state: "disabled"` with no `series` attribute, and —
 importantly — the coordinator does **not** do the extra fitting work
-described in §4 while the switch is off. This keeps the cost of
-diagnostics at zero for the common case of a user who never turns it on,
+described in §4 while no mode is active. This keeps the cost of
+diagnostics at zero for the common case of a user who never enables one,
 following the same "no-op when not configured" pattern already
 established for the corrections in ADR-003a §2 / ADR-003b §2.
+
+Selecting `"compare_regressions"` — the one mode this ADR specifies —
+activates exactly the behavior §2/§2a/§2b/§3/§4 describe below, now
+implemented as `diagnostics/compare_regressions.py`'s `CompareRegressionsMode`
+(see the Amendment block above for the base-class shape and why it moved
+here). Everything below describes that one mode's behavior; "the switch"
+in the historical prose that follows means "this select set to
+`compare_regressions`," and "the switch is off" means "set to `off`" — the
+underlying behavior is identical to what shipped in this ADR's original
+version, only the entity/dispatch mechanism around it changed.
 
 ### 2 — One scatter-series sensor per configured PV string
 
@@ -358,46 +528,69 @@ working immediately, since those only need the diagnosed slot's own live
 `FC`/`PV` values, not the historical pool. While **pinned**, none of
 this staleness applies — see §2a.
 
-### 4 — Extra fitting cost only when the switch is on
+### 4 — Extra fitting cost only while `compare_regressions` is active
 
 Producing the four `"selected {method}"` points requires fitting all four
 strategies for the diagnosed slot, not just the one configured default —
 extra work beyond what ADR-002 §1's normal recalibration does. This only
-happens while the diagnostics switch (§1) is on, and only for the one
-diagnosed slot per string (not all 288), keeping the added cost bounded
-and opt-in: the three non-default methods are fitted alongside the
-active one at the same recalibration trigger (midnight or button, ADR-002
-§1). All four are then queried on the same 5-minute trigger that advances
-which slot is diagnosed (ADR-006 §1a, per §2 above) — not ADR-002 §2's
-irregular baseline-update trigger — so the four predictions always match
-whichever slot's pool and actual value are currently being displayed,
-rather than momentarily lagging behind it.
+happens while the select (§1) is set to `compare_regressions` — as of the
+2026-08-30 amendment, `CompareRegressionsMode.extra_fit()` — and only for
+the one diagnosed slot per string (not all 288), keeping the added cost
+bounded and opt-in: the three non-default methods are fitted alongside
+the active one at the same recalibration trigger (midnight or button,
+ADR-002 §1). All four are then queried on the same 5-minute trigger that
+advances which slot is diagnosed (ADR-006 §1a, per §2 above) — not
+ADR-002 §2's irregular baseline-update trigger — so the four predictions
+always match whichever slot's pool and actual value are currently being
+displayed, rather than momentarily lagging behind it.
 
-### 5 — Module responsibility
+### 5 — Module responsibility (revised 2026-08-30)
 
-`switch.py` adds `ShadyDiagnosticsSwitch`, mirroring the existing
-`button.py` pattern (Effy's `EffyRecalculateButton`, ADR-002 §1) for a
-simple, single-purpose HA entity with no business logic of its own beyond
-toggling a flag the coordinator reads. The retained per-slot pool cache
-from §3 lives in `cache.py` (ADR-007), populated by `coordinator.py` as a
-side effect of recalibration — not owned by `coordinator.py` directly,
-matching every other cache in this design. The accuracy calculation
-(`1 - |predicted - actual| / actual`, clamped, per §2) is a pure function
-in `aggregation.py`, since it takes plain numbers in and returns a plain
-number out, with no HA or per-string knowledge needed; §2b's pointwise
-sum-then-accuracy calculation is a second, equally pure function
-alongside it, taking each string's already-computed numbers in rather
-than reaching back into `regression/` itself. `sensor.py` adds
-`ShadyDiagnosticsSensor` (§2, one per string) and
+`select.py` adds `ShadyDiagnosticModeSelect`, a simple, single-purpose HA
+entity (`SelectEntity`) with no business logic of its own beyond exposing
+`const.py`'s `DIAGNOSTIC_MODES` option list and persisting the chosen
+option for `coordinator.py` to read — the same "thin entity glue"
+philosophy `button.py`'s `EffyRecalculateButton`-style pattern (ADR-002
+§1) already established, just for a multi-value control instead of a
+single-purpose trigger. The actual diagnostic calculation lives in the new
+pure package `diagnostics/` (ADR-012-style base class + concrete modes;
+see the Amendment block above for the full `DiagnosticMode` shape):
+`diagnostics/base.py` holds the shared `DiagnosticMode` ABC and its
+dataclasses; `diagnostics/compare_regressions.py` holds this ADR's one
+concrete mode, `CompareRegressionsMode`. `coordinator.py` holds the
+`_DIAGNOSTIC_MODES` registry (mirroring its existing
+`_REGRESSION_STRATEGIES` lookup) and calls the active mode's `extra_fit()`
+generically at the recalibration trigger, exactly as it already runs one
+generic loop over `forward()`-implementing providers (ADR-012 §4) — same
+"one dispatch site, not one branch per concrete case" shape.
+
+The retained per-slot pool cache from §3 lives in `cache.py` (ADR-007),
+populated by `coordinator.py` as a side effect of recalibration — not
+owned by `coordinator.py` directly, matching every other cache in this
+design. The accuracy calculation (`1 - |predicted - actual| / actual`,
+clamped, per §2) stays a pure function in `aggregation.py` — **not** in
+`diagnostics/`, since it takes plain numbers in and returns a plain
+number out, with no per-mode or per-string knowledge needed, and is
+therefore reusable by any future `DiagnosticMode` unchanged (see ADR-013
+for two sketched future modes that call this same function); §2b's
+pointwise sum-then-accuracy calculation is a second, equally pure
+function alongside it, taking each string's already-computed numbers in
+rather than reaching back into `regression/` itself.
+
+`sensor.py` adds `ShadyDiagnosticsSensor` (§2, one per string) and
 `ShadyDiagnosticsSumSensor` (§2b, one per config entry, following the
 six `ShadyPvSumSensor`-style sensors' placement in `sensor.py` per
 ADR-005's "Module: a new pure aggregation layer" section), both
-staying thin like every other sensor in this design: each reads
-`coordinator.py`'s cached pools (from `cache.py`) and the
-freshly-computed selected/accuracy values (the sum sensor reading the
-per-string sensors' own already-shaped output, not `cache.py` a second
-time), and shapes them into the `series`/`accuracy` structure above —
-this shaping is pure presentation and does not belong in `regression/` or
+staying thin like every other sensor in this design: each reads the
+`ShadyDiagnosticModeSelect`'s current option, looks it up in
+`coordinator.py`'s `_DIAGNOSTIC_MODES`, and — if found — builds that
+mode's `DiagnosticContext` from `coordinator.py`'s cached pools (from
+`cache.py`) and freshly-computed selected/accuracy values, then calls
+`.compute()` and sets `state`/`attributes` straight from the returned
+`DiagnosticResult` (the sum sensor reading the per-string sensors' own
+already-shaped output, not `cache.py` a second time); if not found
+(`"off"` or unset), it reports `disabled` as §1 specifies. This shaping
+is pure presentation and does not belong in `regression/` or
 `forecast_adjust.py`. The `shady.select_diagnostic_slot` service (§2a) is
 registered in `__init__.py` (the usual home for service registration),
 is **not** entity-targeted (§2a — there is one diagnosed-slot state per
@@ -458,10 +651,21 @@ a single service handler this small.
   matching ADR-005's existing sum-sensor pattern, at no extra fitting or
   fetching cost of its own — it only ever sums numbers the per-string
   sensors already computed.
-- **Con:** With the switch on, recalibration (ADR-002 §1) does roughly
-  4× the fitting work per string (all four methods instead of one) for
-  the diagnosed slot — small in absolute terms (one slot, not 288), but
-  not free, and scales with the number of configured strings.
+- **Con:** With `compare_regressions` active, recalibration (ADR-002 §1)
+  does roughly 4× the fitting work per string (all four methods instead
+  of one) for the diagnosed slot — small in absolute terms (one slot, not
+  288), but not free, and scales with the number of configured strings.
+- **Pro (2026-08-30 amendment):** The select-plus-base-class redesign
+  turns "add a second diagnostic mode" from a rework of a boolean-gated
+  entity and its inline logic into an additive change — a new option
+  string, a new `DiagnosticMode` subclass, one registry entry. ADR-013
+  sketches two such modes without touching `diagnostics/base.py`.
+- **Con (2026-08-30 amendment):** `DiagnosticContext.samples` being a
+  `Sequence` (one item today, potentially 288 for a future whole-day
+  mode) means `CompareRegressionsMode.compute()` must still assume
+  exactly one sample even though the type does not enforce that — the
+  same category of runtime-not-enforced contract ADR-012 §1 already
+  accepts for `forward()`'s optionality.
 - **Con:** There is exactly one diagnosed-slot state per config entry
   (§2a), not one per string — a direct trade against the summed sensor
   (§2b) being well-defined at all. A person cannot pin string A to one

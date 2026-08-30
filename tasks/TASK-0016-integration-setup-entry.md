@@ -2,13 +2,14 @@
 
 - **Status:** todo
 - **Related ADRs:** [ADR-002 §1a, ADR-002 §5]
-- **Dependencies:** [TASK-0010-coordinator-recalibration-recompute-push, TASK-0011-forecast-sensor-and-recalculate-button, TASK-0012-aggregate-sensors, TASK-0013-intraday-deviation-correction, TASK-0014-temperature-forecast-learned-model, TASK-0015-diagnostics-switch-and-scatter-sensors]
+- **Dependencies:** [TASK-0010-coordinator-recalibration-recompute-push, TASK-0011-forecast-sensor-and-recalculate-button, TASK-0012-aggregate-sensors, TASK-0013-intraday-deviation-correction, TASK-0014-temperature-forecast-learned-model, TASK-0015b-diagnostics-select-and-scatter-sensors]
 
 ## Goal
 Implement `custom_components/shady/__init__.py`'s `async_setup_entry`/
 `async_unload_entry`: construct the coordinator, store it in
-`hass.data`, forward this config entry's platforms (`sensor`, `switch`,
-`button`), register the `shady.select_diagnostic_slot` service
+`hass.data`, forward this config entry's platforms (`sensor`, `select`,
+`button` — `select` replacing `switch` as of ADR-004's 2026-08-30
+amendment), register the `shady.select_diagnostic_slot` service
 (ADR-002 §5's `__init__.py` bullet), and — the reason this task exists
 — guard against Home Assistant's own boot-ordering race (ADR-002 §1a):
 a config entry's referenced entities may not exist yet if the
@@ -29,7 +30,7 @@ Consumed Interfaces, alongside the ADR-002 §1a amendment itself. See
 - Given `hass.is_running` is already `True` and every required entity
   exists, When `async_setup_entry` runs, Then it constructs the
   coordinator, stores it in `hass.data[DOMAIN][entry.entry_id]`,
-  forwards `sensor`/`switch`/`button` platform setup, and runs the
+  forwards `sensor`/`select`/`button` platform setup, and runs the
   coordinator's startup fit (ADR-002 §1) — all before returning.
 - Given `hass.is_running` is `False` (Home Assistant still starting),
   When `async_setup_entry` runs — regardless of whether the config
@@ -81,9 +82,9 @@ Consumed Interfaces, alongside the ADR-002 §1a amendment itself. See
 - `coordinator.<Coordinator class>` — constructor, `missing_required_entities()`,
   the startup-fit entry point, and a shutdown/cleanup method — from
   `custom_components/shady/coordinator.py` (→ task: TASK-0010)
-- Whatever `sensor.py`/`switch.py`/`button.py` each need `__init__.py`
+- Whatever `sensor.py`/`select.py`/`button.py` each need `__init__.py`
   to pass through `hass.data` (→ tasks: TASK-0011, TASK-0012, TASK-0013,
-  TASK-0014, TASK-0015)
+  TASK-0014, TASK-0015b-diagnostics-select-and-scatter-sensors)
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —

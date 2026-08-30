@@ -180,17 +180,22 @@ using the shared regression strategies with the temperature-specific
 weighting (no magnitude downweight); asserts the skip-both-sides rule
 when no forecast-capable entity is configured.
 
-### 15 — Diagnostics: switch & scatter/accuracy sensors
-**ADRs:** 004, 007a §6
+### 15 — Diagnostics: select-based diagnostic modes & scatter/accuracy sensors
+**ADRs:** 004 (Amendment 2026-08-30), 007a §6, 013 (Proposed, not scheduled)
 **Scope:** `cache.py`'s `get_pinned_slot_pool` + `pinned_reference`
-scalar (`pin_reference`/`clear_reference`), `switch.py`'s
-`ShadyDiagnosticsSwitch`, `sensor.py`'s `ShadyDiagnosticsSensor` +
+scalar (`pin_reference`/`clear_reference`), `select.py`'s
+`ShadyDiagnosticModeSelect` (replacing the original `ShadyDiagnosticsSwitch`),
+`diagnostics/`'s `DiagnosticMode` base class and `CompareRegressionsMode`
+(the one concrete mode in scope), `sensor.py`'s `ShadyDiagnosticsSensor` +
 `ShadyDiagnosticsSumSensor`, the accuracy pure function in
-`aggregation.py`, and the `shady.select_diagnostic_slot` service
-registered in `__init__.py`.
+`aggregation.py` (unchanged, mode-independent), and the
+`shady.select_diagnostic_slot` service registered in `__init__.py`. Split
+into two tasks (base architecture, then the concrete mode + entities) —
+see `tasks/INDEX.md`'s refinement log.
 **Demonstrable via:** zero-mocking pytest for `get_pinned_slot_pool`'s
-anchor resolution and the accuracy calculation; real-`hass`-fixture test
-for the switch gating, auto-tracking vs. pinned-slot service call, and
+anchor resolution, the accuracy calculation, and the `DiagnosticMode`
+base class's contract in isolation; real-`hass`-fixture test for the
+select gating, auto-tracking vs. pinned-slot service call, and
 future-pin partial-data shape.
 
 ---

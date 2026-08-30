@@ -39,7 +39,8 @@ module exists yet. `tests/__init__.py` is empty.
 - **HA-stub gap handling (`ADR-000 §2`):** untyped HA base classes cause
   `misc`/`untyped-decorator` mypy noise. Suppressed **per-file** via
   `mypy.ini` (`warn_unused_ignores = False` on exactly the HA-facing
-  modules: `config_flow`, `sensor`, `coordinator`, `switch`, `button`)
+  modules: `config_flow`, `sensor`, `coordinator`, `select`, `button` —
+  `select.py` replaces `switch.py` as of ADR-004's 2026-08-30 amendment)
   plus targeted `# type: ignore[<code>]` on the *exact* flagged line
   (class statement for `misc`, the `@callback` line itself for
   `untyped-decorator`). Never a bare `# type: ignore`, never a global
@@ -57,9 +58,10 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
     → regression/ (base.py, kernel.py, linear.py, wls2.py, wls3.py)
       → forecast_adjust.py  -- (reverse edge back into yield_correction.py, ADR-003b §1b)
         → aggregation.py
+          → diagnostics/ (base.py, compare_regressions.py)  -- also reads regression/ directly (ADR-004 §5)
           → cache.py
-            → coordinator.py
-              → sensor.py / config_flow.py / switch.py / button.py
+            → coordinator.py  -- reads diagnostics/ via a mode registry (ADR-004 §5)
+              → sensor.py / config_flow.py / select.py / button.py
                 → __init__.py
 ```
 
@@ -81,8 +83,19 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   its raw baseline series; calls back into `yield_correction.py`'s reverse
   transform.
 - **`aggregation.py`** — pure cross-string sums, day arrays, trapezoidal
-  energy-increment calc, diagnostic accuracy calc, intraday-correction
-  math (ADR-005, ADR-006 §5).
+  energy-increment calc, diagnostic accuracy calc (mode-independent,
+  called by `diagnostics/`, ADR-004 §5), intraday-correction math
+  (ADR-005, ADR-006 §5).
+- **`diagnostics/`** (`base.py`, `compare_regressions.py`, new
+  2026-08-30) — pure `DiagnosticMode` base class (mirrors
+  `providers/base.py`'s `Provider` ABC, ADR-012 §1) + one concrete mode,
+  `CompareRegressionsMode` (ADR-004 §1/§2/§2a/§2b/§4, moved here verbatim
+  from the original inline design). `compute()` (required) shapes the
+  sensor payload; `extra_fit()` (optional, default `None`) does whatever
+  extra per-slot fitting the mode needs, via `regression/` directly.
+  Reuses `aggregation.py`'s accuracy function unmodified — see ADR-013
+  (Proposed, not scheduled) for two further modes sketched to confirm
+  this base class doesn't need to change again for a whole-day scope.
 - **`cache.py`** — pure, no `hass` import, injected `fetch_fn`. Index-
   addressable time-series store (generic over `sensor_id`) + simple
   dict stores (model cache, ramp state) + 2 restart-persisted integral
@@ -91,9 +104,14 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   Registers all scheduling triggers + one generic push listener per
   `forward()`-implementing provider; orchestrates the pure layer; pushes
   to sensors. Exposes `missing_required_entities()` for `__init__.py`'s
-  startup-ordering guard (ADR-002 §1a).
-- **`sensor.py`/`config_flow.py`/`switch.py`/`button.py`** — thin HA
-  entity glue, all classes prefixed `Shady`.
+  startup-ordering guard (ADR-002 §1a). Also holds `_DIAGNOSTIC_MODES`
+  (mirrors the existing `_REGRESSION_STRATEGIES` dict), dispatching to
+  the select-chosen `DiagnosticMode`'s `extra_fit()` at the recalibration
+  trigger and caching whatever it returns (ADR-004 §5).
+- **`sensor.py`/`config_flow.py`/`select.py`/`button.py`** — thin HA
+  entity glue, all classes prefixed `Shady`. `select.py`'s
+  `ShadyDiagnosticModeSelect` replaces the original `switch.py` as of
+  ADR-004's 2026-08-30 amendment.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`;
   registers the `shady.select_diagnostic_slot` service; owns the
   startup-ordering guard (ADR-002 §1a, TASK-0016) — `ConfigEntryNotReady`
@@ -102,7 +120,8 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 
 **Testing (`ADR-000 §6`):** every module in `providers/base.py`,
 `providers/normalize.py`, `yield_correction.py`, `regression/`,
-`forecast_adjust.py`, `aggregation.py`, `cache.py` — zero mocking, no
+`forecast_adjust.py`, `aggregation.py`, `cache.py`, `diagnostics/`
+(`base.py`, `compare_regressions.py`) — zero mocking, no
 `unittest.mock`, no fake `hass`. Loaded via direct file-path import
 (`importlib.util.spec_from_file_location`), **not** package import, to
 avoid pulling in `homeassistant.*` via `__init__.py`. Dynamically-loaded
@@ -253,15 +272,24 @@ into `cache.py`'s `fetch_fn`.
   forecast; attributes for intraday-correction transparency
   (`intraday_ratio`, `intraday_state`, `intraday_ramp_weight`,
   `values_raw`, `intraday_blend_active`) when ADR-006 active.
-- **`ShadyDiagnosticsSwitch`** (one/entry, default off, ADR-004 §1) gates
-  all diagnostics; while off, diagnostics sensors report `disabled`,
-  zero extra fitting cost.
+- **`ShadyDiagnosticModeSelect`** (one/entry, default `"off"`, ADR-004 §1,
+  replacing the original `ShadyDiagnosticsSwitch` as of the 2026-08-30
+  amendment) gates all diagnostics via a dropdown (`const.py`'s
+  `DIAGNOSTIC_MODES`, today `"off"`/`"compare_regressions"`); while
+  `"off"`, diagnostics sensors report `disabled`, zero extra fitting
+  cost. Selecting a mode dispatches to a `DiagnosticMode` subclass
+  (`diagnostics/`, ADR-004 §5) via `coordinator.py`'s `_DIAGNOSTIC_MODES`
+  registry — adding a future mode (see ADR-013, Proposed, not scheduled)
+  is a new option + subclass, not a rework of this entity.
 - **`ShadyDiagnosticsSensor`** (per string, ADR-004 §2) — ApexCharts-
   shaped `series` (slot-pool scatter + 4 methods' selected-prediction
-  points + actual point) and plain-float `accuracy` dict. Diagnosed slot
-  defaults to "last complete slot"; overridable via the
-  `shady.select_diagnostic_slot` service (not entity-targeted — one
-  diagnosed-slot state per **config entry**).
+  points + actual point) and plain-float `accuracy` dict, built by
+  calling the active `DiagnosticMode`'s `compute()` (today, always
+  `CompareRegressionsMode`) and setting `state`/`attributes` from its
+  returned `DiagnosticResult` directly. Diagnosed slot defaults to "last
+  complete slot"; overridable via the `shady.select_diagnostic_slot`
+  service (not entity-targeted — one diagnosed-slot state per **config
+  entry**).
 - **`ShadyDiagnosticsSumSensor`** (one/entry, ADR-004 §2b) — pointwise
   cross-string sum of the above.
 - **6 aggregate sensors** (one/entry, ADR-005): `ShadyPvSumSensor`,
@@ -301,6 +329,15 @@ crossfades old (frozen) vs. new (freshly ramping) prediction instead —
 same steady state, no dip. Ordering is canonical: correction → **one**
 final output clamp (`ADR-001 §2`/`ADR-003a §1a`), never clamped
 mid-pipeline or per crossfade side.
+
+## 8a — Drafted but not scheduled
+
+- **Whole-day diagnostic modes** (comparing regression methods, or
+  comparing providers, across all 288 slots of a day rather than one —
+  ADR-013, `Status: Proposed`) are sketched only, to confirm ADR-004's
+  `DiagnosticMode` base class doesn't need revisiting later. No task
+  exists for either; unlike §9 below, this is not a permanent rejection —
+  either may be scheduled in a future planning pass.
 
 ## 9 — Explicit exclusions (never implement these)
 
