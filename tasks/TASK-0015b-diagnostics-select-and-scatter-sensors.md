@@ -124,8 +124,20 @@ sequential).
 - `diagnostics.base.DiagnosticMode`, `DiagnosticContext`,
   `DiagnosticSlotSample`, `DiagnosticResult`, `DiagnosticFitResult` from
   `custom_components/shady/diagnostics/base.py` (→ task:
-  TASK-0015a-diagnostic-mode-base-architecture) — **pending**: fill with
-  exact signatures once that task reaches `done`.
+  TASK-0015a-diagnostic-mode-base-architecture):
+  - `DiagnosticSlotSample` — frozen dataclass: `slot_of_day: int`,
+    `predicted: Mapping[str, float]`, `actual: float | None`,
+    `pool: Mapping[str, list[tuple[float, float]]] | None = None`.
+  - `DiagnosticContext` — frozen dataclass: `samples: Sequence[DiagnosticSlotSample]`.
+  - `DiagnosticResult` — frozen dataclass: `state: str`, `attributes: dict[str, Any]`.
+  - `DiagnosticFitResult` — frozen dataclass: `predictions: Mapping[str, float]`.
+  - `DiagnosticMode` — `abc.ABC`, `key: ClassVar[str]`;
+    `compute(self, context: DiagnosticContext) -> DiagnosticResult`
+    (abstract, required); `extra_fit(self, context: DiagnosticContext) ->
+    DiagnosticFitResult | None` (optional, default `None`). Note:
+    `extra_fit`'s parameter is `DiagnosticContext` — ADR-004's own sketch
+    named it `DiagnosticFitContext`, a typo corrected during TASK-0015a
+    (see `tasks/INDEX.md`'s 2026-08-31 refinement-log entry).
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —

@@ -1,6 +1,6 @@
 # Task: Diagnostic Mode Base Architecture
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-004 §1 (Amendment 2026-08-30), ADR-004 §5 (Amendment 2026-08-30), ADR-012 §1, ADR-013 §1]
 - **Dependencies:** []
 
@@ -69,3 +69,56 @@ subclass, when/if either is ever scheduled.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/diagnostics/__init__.py` → empty package
+  marker, no exports (mirrors `providers/__init__.py`,
+  `regression/__init__.py`).
+- `custom_components/shady/diagnostics/base.py`:
+  - `DiagnosticSlotSample` — frozen dataclass, fields `slot_of_day: int`,
+    `predicted: Mapping[str, float]`, `actual: float | None`,
+    `pool: Mapping[str, list[tuple[float, float]]] | None = None`.
+  - `DiagnosticContext` — frozen dataclass, field
+    `samples: Sequence[DiagnosticSlotSample]`. Also the parameter type
+    for `DiagnosticMode.extra_fit()` (see note below).
+  - `DiagnosticResult` — frozen dataclass, fields `state: str`,
+    `attributes: dict[str, Any]`.
+  - `DiagnosticFitResult` — frozen dataclass, field
+    `predictions: Mapping[str, float]`.
+  - `DiagnosticMode` — abstract base class (`abc.ABC`), `key: ClassVar[str]`.
+    - `compute(self, context: DiagnosticContext) -> DiagnosticResult` —
+      abstract, **required**. A subclass that omits it fails to
+      instantiate (`TypeError`).
+    - `extra_fit(self, context: DiagnosticContext) -> DiagnosticFitResult | None`
+      — optional hook, base default returns `None`.
+- `tests/test_diagnostics_base.py` → 9 zero-mocking tests (5 test
+  classes) covering all 7 acceptance criteria above. Reuses the
+  `TYPE_CHECKING`-only static-import pattern (ADR-000 §6) established by
+  `test_providers_base.py`, one `from ... import X as X  # noqa: PLC0414`
+  line per name (not a grouped multi-line import — `ruff format`
+  relocates a shared `# noqa` comment on a parenthesized multi-name
+  import in a way that desyncs it from the flagged line; kept to the
+  exact single-line-per-name shape the existing convention already
+  uses).
+- External dependencies added: none.
+- Gates: `ruff format`, `ruff check`, `mypy --config-file mypy.ini
+  --strict`, `pytest` all pass with zero errors/warnings. Full suite
+  318/318 (309 pre-existing + 9 new). `mypy` clean on 43 source files.
+  `ruff format --check` still shows the one pre-existing, unrelated
+  `tests/test_regression.py` formatting drift documented in
+  `tasks/INDEX.md`'s 2026-08-26 refinement-log entry (ruff-version
+  drift) — untouched by this task, out of scope.
+- **Implementation note (ADR text correction, not a design decision):**
+  ADR-004's Amendment code sketch types `extra_fit`'s parameter as
+  `DiagnosticFitContext`, a name never defined anywhere in ADR-004,
+  ADR-013, or elsewhere in the repo — confirmed by a full-repo search
+  before writing any code. The only two dataclasses the sketch actually
+  defines for context-shaped input are `DiagnosticContext` (used by
+  `compute()`) and `DiagnosticFitResult` (`extra_fit`'s *return* type,
+  already distinctly named). Implemented `extra_fit(context:
+  DiagnosticContext)` — the same context type `compute()` receives,
+  since a mode's extra fitting (e.g. `CompareRegressionsMode` fitting
+  the three non-default `regression/` strategies) operates on the same
+  already-resolved diagnosed-slot inputs `compute()` renders, per ADR-004
+  §4's own description of what `extra_fit()` needs. Treated as a plain
+  typo in the ADR's illustrative code block, not a Scenario A/B/C
+  refinement (no scope, dependency, or behavior decision changes) — see
+  `tasks/INDEX.md`'s refinement log for the corresponding entry.

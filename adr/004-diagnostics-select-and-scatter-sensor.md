@@ -100,7 +100,7 @@ this is a pre-implementation redesign, not a patch to delivered code.
         def compute(self, context: DiagnosticContext) -> DiagnosticResult:
             """Pure. No HA import — zero-mocking tier (ADR-000 §6)."""
 
-        def extra_fit(self, context: DiagnosticFitContext) -> DiagnosticFitResult | None:
+        def extra_fit(self, context: DiagnosticContext) -> DiagnosticFitResult | None:
             """Optional, pure. Whatever extra per-slot fitting this mode
             needs beyond the default recalibration (ADR-002 §1) — e.g.
             fitting `regression/`'s other three strategies for the
@@ -123,6 +123,18 @@ this is a pre-implementation redesign, not a patch to delivered code.
     by `coordinator.py` — not its mechanics: a provider's `forward()` is a
     live push listener on an external entity; a mode's `extra_fit()` runs
     at the recalibration trigger instead. Different triggers, same shape.
+
+    **Correction (2026-08-31, caught while implementing
+    TASK-0015a-diagnostic-mode-base-architecture, before any code
+    existed):** the sketch above originally typed `extra_fit`'s parameter
+    as `DiagnosticFitContext`, a name this ADR never actually defines.
+    `extra_fit` takes the same `DiagnosticContext` `compute()` receives —
+    a mode's extra fitting operates on the same already-resolved
+    diagnosed-slot inputs `compute()` renders (§4). Fixed in place above;
+    a plain typo in this ADR's own illustrative code, not a design
+    decision, so no separate dated "Amended" header line above was added
+    for it — see `tasks/INDEX.md`'s refinement log for the corresponding
+    entry.
   - `diagnostics/compare_regressions.py` — `CompareRegressionsMode
     (DiagnosticMode)`, `key = "compare_regressions"`. Everything §2/§2a/§2b
     of this ADR already specify moves here **verbatim, no behavior
