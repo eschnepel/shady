@@ -30,6 +30,13 @@ takes its place in the HA-facing entity-glue tier. §6's zero-mocking list
 gains the new pure package `diagnostics/` (`base.py` and
 `compare_regressions.py`), mirroring how `providers/base.py` was added on
 2026-08-20 for the same reason (ADR-012 §1).
+**2026-08-31** — §3's diagram/prose and §6's zero-mocking list updated for
+ADR-014: new pure module `string_computation.py`, extracted from
+`coordinator.py`'s own private methods (see ADR-014 for the full
+rationale — discovered while scoping `TASK-0015b`'s diagnostics work).
+The `diagnostics --> regression` edge is replaced by
+`diagnostics --> string_computation`; `coordinator.py`'s bullet is
+updated to reflect its narrower, orchestration-only role.
 
 ## Amendment — 2026-08-22
 
@@ -129,6 +136,7 @@ flowchart BT
     yield_correction["yield_correction.py"]
     regression["regression/"]
     forecast_adjust["forecast_adjust.py"]
+    string_computation["string_computation.py"]
     aggregation["aggregation.py"]
     diagnostics["diagnostics/"]
     cache["cache.py"]
@@ -139,11 +147,15 @@ flowchart BT
     yield_correction --> providers
     regression --> yield_correction
     forecast_adjust --> regression
+    string_computation --> regression
+    string_computation --> forecast_adjust
+    string_computation --> yield_correction
     aggregation --> forecast_adjust
     diagnostics --> aggregation
-    diagnostics --> regression
+    diagnostics --> string_computation
     cache --> aggregation
     coordinator --> cache
+    coordinator --> string_computation
     coordinator --> diagnostics
     entity_glue --> coordinator
     init --> entity_glue
@@ -173,6 +185,14 @@ flowchart BT
   confidence definition; see ADR-001/ADR-002.
 - **`forecast_adjust.py`** — pure logic: applies a string's fitted
   per-slot model to its raw baseline series.
+- **`string_computation.py`** — pure logic: the shared per-string
+  fit/predict computation — training-time corrections, the
+  regression-method registry and fit call, and the predict-then-
+  reverse-transform-then-clamp sequence — factored out of
+  `coordinator.py` and out of a would-be duplicate inside `diagnostics/`
+  alike; slot-count-agnostic, so the same functions serve
+  `coordinator.py`'s 288-slot sweep and `diagnostics/`'s single
+  diagnosed slot. See ADR-014 for the source of truth.
 - **`aggregation.py`** — pure logic: cross-string sums, whole-day arrays,
   trapezoidal energy-increment calculation, and the diagnostic accuracy
   calculation (mode-independent, ADR-004 §5) — see ADR-005/ADR-004.
@@ -180,12 +200,13 @@ flowchart BT
   shared `DiagnosticMode` base class (mirrors `providers/base.py`'s
   `Provider` ABC, ADR-012 §1) plus one concrete mode today,
   `CompareRegressionsMode`; see ADR-004 §1/§5 (Amendment, 2026-08-30) for
-  the source of truth. Calls `regression/` for its own extra per-slot
-  fitting and `aggregation.py` for the accuracy calculation; imports
-  neither `cache.py` nor `homeassistant.*` — `coordinator.py` builds each
-  mode's input context from already-fetched cache data and persists
-  whatever a mode's `extra_fit()` returns, the same division of labor it
-  already has for `push()`-ing a provider's `forward()` result.
+  the source of truth. Calls `string_computation.py` for its own extra
+  per-slot fitting (ADR-014) and `aggregation.py` for the accuracy
+  calculation; imports neither `cache.py` nor `homeassistant.*` —
+  `coordinator.py` builds each mode's input context from already-fetched
+  cache data and persists whatever a mode's `extra_fit()` returns, the
+  same division of labor it already has for `push()`-ing a provider's
+  `forward()` result.
 - **`cache.py`** — pure logic: index-addressable time-series store,
   generic over any `sensor_id` (used for FC/PV history and the
   day-snapshot array, and, per ADR-003c, weather-forecast/cell-or-ambient
@@ -197,16 +218,22 @@ flowchart BT
 - **`coordinator.py`** — orchestrates: registers all scheduling triggers,
   plus, per ADR-012 §4, one generic listener per `forward()`-implementing
   provider (push-only — a second, distinct kind of registration from the
-  scheduling triggers, see ADR-012 §4), calls the pure layer including
-  `cache.py`, decides which cache instances get restart-persisted, pushes
-  results to sensors — the only module that imports `cache.py`. Also
-  holds the `_DIAGNOSTIC_MODES` registry (mirrors the existing
-  `_REGRESSION_STRATEGIES` lookup) and dispatches to the currently
-  selected `DiagnosticMode`'s `extra_fit()` generically at the
-  recalibration trigger (ADR-004 §1/§5, Amendment 2026-08-30) — a third
-  dispatch shape alongside scheduling triggers and provider listeners,
-  all three registered/checked once in `coordinator.py` rather than
-  scattered per caller.
+  scheduling triggers, see ADR-012 §4), reads raw data from `cache.py`/
+  `providers/` and hands it to `string_computation.py` (ADR-014) for the
+  actual fit/predict computation, decides which cache instances get
+  restart-persisted, pushes results to sensors — the only module that
+  imports `cache.py`. As of ADR-014, `coordinator.py` no longer performs
+  the fit/correction/predict computation itself (previously
+  `_apply_training_corrections` and inlined build-pool/fit/
+  reverse-transform sequences) — that moved to `string_computation.py`,
+  narrowing this module back toward its own stated orchestration-only
+  scope. Also holds the `_DIAGNOSTIC_MODES` registry (mirrors
+  `string_computation.py`'s `REGRESSION_STRATEGIES` lookup) and
+  dispatches to the currently selected `DiagnosticMode`'s `extra_fit()`
+  generically at the recalibration trigger (ADR-004 §1/§5, Amendment
+  2026-08-30) — a third dispatch shape alongside scheduling triggers and
+  provider listeners, all three registered/checked once in
+  `coordinator.py` rather than scattered per caller.
 - **`sensor.py` / `config_flow.py` / `select.py` / `button.py`** — HA
   entity glue. `config_flow.py` implements the flow shape in ADR-010;
   `select.py` is `ShadyDiagnosticModeSelect` (ADR-004 §1, replacing
@@ -297,9 +324,10 @@ from TASK-0006 onward uses the convention from the outset.
 
 - Every module in `providers/base.py`, `providers/normalize.py`,
   `yield_correction.py`, `regression/`, `forecast_adjust.py`,
-  `aggregation.py`, `cache.py`, and `diagnostics/` (`base.py`,
-  `compare_regressions.py`, ADR-004 §1/§5 Amendment, 2026-08-30) is
-  unit-tested with **zero mocking**
+  `string_computation.py` (ADR-014, 2026-08-31), `aggregation.py`,
+  `cache.py`, and `diagnostics/` (`base.py`, `compare_regressions.py`,
+  ADR-004 §1/§5 Amendment, 2026-08-30) is unit-tested with **zero
+  mocking**
   — no `unittest.mock`, no fake `hass` object. Because they have no
   Home Assistant dependency, tests call the real functions with real
   dataclass instances and assert on real return values. This is only

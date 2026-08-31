@@ -2,7 +2,7 @@
 
 - **Status:** todo
 - **Related ADRs:** [ADR-004 §1 (Amendment 2026-08-30), ADR-004 §2, ADR-004 §2a, ADR-004 §2b, ADR-004 §3, ADR-004 §4, ADR-004 §5 (Amendment 2026-08-30), ADR-007a §6]
-- **Dependencies:** [TASK-0002-cache-core-time-series-store, TASK-0006-cache-batched-regression-pool-accessor, TASK-0010-coordinator-recalibration-recompute-push, TASK-0011-forecast-sensor-and-recalculate-button, TASK-0013-intraday-deviation-correction, TASK-0015a-diagnostic-mode-base-architecture]
+- **Dependencies:** [TASK-0002-cache-core-time-series-store, TASK-0006-cache-batched-regression-pool-accessor, TASK-0010-coordinator-recalibration-recompute-push, TASK-0011-forecast-sensor-and-recalculate-button, TASK-0013-intraday-deviation-correction, TASK-0015a-diagnostic-mode-base-architecture, TASK-0017-string-computation-module, TASK-0015a-patch-1-diagnostic-fit-inputs]
 
 ## Goal
 Implement `cache.py`'s `get_pinned_slot_pool` accessor + cache-wide
@@ -27,6 +27,16 @@ scatter-sensors**, split per the 2026-08-30 ADR-004 amendment (see
 scope, only the gating entity (`select` instead of `switch`) and the
 calculation's home (a `DiagnosticMode` subclass instead of inline logic)
 change.
+
+**Additional dependencies added 2026-08-31 (Scenario B + C, see
+`tasks/INDEX.md`'s refinement log):** `CompareRegressionsMode.extra_fit()`
+needs `string_computation.py` (ADR-014, `TASK-0017` — a prerequisite
+discovered while scoping this task's Consumed Interfaces) for its
+fit/reverse-transform/clamp computation, and needs
+`DiagnosticSlotSample`'s two new fields (`query_fc`, `fit_inputs`) plus
+the new `DiagnosticFitInputs` dataclass (`TASK-0015a-patch-1`) to carry
+that computation's raw inputs through `DiagnosticContext` without
+`diagnostics/` importing `cache.py`/`homeassistant.*` itself.
 
 **Reuses TASK-0013's 5-minute trigger** (ADR-004 §2 explicitly reuses
 ADR-006 §1a's trigger rather than adding a third schedule) — this is a

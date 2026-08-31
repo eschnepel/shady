@@ -57,12 +57,13 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   → yield_correction.py
     → regression/ (base.py, kernel.py, linear.py, wls2.py, wls3.py)
       → forecast_adjust.py  -- (reverse edge back into yield_correction.py, ADR-003b §1b)
-        → aggregation.py
-          → diagnostics/ (base.py, compare_regressions.py)  -- also reads regression/ directly (ADR-004 §5)
-          → cache.py
-            → coordinator.py  -- reads diagnostics/ via a mode registry (ADR-004 §5)
-              → sensor.py / config_flow.py / select.py / button.py
-                → __init__.py
+        → string_computation.py  -- also reads regression/, forecast_adjust.py, yield_correction.py directly (ADR-014)
+          → aggregation.py
+            → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014)
+            → cache.py
+              → coordinator.py  -- reads diagnostics/ via a mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014)
+                → sensor.py / config_flow.py / select.py / button.py
+                  → __init__.py
 ```
 
 - **`providers/`** — `discovery.py`+`normalize.py`: baseline (unshaded FC)
@@ -82,6 +83,14 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 - **`forecast_adjust.py`** — applies a string's fitted per-slot model to
   its raw baseline series; calls back into `yield_correction.py`'s reverse
   transform.
+- **`string_computation.py`** (new 2026-08-31, ADR-014) — pure, shared
+  per-string fit/predict computation, extracted from `coordinator.py`:
+  `REGRESSION_STRATEGIES` registry, `apply_training_corrections`
+  (clipping + temperature derating, per offset), `fit_string_model`
+  (build-pool + strategy fit), `predict_string_forecast`
+  (reverse-transform + final clamp, in that order). Slot-count-agnostic
+  — serves both `coordinator.py`'s 288-slot sweep and `diagnostics/`'s
+  single diagnosed slot with the same functions, no branch needed.
 - **`aggregation.py`** — pure cross-string sums, day arrays, trapezoidal
   energy-increment calc, diagnostic accuracy calc (mode-independent,
   called by `diagnostics/`, ADR-004 §5), intraday-correction math
@@ -92,7 +101,9 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   `CompareRegressionsMode` (ADR-004 §1/§2/§2a/§2b/§4, moved here verbatim
   from the original inline design). `compute()` (required) shapes the
   sensor payload; `extra_fit()` (optional, default `None`) does whatever
-  extra per-slot fitting the mode needs, via `regression/` directly.
+  extra per-slot fitting the mode needs, via `string_computation.py`
+  directly (ADR-014 — replaces the original "via `regression/` directly"
+  text once `string_computation.py` existed to sit between them).
   Reuses `aggregation.py`'s accuracy function unmodified — see ADR-013
   (Proposed, not scheduled) for two further modes sketched to confirm
   this base class doesn't need to change again for a whole-day scope.
@@ -102,12 +113,17 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   totals. See §5 below.
 - **`coordinator.py`** — the only module that imports `cache.py`.
   Registers all scheduling triggers + one generic push listener per
-  `forward()`-implementing provider; orchestrates the pure layer; pushes
-  to sensors. Exposes `missing_required_entities()` for `__init__.py`'s
-  startup-ordering guard (ADR-002 §1a). Also holds `_DIAGNOSTIC_MODES`
-  (mirrors the existing `_REGRESSION_STRATEGIES` dict), dispatching to
-  the select-chosen `DiagnosticMode`'s `extra_fit()` at the recalibration
-  trigger and caching whatever it returns (ADR-004 §5).
+  `forward()`-implementing provider; reads raw data from `cache.py`/
+  `providers/` and hands off to `string_computation.py` (ADR-014) for
+  the actual fit/correction/predict computation — no longer performs
+  that computation itself as of ADR-014 (previously
+  `_apply_training_corrections` + inlined build-pool/fit/
+  reverse-transform sequences); pushes results to sensors. Exposes
+  `missing_required_entities()` for `__init__.py`'s startup-ordering
+  guard (ADR-002 §1a). Also holds `_DIAGNOSTIC_MODES` (mirrors
+  `string_computation.py`'s `REGRESSION_STRATEGIES` dict), dispatching
+  to the select-chosen `DiagnosticMode`'s `extra_fit()` at the
+  recalibration trigger and caching whatever it returns (ADR-004 §5).
 - **`sensor.py`/`config_flow.py`/`select.py`/`button.py`** — thin HA
   entity glue, all classes prefixed `Shady`. `select.py`'s
   `ShadyDiagnosticModeSelect` replaces the original `switch.py` as of

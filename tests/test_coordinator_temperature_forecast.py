@@ -24,8 +24,11 @@ test_providers_temperature.py`), or `uplift_ambient_to_cell`/
 testing philosophy: one place tests each concern).
 
 Most tests below call `coordinator._resolve_temperature_entity`/
-`_fit_temperature_string`/`_predict_target_slot_temperature`/`_apply_
-training_corrections` directly rather than driving a full `async_refit`
+`_fit_temperature_string`/`_predict_target_slot_temperature` directly,
+and `TestApplyTrainingCorrectionsTierDispatch` calls
+`string_computation.apply_training_corrections` (ADR-014, `TASK-0017`
+— relocated out of `coordinator.py`'s own private method of the same
+name during that task) directly, rather than driving a full `async_refit`
 — precedent already established by `test_coordinator.py`'s own direct
 `coordinator._recompute_string(...)` calls — since this sidesteps
 needing to know `BaselineProvider`'s own Wh->W conversion just to
@@ -63,6 +66,7 @@ _yield_correction_mod = sys.modules["shady.yield_correction"]
 _providers_temperature_mod = sys.modules["shady.providers.temperature"]
 _regression_base_mod = sys.modules["shady.regression.base"]
 _cache_mod = sys.modules["shady.cache"]
+_string_computation_mod = sys.modules["shady.string_computation"]
 
 _TemperatureResolution = _coordinator_mod._TemperatureResolution
 uplift_ambient_to_cell = _yield_correction_mod.uplift_ambient_to_cell
@@ -70,6 +74,7 @@ derate_actual_to_reference = _yield_correction_mod.derate_actual_to_reference
 TemperatureProvider = _providers_temperature_mod.TemperatureProvider
 FittedModel = _regression_base_mod.FittedModel
 SLOTS_PER_DAY = _cache_mod.SLOTS_PER_DAY
+apply_training_corrections = _string_computation_mod.apply_training_corrections
 
 _PREDICTOR_ENTITY = "weather.forecast_home"
 _CELL_SENSOR_ENTITY = "sensor.string_a_cell_temp"
@@ -521,7 +526,16 @@ class TestApplyTrainingCorrectionsTierDispatch:
     dispatch — `cell` uses its own reading as-is (never calling
     `uplift_ambient_to_cell`, and therefore never gated on
     `rated_dc_capacity_wp`); `ambient` (like `weather`, unchanged)
-    always passes through it first, and *is* gated on that field."""
+    always passes through it first, and *is* gated on that field.
+
+    Calls `string_computation.apply_training_corrections` directly
+    (ADR-014, `TASK-0017`) rather than a `coordinator._apply_training_
+    corrections` method, which no longer exists — this class's own
+    fixture still builds a real `coordinator`/`string` pair only to
+    read the same config values `coordinator.py`'s own call site reads
+    (`_clipping_threshold`, `_max_uplift_c`, `string.converter_limit_w`,
+    etc.), confirming the explicit-parameter translation is faithful.
+    """
 
     @staticmethod
     def _fixture(rated_dc_capacity_wp: float | None) -> tuple[Any, Any]:
@@ -535,8 +549,17 @@ class TestApplyTrainingCorrectionsTierDispatch:
         pv_by_offset = {0: np.array([[500.0]])}
         temperature_by_offset = {0: np.array([[35.0]])}
 
-        corrected = coordinator._apply_training_corrections(
-            string, fc_by_offset, pv_by_offset, temperature_by_offset, "cell"
+        corrected = apply_training_corrections(
+            fc_by_offset,
+            pv_by_offset,
+            temperature_by_offset,
+            "cell",
+            converter_limit_w=string.converter_limit_w,
+            clipping_threshold=coordinator._clipping_threshold,
+            coefficient_per_c=string.temperature_coefficient_pct_per_c / 100.0,
+            provider_already_corrects=coordinator._provider_already_corrects(string),
+            rated_dc_capacity_wp=string.rated_dc_capacity_wp,
+            max_uplift_c=coordinator._max_uplift_c,
         )
         coefficient_per_c = string.temperature_coefficient_pct_per_c / 100.0
         expected = derate_actual_to_reference(
@@ -550,8 +573,17 @@ class TestApplyTrainingCorrectionsTierDispatch:
         pv_by_offset = {0: np.array([[500.0]])}
         temperature_by_offset = {0: np.array([[35.0]])}
 
-        corrected = coordinator._apply_training_corrections(
-            string, fc_by_offset, pv_by_offset, temperature_by_offset, "ambient"
+        corrected = apply_training_corrections(
+            fc_by_offset,
+            pv_by_offset,
+            temperature_by_offset,
+            "ambient",
+            converter_limit_w=string.converter_limit_w,
+            clipping_threshold=coordinator._clipping_threshold,
+            coefficient_per_c=string.temperature_coefficient_pct_per_c / 100.0,
+            provider_already_corrects=coordinator._provider_already_corrects(string),
+            rated_dc_capacity_wp=string.rated_dc_capacity_wp,
+            max_uplift_c=coordinator._max_uplift_c,
         )
         coefficient_per_c = string.temperature_coefficient_pct_per_c / 100.0
         uplifted = uplift_ambient_to_cell(
@@ -575,8 +607,17 @@ class TestApplyTrainingCorrectionsTierDispatch:
         pv_by_offset = {0: np.array([[500.0]])}
         temperature_by_offset = {0: np.array([[35.0]])}
 
-        corrected = coordinator._apply_training_corrections(
-            string, fc_by_offset, pv_by_offset, temperature_by_offset, "ambient"
+        corrected = apply_training_corrections(
+            fc_by_offset,
+            pv_by_offset,
+            temperature_by_offset,
+            "ambient",
+            converter_limit_w=string.converter_limit_w,
+            clipping_threshold=coordinator._clipping_threshold,
+            coefficient_per_c=string.temperature_coefficient_pct_per_c / 100.0,
+            provider_already_corrects=coordinator._provider_already_corrects(string),
+            rated_dc_capacity_wp=string.rated_dc_capacity_wp,
+            max_uplift_c=coordinator._max_uplift_c,
         )
         assert np.allclose(corrected[0], pv_by_offset[0])
 
@@ -585,8 +626,17 @@ class TestApplyTrainingCorrectionsTierDispatch:
         fc_by_offset = {0: np.array([[1000.0]])}
         pv_by_offset = {0: np.array([[500.0]])}
 
-        corrected = coordinator._apply_training_corrections(
-            string, fc_by_offset, pv_by_offset, None, None
+        corrected = apply_training_corrections(
+            fc_by_offset,
+            pv_by_offset,
+            None,
+            None,
+            converter_limit_w=string.converter_limit_w,
+            clipping_threshold=coordinator._clipping_threshold,
+            coefficient_per_c=string.temperature_coefficient_pct_per_c / 100.0,
+            provider_already_corrects=coordinator._provider_already_corrects(string),
+            rated_dc_capacity_wp=string.rated_dc_capacity_wp,
+            max_uplift_c=coordinator._max_uplift_c,
         )
         assert np.allclose(corrected[0], pv_by_offset[0])
 

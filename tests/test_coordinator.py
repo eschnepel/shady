@@ -263,6 +263,7 @@ _load("yield_correction.py", "shady.yield_correction")
 _load("forecast_adjust.py", "shady.forecast_adjust")
 _load("aggregation.py", "shady.aggregation")
 _load("cache.py", "shady.cache")
+_load("string_computation.py", "shady.string_computation")
 _const_mod = _load("const.py", "shady.const")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
 

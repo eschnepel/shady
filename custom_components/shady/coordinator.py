@@ -114,6 +114,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 from numpy.typing import NDArray
 
+from . import string_computation
 from .aggregation import (
     crossfade,
     day_energy_total_wh,
@@ -165,26 +166,14 @@ from .forecast_adjust import clamp_output, reverse_transformed_forecast
 from .providers.base import Provider
 from .providers.discovery import BaselineProvider
 from .providers.temperature import TemperatureProvider, TemperatureTier
-from .regression import kernel, linear, wls2, wls3
-from .regression.base import FittedModel, build_pool
-from .yield_correction import derate_actual_to_reference, exclude_clipped, uplift_ambient_to_cell
+from .regression.base import FittedModel
+from .yield_correction import uplift_ambient_to_cell
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from .providers.normalize import BaselineShape
-
-# Same registry shape for both the shading model's global method choice
-# (ADR-001 §2) and, later, ADR-003c's independent temperature-forecast
-# method — one place mapping the four config-flow choices (`const.py`'s
-# `REGRESSION_METHODS`) to their `regression/` module.
-_REGRESSION_STRATEGIES: dict[str, Any] = {
-    "linear": linear,
-    "kernel": kernel,
-    "wls2": wls2,
-    "wls3": wls3,
-}
 
 _STATISTICS_PERIOD = "5minute"
 
@@ -667,24 +656,27 @@ class ShadyCoordinator:
                 pools[resolution.entity_id], self._smoothing_radius, self._window_days
             )
 
-        corrected_pv_by_offset = self._apply_training_corrections(
-            string,
+        corrected_pv_by_offset = string_computation.apply_training_corrections(
             fc_by_offset,
             pv_by_offset,
             temperature_by_offset,
             resolution.tier if resolution is not None else None,
+            converter_limit_w=string.converter_limit_w,
+            clipping_threshold=self._clipping_threshold,
+            coefficient_per_c=string.temperature_coefficient_pct_per_c / 100.0,
+            provider_already_corrects=self._provider_already_corrects(string),
+            rated_dc_capacity_wp=string.rated_dc_capacity_wp,
+            max_uplift_c=self._max_uplift_c,
         )
 
-        pool = build_pool(
+        return string_computation.fit_string_model(
             fc_by_offset,
             corrected_pv_by_offset,
             self._smoothing_radius,
             self._neighbor_fitting_cutoff,
             self._recency_decay_max,
+            self._regression_method,
         )
-        strategy = _REGRESSION_STRATEGIES[self._regression_method]
-        model: FittedModel = strategy.fit(pool)
-        return model
 
     def _fit_temperature_string(self, string: _StringConfig, now: datetime) -> FittedModel | None:
         """ADR-003c §2, `TASK-0014`: this string's own per-slot
@@ -732,82 +724,19 @@ class ShadyCoordinator:
         predictor_by_offset = _split_by_offset(pools[predictor_id], 0, self._window_days)
         target_by_offset = _split_by_offset(pools[target_id], 0, self._window_days)
 
-        pool = build_pool(
+        return string_computation.fit_string_model(
             predictor_by_offset,
             target_by_offset,
-            smoothing_radius=0,
-            # Inert at radius 0 — ADR-011's neighbor-only code path
-            # never runs with a single, center-only offset block.
-            # Passed only because `build_pool`'s signature requires a
-            # value; any value would produce an identical pool here.
-            neighbor_fitting_cutoff=self._neighbor_fitting_cutoff,
-            recency_decay_max=self._recency_decay_max,
+            # smoothing_radius=0 is inert — ADR-011's neighbor-only code
+            # path never runs with a single, center-only offset block.
+            # Passed only because `fit_string_model`'s signature requires
+            # a value; any value would produce an identical pool here.
+            0,
+            self._neighbor_fitting_cutoff,
+            self._recency_decay_max,
+            self._temperature_regression_method,
             apply_magnitude_weight=False,
         )
-        strategy = _REGRESSION_STRATEGIES[self._temperature_regression_method]
-        model: FittedModel = strategy.fit(pool)
-        return model
-
-    def _apply_training_corrections(
-        self,
-        string: _StringConfig,
-        fc_by_offset: dict[int, NDArray[np.float64]],
-        pv_by_offset: dict[int, NDArray[np.float64]],
-        temperature_by_offset: dict[int, NDArray[np.float64]] | None,
-        temperature_tier: Literal["weather", "cell", "ambient"] | None,
-    ) -> dict[int, NDArray[np.float64]]:
-        """ADR-003a §1/§2 (clipping) then ADR-003b §1/§1a (temperature
-        derating, all three tiers as of `TASK-0014`), applied per
-        offset, in that order (`yield_correction.py`'s own module
-        docstring: exclude clipped before deriving to reference).
-        `weather`/`ambient` both pass their raw reading through
-        `uplift_ambient_to_cell` before deriving (unchanged for
-        `weather`; same formula, just training-time-resolved for
-        `ambient`); `cell` uses its own reading directly, never
-        evaluating that formula at all (ADR-003b §1a) — and is
-        therefore, alone among the three, not gated on
-        `rated_dc_capacity_wp` (the uplift formula's own required
-        input) being configured.
-        """
-        provider_already_corrects = self._provider_already_corrects(string)
-        coefficient_per_c = string.temperature_coefficient_pct_per_c / 100.0
-        needs_uplift = temperature_tier in ("weather", "ambient")
-        use_temperature = (
-            temperature_by_offset is not None
-            and not provider_already_corrects
-            and (
-                temperature_tier == "cell"
-                or (needs_uplift and string.rated_dc_capacity_wp is not None)
-            )
-        )
-
-        corrected: dict[int, NDArray[np.float64]] = {}
-        for offset, pv in pv_by_offset.items():
-            excluded = exclude_clipped(pv, string.converter_limit_w, self._clipping_threshold)
-            cell_temperature: NDArray[np.float64] | None = None
-            if use_temperature:
-                assert temperature_by_offset is not None
-                if needs_uplift:
-                    assert string.rated_dc_capacity_wp is not None
-                    uplifted = uplift_ambient_to_cell(
-                        temperature_by_offset[offset],
-                        fc_by_offset[offset],
-                        string.rated_dc_capacity_wp,
-                        self._max_uplift_c,
-                    )
-                    cell_temperature = np.asarray(uplifted, dtype=np.float64)
-                else:
-                    cell_temperature = temperature_by_offset[offset]
-            corrected[offset] = np.asarray(
-                derate_actual_to_reference(
-                    excluded,
-                    cell_temperature,
-                    coefficient_per_c,
-                    provider_already_corrects=provider_already_corrects,
-                ),
-                dtype=np.float64,
-            )
-        return corrected
 
     # -- forecast recompute (ADR-002 §2/§3) ------------------------------
 

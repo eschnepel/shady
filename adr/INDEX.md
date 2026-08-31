@@ -30,6 +30,7 @@ enforces.
 | [011](011-temporal-smoothing-and-neighbor-exclusion.md) | Accepted | Temporal Smoothing and Neighbor-Regime Exclusion for Slot Training Pools *(split from ADR-001 §3b/§3c/§3d)* |
 | [012](012-provider-architecture.md) | Accepted | Provider Architecture: Shared Base Class and Cache Reuse for External Series |
 | [013](013-whole-day-diagnostic-modes.md) | Proposed *(no implementation task; validates ADR-004's base class against future needs)* | Diagnostics: Whole-Day Comparison Modes (Draft — Future Work, Not Yet Scheduled) |
+| [014](014-string-computation-module.md) | Accepted | `string_computation.py`: A Shared, Pure Per-String Fit/Predict Module *(discovered while scoping TASK-0015b; relocates computation out of `coordinator.py`, replaces the `diagnostics --> regression` edge with `diagnostics --> string_computation`)* |
 
 **Status key:** `Accepted` — in force, implemented or scheduled for
 implementation. `Superseded` — replaced by a later ADR, kept for history.
