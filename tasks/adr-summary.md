@@ -59,9 +59,9 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
       → forecast_adjust.py  -- (reverse edge back into yield_correction.py, ADR-003b §1b)
         → string_computation.py  -- also reads regression/, forecast_adjust.py, yield_correction.py directly (ADR-014)
           → aggregation.py
-            → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014)
+            → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014); as of 2026-09-01, also holds a TYPE_CHECKING-only construction-time reference BACK to coordinator.py (ADR-004 §5) -- diagnostics/ is no longer in the zero-mocking tier
             → cache.py
-              → coordinator.py  -- reads diagnostics/ via a mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014)
+              → coordinator.py  -- reads diagnostics/ via a per-instance mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014); passes itself into each DiagnosticMode at construction (ADR-004 §5, 2026-09-01)
                 → sensor.py / config_flow.py / select.py / button.py
                   → __init__.py
 ```
@@ -96,17 +96,24 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   called by `diagnostics/`, ADR-004 §5), intraday-correction math
   (ADR-005, ADR-006 §5).
 - **`diagnostics/`** (`base.py`, `compare_regressions.py`, new
-  2026-08-30) — pure `DiagnosticMode` base class (mirrors
-  `providers/base.py`'s `Provider` ABC, ADR-012 §1) + one concrete mode,
-  `CompareRegressionsMode` (ADR-004 §1/§2/§2a/§2b/§4, moved here verbatim
-  from the original inline design). `compute()` (required) shapes the
-  sensor payload; `extra_fit()` (optional, default `None`) does whatever
-  extra per-slot fitting the mode needs, via `string_computation.py`
-  directly (ADR-014 — replaces the original "via `regression/` directly"
-  text once `string_computation.py` existed to sit between them).
-  Reuses `aggregation.py`'s accuracy function unmodified — see ADR-013
-  (Proposed, not scheduled) for two further modes sketched to confirm
-  this base class doesn't need to change again for a whole-day scope.
+  2026-08-30) — `DiagnosticMode` base class (mirrors `providers/base.py`'s
+  `Provider` ABC, ADR-012 §1) + one concrete mode, `CompareRegressionsMode`
+  (ADR-004 §1/§2/§2a/§2b/§4, moved here verbatim from the original inline
+  design). `compute()` (required) shapes the sensor payload; `extra_fit()`
+  (optional, default `None`) does whatever extra per-slot fitting the mode
+  needs, via `string_computation.py` directly (ADR-014). Also declares
+  `fit_cadence()`/`compute_cadence()` (required, `"daily" | "hourly" |
+  "slot"` — ADR-004 §5, 2026-09-01). **As of the 2026-09-01 amendment, no
+  longer pure:** every `DiagnosticMode` is constructed with the owning
+  `ShadyCoordinator` (`self._coordinator`), and reaches its public
+  interface directly (`cache`, `strings()`, …) for whatever a mode needs —
+  `coordinator.py` no longer pre-builds a mode's full input context, only
+  persists whatever `extra_fit()` returns. Still reuses `aggregation.py`'s
+  accuracy function unmodified — see ADR-013 (Proposed, not scheduled) for
+  two further modes sketched to confirm this base class doesn't need to
+  change again for a whole-day scope (ADR-013's own 2026-09-01 note
+  confirms the cadence-getter/coordinator-access change doesn't affect
+  that conclusion).
 - **`cache.py`** — pure, no `hass` import, injected `fetch_fn`. Index-
   addressable time-series store (generic over `sensor_id`) + simple
   dict stores (model cache, ramp state) + 2 restart-persisted integral
@@ -120,10 +127,13 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   `_apply_training_corrections` + inlined build-pool/fit/
   reverse-transform sequences); pushes results to sensors. Exposes
   `missing_required_entities()` for `__init__.py`'s startup-ordering
-  guard (ADR-002 §1a). Also holds `_DIAGNOSTIC_MODES` (mirrors
-  `string_computation.py`'s `REGRESSION_STRATEGIES` dict), dispatching
-  to the select-chosen `DiagnosticMode`'s `extra_fit()` at the
-  recalibration trigger and caching whatever it returns (ADR-004 §5).
+  guard (ADR-002 §1a). Also holds `_diagnostic_modes` (mirrors
+  `string_computation.py`'s `REGRESSION_STRATEGIES` dict in shape, but is
+  a **per-instance** attribute built in `__init__` as of the 2026-09-01
+  amendment — each `DiagnosticMode` is now constructed with `self`, so a
+  module-level constant no longer works), dispatching to the select-chosen
+  `DiagnosticMode`'s `extra_fit()` at the recalibration trigger and
+  caching whatever it returns (ADR-004 §5).
 - **`sensor.py`/`config_flow.py`/`select.py`/`button.py`** — thin HA
   entity glue, all classes prefixed `Shady`. `select.py`'s
   `ShadyDiagnosticModeSelect` replaces the original `switch.py` as of
@@ -136,13 +146,18 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 
 **Testing (`ADR-000 §6`):** every module in `providers/base.py`,
 `providers/normalize.py`, `yield_correction.py`, `regression/`,
-`forecast_adjust.py`, `aggregation.py`, `cache.py`, `diagnostics/`
-(`base.py`, `compare_regressions.py`) — zero mocking, no
+`forecast_adjust.py`, `aggregation.py`, `cache.py` — zero mocking, no
 `unittest.mock`, no fake `hass`. Loaded via direct file-path import
 (`importlib.util.spec_from_file_location`), **not** package import, to
 avoid pulling in `homeassistant.*` via `__init__.py`. Dynamically-loaded
 class names used as type annotations need a `TYPE_CHECKING`-only static
-import mirroring the runtime path. Invariant checks (e.g. `0 <=
+import mirroring the runtime path. **`diagnostics/` (`base.py`,
+`compare_regressions.py`) left this tier on 2026-09-01** (ADR-004 §5,
+second Amendment) once `DiagnosticMode` gained a required, construction-
+time `ShadyCoordinator` reference — it's now tested the same way
+`coordinator.py` itself is: the hand-written, real (non-`Mock`)
+`homeassistant` stub convention (TASK-0009), not zero-mocking. Invariant
+checks (e.g. `0 <=
 corrected_output <= min(FC, inverter_limit)`) asserted explicitly, every
 scenario. `providers/discovery.py` and `providers/temperature.py` are the
 only pure-tier exceptions — tested against a real `hass` fixture.
@@ -294,9 +309,10 @@ into `cache.py`'s `fetch_fn`.
   `DIAGNOSTIC_MODES`, today `"off"`/`"compare_regressions"`); while
   `"off"`, diagnostics sensors report `disabled`, zero extra fitting
   cost. Selecting a mode dispatches to a `DiagnosticMode` subclass
-  (`diagnostics/`, ADR-004 §5) via `coordinator.py`'s `_DIAGNOSTIC_MODES`
-  registry — adding a future mode (see ADR-013, Proposed, not scheduled)
-  is a new option + subclass, not a rework of this entity.
+  (`diagnostics/`, ADR-004 §5) via `coordinator.py`'s `_diagnostic_modes`
+  registry (per-instance as of the 2026-09-01 amendment) — adding a
+  future mode (see ADR-013, Proposed, not scheduled) is a new option +
+  subclass, not a rework of this entity.
 - **`ShadyDiagnosticsSensor`** (per string, ADR-004 §2) — ApexCharts-
   shaped `series` (slot-pool scatter + 4 methods' selected-prediction
   points + actual point) and plain-float `accuracy` dict, built by

@@ -1,6 +1,25 @@
 # Task: Patch — `DiagnosticSlotSample`'s Missing Query-FC and Fit-Input Fields
 
-- **Status:** todo
+> **SUPERSEDED — 2026-09-01, no code written for this task.** Human
+> decision (see `tasks/INDEX.md`'s 2026-09-01 refinement-log entry and
+> ADR-004 §5's second Amendment): rather than threading fit inputs through
+> `DiagnosticContext` per call as this task specifies, `DiagnosticMode`
+> now receives the owning `ShadyCoordinator` at construction and gathers
+> what it needs directly. This task's approach and
+> `TASK-0015a-patch-2-diagnostic-mode-coordinator-access`'s approach are
+> mutually exclusive, not additive — the human explicitly chose the
+> latter over keeping both. **Doubly moot, on review:**
+> `TASK-0015a-patch-2` doesn't just supersede this task's approach, it
+> deletes the class this task would have extended — `DiagnosticSlotSample`
+> and `DiagnosticContext` are removed from `diagnostics/base.py` entirely,
+> along with `compute()`/`extra_fit()`'s parameter. There is nothing left
+> for this task's `query_fc`/`fit_inputs` fields to be added to. **Do not
+> implement this task.** Kept in place, unexecuted, for the audit trail
+> (slug not reused, per this project's standing convention for retired
+> tasks — see the 2026-08-30 refinement-log entry). `TASK-0015b`'s
+> Dependencies no longer reference this task.
+
+- **Status:** superseded *(was: todo — never implemented; superseded before any code was written)*
 - **Related ADRs:** [ADR-004 §1/§5 (Amendment 2026-08-30), ADR-014]
 - **Dependencies:** [TASK-0015a-diagnostic-mode-base-architecture, TASK-0017-string-computation-module]
 

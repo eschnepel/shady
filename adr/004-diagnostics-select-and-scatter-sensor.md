@@ -14,6 +14,12 @@ boolean) move. §5 updated to match. See the Amendment block below for full
 rationale, and ADR-013 (new, Proposed) for two further diagnostic modes
 sketched to validate this base class's shape against needs beyond this ADR's
 own scope.
+**Amended again: 2026-09-01** — §5 revised: `DiagnosticMode` gains a
+required `__init__(coordinator)` (the owning `ShadyCoordinator` instance)
+plus two new abstract getters, `fit_cadence()`/`compute_cadence()`,
+dropping the "imports neither `cache.py` nor `homeassistant.*`" purity
+guarantee this section originally established. `TASK-0015a-patch-1` is
+superseded. See the second Amendment block below.
 
 ---
 
@@ -174,6 +180,169 @@ this is a pre-implementation redesign, not a patch to delivered code.
   that behavior change.
 
 **Decided by:** human (explicit instruction), confirmed by Lead Agent.
+
+---
+
+## Amendment — 2026-09-01
+
+**Reason:** While reviewing this ADR and `TASK-0015a-patch-1` (not yet
+implemented), the human judged the per-call, coordinator-builds-and-hands-
+over shape `TASK-0015a-patch-1` was adding
+(`DiagnosticSlotSample.query_fc`/`.fit_inputs`, the new `DiagnosticFitInputs`
+dataclass) to be the wrong trade going forward: it requires the Lead
+Agent/coordinator to anticipate and thread every future mode's exact data
+needs through `DiagnosticContext` ahead of time, one dataclass field at a
+time — precisely the kind of interface-extension friction
+`TASK-0015a-patch-1` was itself already an instance of, discovered before
+it had even shipped. The alternative decided on: give every
+`DiagnosticMode` a reference to the coordinator that owns it, so a mode
+can pull whatever coordinator-owned data it needs (string config,
+registered FC providers, the cache, or anything added to
+`ShadyCoordinator`'s public interface later) directly, on demand, without
+the coordinator having to anticipate or know what any given mode does
+with it — trading `DiagnosticMode`'s purity (this section's original
+"imports neither `cache.py` nor `homeassistant.*`") for that flexibility.
+Decided explicitly, with the human confirming this supersedes
+`TASK-0015a-patch-1` outright rather than the two mechanisms coexisting.
+
+**Decision:**
+
+- **`DiagnosticMode.__init__(self, coordinator: ShadyCoordinator) -> None`**
+  — new, required. Every concrete mode's constructor takes the owning
+  `ShadyCoordinator` instance and is expected to hold onto it (e.g.
+  `self._coordinator`) for `compute()`/`extra_fit()`/the two new cadence
+  getters below to use as needed. The instance passed is the real
+  `coordinator.py` object — no facade, protocol, or adapter type is
+  introduced to soften this; `diagnostics/` now depends on `coordinator.py`
+  exactly the way `coordinator.py` already depends on `diagnostics/` (§5's
+  registry) — a two-way relationship. The import-level cycle this implies
+  is resolved the same way this project's own test files already resolve
+  a comparable problem (ADR-000 §6): `from __future__ import annotations`
+  plus a `TYPE_CHECKING`-only import of `ShadyCoordinator` in
+  `diagnostics/base.py`, so no runtime `import` statement in
+  `diagnostics/base.py`/`compare_regressions.py` actually names
+  `coordinator.py` or `homeassistant.*`. This is a resolution of the
+  *import cycle* only, not a restoration of purity — every
+  `DiagnosticMode` instance still holds, and calls into, a real
+  `ShadyCoordinator` object at runtime, one that does import
+  `homeassistant.*` and does reach `cache.py`. See the Consequences update
+  below for what this actually costs.
+- **Cache: no separate constructor parameter.** `coordinator.py`'s
+  `self.cache` is already a plain public attribute (verified against the
+  current codebase — not a private `_cache` behind a getter method), so a
+  `DiagnosticMode` reaches it via `self._coordinator.cache` directly. This
+  resolves the "either the coordinator already has a getter, or passes
+  cache separately" question this decision was raised with: it already
+  has one, in the form of a public attribute, so no second constructor
+  parameter is introduced.
+- **Encapsulation boundary, despite dropping purity:** a `DiagnosticMode`
+  may only use `coordinator.py`'s **public** interface (no leading
+  underscore) — `strings()`, `cache`, and whatever else is or becomes
+  public. Reaching into `coordinator.py`-private (`_`-prefixed)
+  attributes or methods from `diagnostics/` is not allowed — the same
+  boundary ADR-000 §5 already enforces between every other pair of
+  modules in this codebase, and the same reasoning the 2026-08-24
+  refinement (`TASK-0010-patch-2-string-enumeration`, `tasks/INDEX.md`)
+  already used to justify adding a public `strings()` accessor rather than
+  letting `sensor.py` reach into `_StringConfig`. Where a mode needs
+  coordinator-owned data that has no public accessor yet — today: full
+  per-string config beyond `strings()`'s `(index, name)` pairs (the rest
+  of `_StringConfig`'s fields), or which FC-provider entities/keys are
+  registered (currently only `self._entity_providers`, private) — the
+  coordinator must be extended with a public accessor as an explicit,
+  reviewed part of whichever task needs it, not a silent reach into a
+  `_`-prefixed name. This keeps *some* boundary discipline even though the
+  zero-mocking guarantee itself is gone; it is a convention this ADR
+  states, not one the type system enforces (see Consequences).
+- **`coordinator.py`'s `_DIAGNOSTIC_MODES` registry moves from a private
+  module-level constant to a per-instance attribute.** §5 originally
+  specified `_DIAGNOSTIC_MODES: dict[str, DiagnosticMode] =
+  {"compare_regressions": CompareRegressionsMode()}` at module scope,
+  since a no-arg `DiagnosticMode` could be constructed once, at import
+  time, and shared. That no longer holds once construction needs `self`:
+  the registry becomes an **instance** attribute, built once in
+  `ShadyCoordinator.__init__` (e.g.
+  `self._diagnostic_modes: dict[str, DiagnosticMode] =
+  {"compare_regressions": CompareRegressionsMode(self)}`) — functionally
+  the same lookup, the same reserved-and-never-registered `"off"` key, the
+  same dispatch; only *where* it is built changes.
+- **Two new abstract getters:** `fit_cadence(self) -> Literal["daily",
+  "hourly", "slot"]` and `compute_cadence(self) -> Literal["daily",
+  "hourly", "slot"]` (exact `Literal`/enum type left to
+  `TASK-0015a-patch-2`, the implementing task). Both required, no default
+  — every concrete mode must state both explicitly, the same "no default"
+  requiredness `compute()` itself already has, since how often a mode
+  needs to fit/compute is core to what the mode *is*, not an optional
+  refinement. Purpose: lets `coordinator.py` (or whichever
+  trigger-registration code dispatches to `extra_fit()`/`compute()`) read
+  a mode's own declared cadence generically, the same way it already reads
+  `key: ClassVar[str]` generically, instead of needing a hard-coded case
+  per mode's schedule. `CompareRegressionsMode` (`TASK-0015b`) declares
+  both `"slot"` — it fits/computes for exactly one diagnosed 5-minute
+  slot, reusing `TASK-0013`'s existing 5-minute trigger (§4, unchanged
+  behavior). This also gives ADR-013's two sketched whole-day modes (not
+  scheduled) a real, structural answer to the open cost question their own
+  §3 raises ("whether this needs ... a lower refresh cadence") — both
+  would plausibly declare `fit_cadence() -> "daily"` — without committing
+  to scheduling either now; see ADR-013's own pointer note.
+- **`compute()` and `extra_fit()` drop their parameter — `DiagnosticContext`
+  and `DiagnosticSlotSample` are removed from `diagnostics/base.py`
+  entirely, not kept alongside the new constructor.** Correction to the
+  bullets above, caught on review before any of this had been implemented:
+  once a mode holds its own coordinator reference, there is nothing left
+  for a per-call context argument to carry that the mode cannot already
+  reach itself — which slot is diagnosed (`cache.py`'s
+  `pinned_reference`, reached via `self._coordinator.cache`), that slot's
+  pool/predicted/actual values, string config, anything else. Threading
+  the same information through both a constructor-time reference *and* a
+  per-call DTO is redundant, and reintroduces exactly the "coordinator
+  must anticipate every mode's inputs" friction this whole amendment
+  exists to remove. The new signatures:
+  - **`compute(self) -> DiagnosticResult`** (abstract, required, no
+    parameters beyond `self`).
+  - **`extra_fit(self) -> DiagnosticFitResult | None`** (optional, still
+    defaults to returning `None` — the base-class default's meaning is
+    unchanged, only its signature loses the parameter).
+
+  `DiagnosticResult` and `DiagnosticFitResult` are **not** removed — they
+  are output shapes (`compute()`'s sensor-ready payload,
+  `extra_fit()`'s cached predictions), not per-call input, and nothing
+  about receiving a coordinator reference changes what a mode needs to
+  return. `TASK-0015a-patch-2` deletes `DiagnosticSlotSample` and
+  `DiagnosticContext` from `diagnostics/base.py` outright (not deprecate-
+  and-keep) — obsolete classes are dropped, per explicit review
+  instruction, not left as unused dead code for a future mode to
+  rediscover.
+- **What does not change:** the single-active-mode-or-`"off"` dispatch
+  model (§1), `key: ClassVar[str]`, and the `DiagnosticResult`/
+  `DiagnosticFitResult` dataclasses exactly as `TASK-0015a` delivered
+  them (both remain outputs only — see above). Everything else about
+  `DiagnosticMode`'s public shape moves: the constructor, both new
+  cadence getters, and `compute()`/`extra_fit()` losing their parameter
+  together with `DiagnosticSlotSample`/`DiagnosticContext`'s removal.
+- **`TASK-0015a-patch-1-diagnostic-fit-inputs` is superseded, not kept
+  alongside this.** Its `DiagnosticSlotSample.query_fc`/`.fit_inputs`
+  fields and the `DiagnosticFitInputs` dataclass existed to carry
+  `string_computation.fit_string_model`/`predict_string_forecast`'s raw
+  inputs through `DiagnosticContext` *because* `DiagnosticMode` could not
+  otherwise reach them — moot twice over now, since both the mechanism
+  (`DiagnosticContext`) and the class it would have extended
+  (`DiagnosticSlotSample`) are removed by this same amendment. Now that a
+  mode holds a coordinator reference, it gathers those same raw inputs
+  itself, inside its own no-argument `compute()`/`extra_fit()`
+  (`self._coordinator.cache.get_pinned_slot_pool(...)`, the resolved
+  temperature target via the coordinator's own provider access, string
+  config via `strings()`/whatever public accessor is added) and calls
+  `string_computation.fit_string_model`/`predict_string_forecast` directly
+  — the same functions, same module (ADR-014, unchanged), just invoked
+  from inside `CompareRegressionsMode` instead of assembled by
+  `coordinator.py` into a DTO first. `TASK-0015a-patch-1` is marked
+  superseded in its own file and in `tasks/INDEX.md`; its slug is not
+  reused, per this project's standing convention for retired tasks
+  (`tasks/INDEX.md`'s 2026-08-30 refinement-log entry).
+
+**Decided by:** human (explicit instruction, 2026-09-01), confirmed by
+Lead Agent.
 
 ---
 
@@ -556,7 +725,7 @@ ADR-002 §2's irregular baseline-update trigger — so the four predictions
 always match whichever slot's pool and actual value are currently being
 displayed, rather than momentarily lagging behind it.
 
-### 5 — Module responsibility (revised 2026-08-30)
+### 5 — Module responsibility (revised 2026-08-30, 2026-09-01)
 
 `select.py` adds `ShadyDiagnosticModeSelect`, a simple, single-purpose HA
 entity (`SelectEntity`) with no business logic of its own beyond exposing
@@ -566,15 +735,19 @@ philosophy `button.py`'s `EffyRecalculateButton`-style pattern (ADR-002
 §1) already established, just for a multi-value control instead of a
 single-purpose trigger. The actual diagnostic calculation lives in the new
 pure package `diagnostics/` (ADR-012-style base class + concrete modes;
-see the Amendment block above for the full `DiagnosticMode` shape):
-`diagnostics/base.py` holds the shared `DiagnosticMode` ABC and its
-dataclasses; `diagnostics/compare_regressions.py` holds this ADR's one
-concrete mode, `CompareRegressionsMode`. `coordinator.py` holds the
-`_DIAGNOSTIC_MODES` registry (mirroring its existing
-`_REGRESSION_STRATEGIES` lookup) and calls the active mode's `extra_fit()`
-generically at the recalibration trigger, exactly as it already runs one
-generic loop over `forward()`-implementing providers (ADR-012 §4) — same
-"one dispatch site, not one branch per concrete case" shape.
+see the Amendment blocks above for the full `DiagnosticMode` shape):
+`diagnostics/base.py` holds the shared `DiagnosticMode` ABC; `diagnostics/
+compare_regressions.py` holds this ADR's one concrete mode,
+`CompareRegressionsMode`. `coordinator.py` holds `_diagnostic_modes` (a
+per-instance registry as of the 2026-09-01 amendment — mirroring its
+existing `REGRESSION_STRATEGIES` lookup in shape) and calls the active
+mode's `extra_fit()` generically at the recalibration trigger, exactly as
+it already runs one generic loop over `forward()`-implementing providers
+(ADR-012 §4) — same "one dispatch site, not one branch per concrete case"
+shape. As of 2026-09-01, that call takes no arguments — `extra_fit()`
+resolves whatever it needs itself through the `ShadyCoordinator` reference
+it was constructed with, rather than `coordinator.py` assembling anything
+for it first.
 
 The retained per-slot pool cache from §3 lives in `cache.py` (ADR-007),
 populated by `coordinator.py` as a side effect of recalibration — not
@@ -587,26 +760,35 @@ therefore reusable by any future `DiagnosticMode` unchanged (see ADR-013
 for two sketched future modes that call this same function); §2b's
 pointwise sum-then-accuracy calculation is a second, equally pure
 function alongside it, taking each string's already-computed numbers in
-rather than reaching back into `regression/` itself.
+rather than reaching back into `regression/` itself. As of 2026-09-01,
+each `DiagnosticMode` calls into `aggregation.py` itself, from within its
+own `compute()`, having first resolved the predicted/actual values it
+needs via its coordinator reference — `aggregation.py`'s functions
+themselves are untouched by this amendment.
 
 `sensor.py` adds `ShadyDiagnosticsSensor` (§2, one per string) and
 `ShadyDiagnosticsSumSensor` (§2b, one per config entry, following the
 six `ShadyPvSumSensor`-style sensors' placement in `sensor.py` per
-ADR-005's "Module: a new pure aggregation layer" section), both
-staying thin like every other sensor in this design: each reads the
-`ShadyDiagnosticModeSelect`'s current option, looks it up in
-`coordinator.py`'s `_DIAGNOSTIC_MODES`, and — if found — builds that
-mode's `DiagnosticContext` from `coordinator.py`'s cached pools (from
-`cache.py`) and freshly-computed selected/accuracy values, then calls
-`.compute()` and sets `state`/`attributes` straight from the returned
-`DiagnosticResult` (the sum sensor reading the per-string sensors' own
-already-shaped output, not `cache.py` a second time); if not found
-(`"off"` or unset), it reports `disabled` as §1 specifies. This shaping
-is pure presentation and does not belong in `regression/` or
-`forecast_adjust.py`. The `shady.select_diagnostic_slot` service (§2a) is
-registered in `__init__.py` (the usual home for service registration),
-is **not** entity-targeted (§2a — there is one diagnosed-slot state per
-config entry, not one per sensor), and its handler is a thin wrapper that
+ADR-005's "Module: a new pure aggregation layer" section), both staying
+thin like every other sensor in this design. **As of 2026-09-01, this got
+thinner still:** each reads the `ShadyDiagnosticModeSelect`'s current
+option, looks it up in `coordinator.py`'s `_diagnostic_modes`, and — if
+found — calls that mode's `.compute()` directly (no arguments) and sets
+`state`/`attributes` straight from the returned `DiagnosticResult` (the
+sum sensor reading the per-string sensors' own already-shaped output, not
+`cache.py` a second time); if not found (`"off"` or unset), it reports
+`disabled` as §1 specifies. `sensor.py` no longer assembles anything for
+the mode to consume — resolving which slot is being diagnosed (reading
+`cache.py`'s `pinned_reference` scalar via its coordinator reference, or
+falling back to the last-complete-slot default when unset, §2a) and
+fetching that slot's pool/predicted/actual values are now the mode's own
+job, done inside `compute()`/`extra_fit()` via the coordinator reference
+each was constructed with. This shaping is pure presentation and does not
+belong in `regression/` or `forecast_adjust.py`. The
+`shady.select_diagnostic_slot` service (§2a) is registered in
+`__init__.py` (the usual home for service registration), is **not**
+entity-targeted (§2a — there is one diagnosed-slot state per config
+entry, not one per sensor), and its handler is a thin wrapper that
 validates the timestamp and calls that config entry's coordinator, which
 in turn forwards to `cache.py`'s `pin_reference`/`clear_reference`
 (ADR-007a §6) — `cache.py` is still only ever reached through
@@ -670,14 +852,23 @@ a single service handler this small.
 - **Pro (2026-08-30 amendment):** The select-plus-base-class redesign
   turns "add a second diagnostic mode" from a rework of a boolean-gated
   entity and its inline logic into an additive change — a new option
-  string, a new `DiagnosticMode` subclass, one registry entry. ADR-013
-  sketches two such modes without touching `diagnostics/base.py`.
-- **Con (2026-08-30 amendment):** `DiagnosticContext.samples` being a
-  `Sequence` (one item today, potentially 288 for a future whole-day
-  mode) means `CompareRegressionsMode.compute()` must still assume
-  exactly one sample even though the type does not enforce that — the
-  same category of runtime-not-enforced contract ADR-012 §1 already
-  accepts for `forward()`'s optionality.
+  string, a new `DiagnosticMode` subclass, one registry entry.
+  *(2026-09-01 note: ADR-013's own two sketched modes needing no change
+  to* `diagnostics/base.py` *was true of this redesign in isolation;
+  `diagnostics/base.py` did change again, 2026-09-01, for the unrelated
+  reason covered in that Amendment block — see ADR-013's own pointer note
+  for what did and didn't need revisiting as a result.)*
+- **Con (2026-08-30 amendment, superseded 2026-09-01):**
+  `DiagnosticContext.samples` being a `Sequence` (one item today,
+  potentially 288 for a future whole-day mode) means
+  `CompareRegressionsMode.compute()` must still assume exactly one sample
+  even though the type does not enforce that — the same category of
+  runtime-not-enforced contract ADR-012 §1 already accepts for
+  `forward()`'s optionality. *Moot as of 2026-09-01: `DiagnosticContext`
+  is removed outright (see that Amendment block); a future whole-day
+  mode's `compute()` would instead resolve however many slots it needs
+  directly through its own coordinator reference, with no shared
+  cardinality-typed parameter to under-constrain in the first place.*
 - **Con:** There is exactly one diagnosed-slot state per config entry
   (§2a), not one per string — a direct trade against the summed sensor
   (§2b) being well-defined at all. A person cannot pin string A to one
@@ -711,3 +902,38 @@ a single service handler this small.
   disappears along with them (§2). Pinning a future slot to "see what the
   forecast currently looks like there" gets exactly that, and nothing
   that claims to have validated it yet.
+- **Con (2026-09-01 amendment):** `diagnostics/` moves out of ADR-000
+  §6's zero-mocking test tier entirely — every `DiagnosticMode` test now
+  needs a real or hand-stubbed `ShadyCoordinator` (the same `hass`-stub
+  convention `coordinator.py`'s own tests already use, TASK-0009), not a
+  bare dataclass. This is a genuine loss of the "pure, zero-mocking"
+  guarantee this ADR's original 2026-08-30 amendment, and ADR-014 in
+  full, both specifically built toward.
+- **Con (2026-09-01 amendment):** A `DiagnosticMode` can now, in
+  principle, reach any public method `ShadyCoordinator` exposes — the
+  boundary that keeps this disciplined (only public, non-`_`-prefixed
+  access; extend the coordinator's public surface deliberately rather
+  than reaching into private state) is a convention this ADR states, not
+  one the type system enforces, the same category of "runtime-not-
+  enforced contract" ADR-012 §1 already accepts for `forward()`'s
+  optionality (the same comparison the now-superseded
+  `DiagnosticContext.samples` Con above used to make).
+- **Pro (2026-09-01 amendment):** Removes the need to keep extending
+  `DiagnosticSlotSample`/a per-mode input dataclass every time a new or
+  changed mode needs one more coordinator-owned value —
+  `TASK-0015a-patch-1` was itself already one instance of this friction,
+  discovered before it had even shipped. A mode now pulls what it needs
+  directly, the same way `sensor.py`/`select.py`/`button.py` already
+  reach `coordinator.py` freely as HA-facing glue.
+- **Pro (2026-09-01 amendment):** `compute()`/`extra_fit()` losing their
+  parameter, and `DiagnosticSlotSample`/`DiagnosticContext` being deleted
+  rather than kept alongside the new constructor, avoids two competing,
+  overlapping ways to hand a mode its inputs existing in the codebase at
+  once — a mode has exactly one path to its data (the coordinator
+  reference) with nothing to remember to keep in sync between it and a
+  now-redundant parallel DTO.
+- **Pro (2026-09-01 amendment):** `fit_cadence()`/`compute_cadence()`
+  give `coordinator.py` (or its trigger-registration code) a generic,
+  declared answer to "how often does this mode need to run," directly
+  useful for ADR-013's sketched whole-day modes' unresolved cadence
+  question (§3) without committing to scheduling them now.

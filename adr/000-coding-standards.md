@@ -37,6 +37,15 @@ rationale — discovered while scoping `TASK-0015b`'s diagnostics work).
 The `diagnostics --> regression` edge is replaced by
 `diagnostics --> string_computation`; `coordinator.py`'s bullet is
 updated to reflect its narrower, orchestration-only role.
+**2026-09-01** — §3's diagram/prose updated for ADR-004's second
+amendment: `diagnostics/` gains a `TYPE_CHECKING`-only, construction-time
+reference back to `coordinator.py` (new dashed edge). §6's zero-mocking
+list **loses** `diagnostics/` (`base.py`, `compare_regressions.py`) —
+it moves to the same hand-written-`hass`-stub test tier `coordinator.py`
+itself already uses (TASK-0009's convention), not the lighter
+`providers/discovery.py`/`providers/temperature.py` "reads `hass.states`
+only" exception. See ADR-004 §5's second Amendment for the full
+rationale.
 
 ## Amendment — 2026-08-22
 
@@ -160,6 +169,7 @@ flowchart BT
     entity_glue --> coordinator
     init --> entity_glue
     forecast_adjust -.->|"reverse transform, ADR-003b §1b/§2"| yield_correction
+    diagnostics -.->|"construction-time coordinator ref, TYPE_CHECKING-only (ADR-004 §5, 2026-09-01)"| coordinator
 ```
 
 - **`providers/`** (`discovery.py`, `normalize.py`, `base.py`,
@@ -196,17 +206,23 @@ flowchart BT
 - **`aggregation.py`** — pure logic: cross-string sums, whole-day arrays,
   trapezoidal energy-increment calculation, and the diagnostic accuracy
   calculation (mode-independent, ADR-004 §5) — see ADR-005/ADR-004.
-- **`diagnostics/`** (`base.py`, `compare_regressions.py`) — pure logic:
-  shared `DiagnosticMode` base class (mirrors `providers/base.py`'s
-  `Provider` ABC, ADR-012 §1) plus one concrete mode today,
-  `CompareRegressionsMode`; see ADR-004 §1/§5 (Amendment, 2026-08-30) for
-  the source of truth. Calls `string_computation.py` for its own extra
+- **`diagnostics/`** (`base.py`, `compare_regressions.py`) — shared
+  `DiagnosticMode` base class (mirrors `providers/base.py`'s `Provider`
+  ABC, ADR-012 §1) plus one concrete mode today, `CompareRegressionsMode`;
+  see ADR-004 §1/§5 (Amendments, 2026-08-30 and 2026-09-01) for the
+  source of truth. Calls `string_computation.py` for its own extra
   per-slot fitting (ADR-014) and `aggregation.py` for the accuracy
-  calculation; imports neither `cache.py` nor `homeassistant.*` —
-  `coordinator.py` builds each mode's input context from already-fetched
-  cache data and persists whatever a mode's `extra_fit()` returns, the
-  same division of labor it already has for `push()`-ing a provider's
-  `forward()` result.
+  calculation. **As of the 2026-09-01 amendment, no longer pure:** every
+  `DiagnosticMode` is constructed with the owning `ShadyCoordinator`
+  instance and may call its public interface directly (`cache`,
+  `strings()`, and any accessor added later) — `coordinator.py` no longer
+  needs to pre-build each mode's full input context itself, only persist
+  whatever a mode's `extra_fit()` returns (the same division of labor it
+  already has for `push()`-ing a provider's `forward()` result). The
+  dependency this creates back onto `coordinator.py` is resolved at the
+  import level only (`TYPE_CHECKING`-only, dashed edge above) — it is a
+  real runtime dependency on an HA-facing object, not just a type
+  reference.
 - **`cache.py`** — pure logic: index-addressable time-series store,
   generic over any `sensor_id` (used for FC/PV history and the
   day-snapshot array, and, per ADR-003c, weather-forecast/cell-or-ambient
@@ -227,13 +243,16 @@ flowchart BT
   `_apply_training_corrections` and inlined build-pool/fit/
   reverse-transform sequences) — that moved to `string_computation.py`,
   narrowing this module back toward its own stated orchestration-only
-  scope. Also holds the `_DIAGNOSTIC_MODES` registry (mirrors
-  `string_computation.py`'s `REGRESSION_STRATEGIES` lookup) and
-  dispatches to the currently selected `DiagnosticMode`'s `extra_fit()`
-  generically at the recalibration trigger (ADR-004 §1/§5, Amendment
-  2026-08-30) — a third dispatch shape alongside scheduling triggers and
-  provider listeners, all three registered/checked once in
-  `coordinator.py` rather than scattered per caller.
+  scope. Also holds `_diagnostic_modes` (mirrors
+  `string_computation.py`'s `REGRESSION_STRATEGIES` lookup in shape, but
+  is a **per-instance** attribute built in `__init__` as of ADR-004 §5's
+  2026-09-01 amendment, not a module-level constant, since constructing
+  each `DiagnosticMode` now requires passing `self`) and dispatches to
+  the currently selected `DiagnosticMode`'s `extra_fit()` generically at
+  the recalibration trigger (ADR-004 §1/§5) — a third dispatch shape
+  alongside scheduling triggers and provider listeners, all three
+  registered/checked once in `coordinator.py` rather than scattered per
+  caller.
 - **`sensor.py` / `config_flow.py` / `select.py` / `button.py`** — HA
   entity glue. `config_flow.py` implements the flow shape in ADR-010;
   `select.py` is `ShadyDiagnosticModeSelect` (ADR-004 §1, replacing
@@ -324,10 +343,8 @@ from TASK-0006 onward uses the convention from the outset.
 
 - Every module in `providers/base.py`, `providers/normalize.py`,
   `yield_correction.py`, `regression/`, `forecast_adjust.py`,
-  `string_computation.py` (ADR-014, 2026-08-31), `aggregation.py`,
-  `cache.py`, and `diagnostics/` (`base.py`, `compare_regressions.py`,
-  ADR-004 §1/§5 Amendment, 2026-08-30) is unit-tested with **zero
-  mocking**
+  `string_computation.py` (ADR-014, 2026-08-31), `aggregation.py`, and
+  `cache.py` is unit-tested with **zero mocking**
   — no `unittest.mock`, no fake `hass` object. Because they have no
   Home Assistant dependency, tests call the real functions with real
   dataclass instances and assert on real return values. This is only
@@ -336,6 +353,19 @@ from TASK-0006 onward uses the convention from the outset.
   the same reason — each reads `hass.states` directly by design (ADR-009
   §4, ADR-012 §5): `providers/discovery.py` and `providers/temperature.py`.
   Both are tested against a real `hass` fixture instead.
+- **`diagnostics/` (`base.py`, `compare_regressions.py`) is *not* in the
+  zero-mocking tier above.** It joined it on 2026-08-30 (ADR-004 §1/§5
+  Amendment) and left it again on 2026-09-01, once `DiagnosticMode`
+  gained a required, construction-time `ShadyCoordinator` reference
+  (ADR-004 §5, second Amendment) — an HA-facing dependency, not a pure
+  one. `diagnostics/` is instead tested the same way `coordinator.py`
+  itself is: against the hand-written, real (non-`Mock`) `homeassistant`
+  stub convention TASK-0009 established (registered into `sys.modules`
+  before file-path-loading the module under test) — a heavier-touch tier
+  than `providers/discovery.py`/`providers/temperature.py`'s "reads
+  `hass.states` only" exception above, since a `DiagnosticMode` test now
+  needs a constructible, sufficiently-real `ShadyCoordinator`, not just a
+  stubbed `hass.states`.
 - Tests are loaded via direct file-path import
   (`importlib.util.spec_from_file_location`) rather than package import,
   specifically to avoid pulling in `custom_components/shady/__init__.py`

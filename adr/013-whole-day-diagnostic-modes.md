@@ -6,6 +6,20 @@ to validate ADR-004's amended `DiagnosticMode` base class (§1/§5,
 Amendment 2026-08-30) against needs beyond the one mode ADR-004 actually
 specifies, and to capture the design thinking now, while fresh, rather
 than re-deriving it whenever this is eventually scheduled.
+**Note (2026-09-01):** ADR-004 §5 was amended again after this document
+was first written — `DiagnosticMode` now takes a `ShadyCoordinator`
+reference at construction, declares `fit_cadence()`/`compute_cadence()`
+(`"daily" | "hourly" | "slot"`), and `compute()`/`extra_fit()` lost their
+`DiagnosticContext` parameter entirely (`DiagnosticContext`/
+`DiagnosticSlotSample` are removed from `diagnostics/base.py`, not kept).
+§1 below is updated in place to reflect this — the cardinality story
+(1 slot vs. 288) gets *simpler*, not harder, once each mode resolves its
+own samples directly rather than receiving them through a shared
+container. Neither sketched mode below needs any change to its own
+reasoning beyond that update — both would plausibly declare
+`fit_cadence() -> "daily"`, giving §3's open "does this need a lower
+refresh cadence" question a structural hook rather than resolving it.
+Still Proposed, still no implementation task.
 
 ---
 
@@ -42,33 +56,46 @@ to `diagnostics/base.py`.**
 
 ## Decision
 
-### 1 — Both are `DiagnosticMode` subclasses, unchanged base class
+### 1 — Both are `DiagnosticMode` subclasses (base class since revised, 2026-09-01)
 
-Both modes are additional entries in `coordinator.py`'s `_DIAGNOSTIC_MODES`
-registry (ADR-004 §5) and additional `const.py` `DIAGNOSTIC_MODES` option
-strings — nothing else about the select entity, the sensor dispatch, or
-`diagnostics/base.py` changes. Concretely, sketched (not committed) names:
-`"compare_regressions_daily"` and `"compare_providers_daily"`.
+Both modes are additional entries in `coordinator.py`'s `_diagnostic_modes`
+registry (per-instance as of ADR-004 §5, Amendment 2026-09-01) and
+additional `const.py` `DIAGNOSTIC_MODES` option strings — nothing else
+about the select entity or the sensor dispatch changes. Concretely,
+sketched (not committed) names: `"compare_regressions_daily"` and
+`"compare_providers_daily"`.
 
-The only shape difference from `CompareRegressionsMode` is **cardinality**,
-already accommodated by ADR-004's `DiagnosticContext.samples` being a
-`Sequence[DiagnosticSlotSample]` rather than a single sample: a whole-day
-mode's `compute()` receives 288 `DiagnosticSlotSample` entries (one per
-5-minute slot) instead of 1. Each sample's `predicted` mapping is keyed by
-method name for the first sketched mode, or by provider name for the
-second — exactly the same field ADR-004's `CompareRegressionsMode` already
-populates by method name, just with a different key vocabulary. Neither
-sketched mode needs `pool` (ADR-004 §2's historical scatter data) — a
-288-point day view has no single "training pool" to plot per slot the way
-one diagnosed slot does — so both simply leave it `None` per sample, which
-`DiagnosticSlotSample.pool`'s existing `| None` type already allows.
+The only shape difference from `CompareRegressionsMode` is **cardinality**
+— **288 slots instead of 1.** At the time this document was first written
+(2026-08-30), that was going to be accommodated by ADR-004's
+`DiagnosticContext.samples` being a `Sequence[DiagnosticSlotSample]`
+rather than a single sample. As of ADR-004 §5's second Amendment
+(2026-09-01), `DiagnosticContext`/`DiagnosticSlotSample` no longer exist
+— `compute()` takes no parameter at all. A whole-day mode's `compute()`
+would instead resolve its own 288 samples directly through its
+coordinator reference, the same way `CompareRegressionsMode`'s
+`compute()` resolves its one diagnosed sample: loop the day's 288 slots,
+pull each one's predicted-by-method (or predicted-by-provider) and actual
+values via `self._coordinator.cache`/whatever public accessor exists, and
+build whatever result shape `DiagnosticResult` needs. This is a **smaller**
+base-class footprint than the original 2026-08-30 sketch assumed, not a
+larger one — there is no shared cardinality-typed container for either
+sketched mode to reuse or diverge from, only the same "however many
+values `compute()` decides to gather" freedom `CompareRegressionsMode`
+already has for its one slot. Neither sketched mode needs anything
+resembling `DiagnosticSlotSample.pool` (ADR-004 §2's historical scatter
+data) — a 288-point day view has no single "training pool" to plot per
+slot the way one diagnosed slot does — so both would simply omit it from
+whatever per-slot shape they build internally; there is no shared type to
+leave a field `None` in anymore.
 
 ### 2 — Accuracy: same function, no new one needed
 
 Both modes call `aggregation.py`'s existing accuracy function (ADR-004 §5:
 `1 - |predicted - actual| / actual`, clamped to `[0, 1]`) once per slot,
 per compared source — the same function `CompareRegressionsMode` already
-calls once, per method, per diagnosed slot. This is exactly why ADR-004's
+calls once, per method, per diagnosed slot, from inside its own
+`compute()` (ADR-004 §5, 2026-09-01). This is exactly why ADR-004's
 amendment kept that function in `aggregation.py` rather than moving it
 into `diagnostics/compare_regressions.py`: a mode-independent, scope-
 independent definition needs no change to serve a caller with 288 slots

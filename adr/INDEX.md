@@ -19,7 +19,7 @@ enforces.
 | [003a](003a-inverter-clipping-exclusion.md) | Accepted | Optional Per-String Yield Correction: Inverter Clipping Exclusion *(split from ADR-003 §1/§1a)* |
 | [003b](003b-temperature-derating-correction.md) | Accepted | Optional Per-String Yield Correction: Temperature Derating *(split from ADR-003 §2/§2a/§2b/§2c/§3)* |
 | [003c](003c-temperature-forecast-via-learned-model.md) | Accepted | Temperature Derating: Forecasting the Target-Slot Temperature via a Learned Per-Slot Model *(amends ADR-003b §1a/§1b, ADR-012 §3, ADR-010)* |
-| [004](004-diagnostics-select-and-scatter-sensor.md) | Accepted | Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed) *(§1 amended 2026-08-30: select dropdown + `DiagnosticMode` base class, replacing the original boolean switch)* |
+| [004](004-diagnostics-select-and-scatter-sensor.md) | Accepted | Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed) *(§1 amended 2026-08-30: select dropdown + `DiagnosticMode` base class, replacing the original boolean switch; §5 amended again 2026-09-01: `DiagnosticMode` gains construction-time `ShadyCoordinator` access + `fit_cadence`/`compute_cadence` getters, dropping its zero-mocking purity guarantee)* |
 | [005](005-aggregate-sum-and-integral-sensors.md) | Accepted | Cross-String Aggregate Sensors: Sums and Daily Integrals |
 | [006](006-intraday-deviation-correction.md) | Accepted | Intraday Deviation Correction for the Remaining-Today Forecast |
 | [007](007-coordinator-cache-split.md) | Accepted | Splitting the Coordinator: A Dedicated Cache Module *(storage/accessor design split out to ADR-007a, 2026-08-19)* |
