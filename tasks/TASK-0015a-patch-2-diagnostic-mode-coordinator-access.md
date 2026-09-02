@@ -1,6 +1,6 @@
 # Task: Patch — `DiagnosticMode` Gains Coordinator Access + Cadence Getters
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-004 §5 (Amendment 2026-09-01), ADR-000 §3/§6 (Amendment 2026-09-01), ADR-014]
 - **Dependencies:** [TASK-0015a-diagnostic-mode-base-architecture, TASK-0010-coordinator-recalibration-recompute-push]
 
@@ -142,3 +142,81 @@ rather than left in place unused.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `custom_components/shady/diagnostics/base.py` (rewritten) →
+  - `DiagnosticCadence` — module-level type alias,
+    `Literal["daily", "hourly", "slot"]`.
+  - `class DiagnosticMode(ABC)` — new shape:
+    - `__init__(self, coordinator: ShadyCoordinator) -> None` (required,
+      no default; stores `self._coordinator = coordinator`).
+    - `key: ClassVar[str]` — unchanged from `TASK-0015a`.
+    - `fit_cadence(self) -> DiagnosticCadence` — abstract, required, no
+      default.
+    - `compute_cadence(self) -> DiagnosticCadence` — abstract, required,
+      no default.
+    - `compute(self) -> DiagnosticResult` — abstract, required,
+      no-parameter (parameter dropped).
+    - `extra_fit(self) -> DiagnosticFitResult | None` — optional,
+      no-parameter (parameter dropped), defaults to `None`.
+  - `class DiagnosticResult` — unchanged from `TASK-0015a`
+    (`state: str`, `attributes: dict[str, Any]`).
+  - `class DiagnosticFitResult` — unchanged from `TASK-0015a`
+    (`predictions: Mapping[str, float]`).
+  - `DiagnosticContext` and `DiagnosticSlotSample` — **deleted**, not
+    exported, not importable from this module.
+  - `ShadyCoordinator` is imported only under `if TYPE_CHECKING:` from
+    `..coordinator` — no runtime import of `coordinator.py`/
+    `homeassistant.*` is introduced by this module.
+- `tests/test_diagnostics_base.py` (rewritten, 15 tests across 10
+  classes) — covers every acceptance criterion above: constructor
+  requiredness (missing-coordinator `TypeError`), coordinator
+  reachability (`mode._coordinator is coordinator`), both cadence
+  getters' requiredness (individually and together), `compute()`
+  requiredness, all three cadence literal values round-tripping,
+  `compute()`/`extra_fit()` taking no parameters beyond `self`,
+  `DiagnosticContext`/`DiagnosticSlotSample` no longer being attributes
+  of the loaded module, `DiagnosticResult`/`DiagnosticFitResult` still
+  being attributes of it, `extra_fit()`'s `DiagnosticFitResult` payload
+  round-tripping unchanged, and one mode reading data through its stored
+  coordinator reference's public `strings()` method end-to-end.
+  - **Testing-tier note (worker's call, per this task's own footprint
+    guidance):** kept the lighter hand-written stand-in convention
+    (`_StubCoordinator`, a bare class with no behavior; a second
+    `_CoordinatorWithData` stand-in with a real `strings()` method for
+    the one test that reads through it) rather than switching to
+    `coordinator.py`'s full `homeassistant`-stub convention — no test in
+    this file exercises real coordinator/HA behavior, only
+    `DiagnosticMode`'s own base-class shape and simple attribute/method
+    reads off whatever object is stored. A future test here that
+    exercises a cadence getter or the stored reference against *real*
+    coordinator behavior should switch to the heavier
+    `test_coordinator.py`-style convention instead of extending this
+    one.
+  - **mypy note:** `DiagnosticMode.__init__`'s `coordinator` parameter
+    resolves to the real `ShadyCoordinator` type under `mypy --strict`
+    (via the same `TYPE_CHECKING`-only static import convention
+    `test_diagnostics_base.py` already used for `TASK-0015a`), so the
+    hand-written stand-ins are constructed through small `-> Any`-typed
+    factory functions (`_stub_coordinator()`, `_coordinator_with_data()`)
+    rather than passed directly or suppressed with a
+    `# type: ignore[arg-type]` at every call site — the same
+    "fake object standing in for a strictly-typed dependency" pattern
+    `test_coordinator.py`'s own `Any`-typed helpers already establish,
+    applied here at the object-construction boundary instead of the
+    whole-module-load boundary.
+- External dependencies added: none — `tasks/DEPENDENCIES.md` unchanged.
+- Full suite: 338/338 (332 pre-existing, less 9 replaced
+  `TASK-0015a`-era tests, plus 15 new `TASK-0015a-patch-2` tests —
+  net +6). `mypy --strict` clean on 45 source files (`custom_components/`
+  + `tests/`). `ruff check` clean repo-wide. `ruff format --check` clean
+  on both files this task touched (`diagnostics/base.py`,
+  `test_diagnostics_base.py`); two pre-existing, unrelated,
+  already-documented format-drift files (`tests/test_regression.py`,
+  2026-08-26 log entry; `adr/004-diagnostics-select-and-scatter-sensor.md`,
+  a markdown file with an embedded illustrative code block, not touched
+  by this task) are untouched, out of scope.
+- `git diff --stat` confirms only `custom_components/shady/diagnostics/base.py`
+  and `tests/test_diagnostics_base.py` changed in this task's commit.
+- `TASK-0015a-patch-1-diagnostic-fit-inputs` remains `superseded`, not
+  implemented — confirmed no `DiagnosticSlotSample.query_fc`/`.fit_inputs`
+  or `DiagnosticFitInputs` anywhere in this delivery (impossible in any
+  case, since `DiagnosticSlotSample` no longer exists after this patch).

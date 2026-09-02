@@ -20,6 +20,23 @@ reasoning beyond that update — both would plausibly declare
 `fit_cadence() -> "daily"`, giving §3's open "does this need a lower
 refresh cadence" question a structural hook rather than resolving it.
 Still Proposed, still no implementation task.
+**Note (2026-09-02):** ADR-004 §5 was amended twice more the same day.
+The first amendment bundled `compute()`/`extra_fit()`'s output by
+**string index** (`DiagnosticResult.by_string`) — a shape this document's
+own `compare_providers_daily` sketch (§1) would not have fit at all
+(providers aren't strings), and `compare_regressions_daily` wouldn't
+either (a single whole-day series, not one per string). The second
+amendment, immediately following, replaced string-index keying with a
+flat list of self-identifying `DiagnosticSensorResult` entries
+(`sensor_id: str` plus `state`/`attributes`, `DiagnosticFitResult` keyed
+the same way) — restoring this document's original §1/§4 claim that
+either sketched mode needs no further `diagnostics/base.py` change:
+`compare_regressions_daily` would return one `sensor_id` (a fixed
+sentinel, or one per compared method if rendered as separate entities —
+still undecided, per §4); `compare_providers_daily` would return one
+`sensor_id` per compared provider. Neither needs string-index keying,
+which is exactly what this second amendment removed. Still Proposed,
+still no implementation task.
 
 ---
 

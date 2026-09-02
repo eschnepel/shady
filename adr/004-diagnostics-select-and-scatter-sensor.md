@@ -20,6 +20,19 @@ plus two new abstract getters, `fit_cadence()`/`compute_cadence()`,
 dropping the "imports neither `cache.py` nor `homeassistant.*`" purity
 guarantee this section originally established. `TASK-0015a-patch-1` is
 superseded. See the second Amendment block below.
+**Amended a third time: 2026-09-02** — §5 revised again: `compute()`/
+`extra_fit()` keep their zero-argument signatures, but `DiagnosticResult`/
+`DiagnosticFitResult` are restructured to bundle every configured
+string's output in one call (`by_string: Mapping[int, ...]`), since the
+2026-09-01 amendment left `_diagnostic_modes` holding one shared instance
+per mode name with no way for a single call to know which string it was
+for. See the third Amendment block below.
+**Amended a fourth time: 2026-09-02 (later same day)** — §5 revised a
+third time in one day: the string-keyed `by_string` shape didn't
+generalize to ADR-013's own sketched non-string-scoped modes.
+`DiagnosticResult`/`DiagnosticFitResult` restructured again to a flat,
+self-identifying `sensor_id`-keyed shape instead. See the fourth
+Amendment block below.
 
 ---
 
@@ -343,6 +356,210 @@ Decided explicitly, with the human confirming this supersedes
 
 **Decided by:** human (explicit instruction, 2026-09-01), confirmed by
 Lead Agent.
+
+---
+
+## Amendment — 2026-09-02
+
+**Reason:** Scoping `TASK-0015b`'s Consumed Interfaces against the
+2026-09-01 amendment's zero-argument `compute()`/`extra_fit()` surfaced a
+gap neither amendment had actually resolved: `coordinator.py`'s
+`_diagnostic_modes` holds **one shared `CompareRegressionsMode` instance
+per mode name** (mirroring `string_computation.py`'s `REGRESSION_STRATEGIES`
+lookup in shape, per the 2026-09-01 amendment's own wording) — but §2
+requires **one `ShadyDiagnosticsSensor` per configured string**, each
+needing its own series/accuracy, and neither `compute()` nor `extra_fit()`
+takes any parameter (or has any per-string state) a shared instance could
+use to know which string a given call is for. This was caught before any
+`TASK-0015b` code existed, while assembling that task's Consumed
+Interfaces — the same "before code, not after" timing every prior
+amendment to this ADR has had. Three resolutions were identified and
+presented to the human: (1) one `DiagnosticMode` instance per (mode,
+string) pair instead of per mode name alone; (2) a single shared instance
+whose zero-argument `compute()`/`extra_fit()` internally loop over
+`self._coordinator.strings()` and return a result bundling every
+configured string's output in one call; (3) reintroducing a single
+`string_index: int` parameter to `compute()`/`extra_fit()`, reopening the
+2026-09-01 amendment's just-implemented, just-merged signature a third
+time in three days. The human chose (2).
+
+**Decision:**
+
+- **`compute()`/`extra_fit()` keep their zero-argument signatures from the
+  2026-09-01 amendment unchanged** — `compute(self) -> DiagnosticResult`,
+  `extra_fit(self) -> DiagnosticFitResult | None`. What changes is what
+  `DiagnosticResult`/`DiagnosticFitResult` themselves hold: each call now
+  covers **every configured string in one shot**, resolved via
+  `self._coordinator.strings()` the same way any other coordinator-owned
+  data is reached (2026-09-01 amendment, unchanged encapsulation
+  boundary).
+- **`DiagnosticResult` restructured to bundle by string:**
+  ```python
+  @dataclass(frozen=True)
+  class DiagnosticStringResult:
+      """One string's sensor-ready payload — exactly `DiagnosticResult`'s
+      pre-2026-09-02 shape, now nested one level under `DiagnosticResult.
+      by_string` instead of being the top-level return value itself."""
+      state: str
+      attributes: dict[str, Any]
+
+  @dataclass(frozen=True)
+  class DiagnosticResult:
+      """Every configured string's already-shaped payload from one
+      compute() call, keyed by string index (coordinator.py's strings()
+      index half)."""
+      by_string: Mapping[int, DiagnosticStringResult]
+  ```
+  `sensor.py`'s per-string `ShadyDiagnosticsSensor` calls `compute()` and
+  indexes into `by_string[self._string_index]` for its own
+  `state`/`attributes` — still "straight from the returned result", just
+  one dict lookup deeper than the 2026-09-01 amendment's text described,
+  since that text predates this gap being caught.
+- **`DiagnosticFitResult` restructured the same way:**
+  ```python
+  @dataclass(frozen=True)
+  class DiagnosticFitResult:
+      """Every configured string's extra-fitting output from one
+      extra_fit() call, keyed by string index — same bundling rationale
+      as DiagnosticResult, same reason (one shared mode instance, one
+      zero-argument call covering every string)."""
+      by_string: Mapping[int, Mapping[str, float]]
+  ```
+  The inner `Mapping[str, float]` is unchanged from the 2026-09-01
+  amendment's `DiagnosticFitResult.predictions` — still keyed by
+  compared-source name (method or provider name) — only relocated one
+  level deeper, under each string's own key. `coordinator.py` iterates
+  `by_string` and writes each string's inner mapping into `cache.py`
+  individually, the same division of labor (mode computes, coordinator
+  persists) the 2026-09-01 amendment already established for the
+  single-string case.
+- **`ShadyDiagnosticsSumSensor` is unaffected by this amendment** — per
+  §5's existing text, it was never going to call `compute()` a second
+  time; it reads the per-string sensors' own already-computed
+  `state`/`attributes` and sums them itself (`aggregation.py`'s second,
+  sum-then-accuracy pure function, unchanged). This amendment only
+  changes how the per-string sensors' own calls are shaped.
+- **Cost trade-off, stated plainly:** every per-string `ShadyDiagnosticsSensor`
+  now triggers a full recomputation of *every* configured string's
+  series/accuracy on each read (N sensors x N-strings-worth of work per
+  5-minute tick, instead of N sensors x 1-string-worth), not just its
+  own. `compute()`'s own per-string cost is already documented as cheap
+  (§2a "Refresh cadence": one PV/FC lookup plus four model evaluations
+  per string), so this is judged an acceptable, explicitly-accepted
+  trade for keeping `compute()`/`extra_fit()` argument-free and avoiding
+  a fourth signature change to the same method pair — not a
+  correctness concern, a constant-factor one, bounded by how many
+  strings a real installation configures (typically single digits).
+- **What does not change:** the single-active-mode-or-`"off"` dispatch
+  model (§1), `key: ClassVar[str]`, the two cadence getters
+  (`fit_cadence()`/`compute_cadence()`), the constructor
+  (`__init__(self, coordinator: ShadyCoordinator)`), and the
+  encapsulation boundary (public-interface-only) — all exactly as the
+  2026-09-01 amendment left them. Only the two output dataclasses'
+  internal shape changes, per above.
+- **No further patch task for `TASK-0015a-patch-1`** — it remains
+  superseded from the 2026-09-01 amendment; this amendment does not
+  reopen that question.
+
+**Decided by:** human (explicit instruction, 2026-09-02), confirmed by
+Lead Agent.
+
+---
+
+## Amendment — 2026-09-02 (second, same day)
+
+**Reason:** Reviewing the just-decided string-keyed `by_string` shape
+against **ADR-013**'s own sketched future modes — written specifically
+to validate this base class against needs beyond
+`CompareRegressionsMode` — surfaced that it doesn't generalize.
+`compare_providers_daily` (ADR-013 §1) compares candidate **providers**
+across a whole day, a dimension with no relationship to string index at
+all; `compare_regressions_daily` (ADR-013 §1) compares methods across a
+whole day as a **single array-wide series**, not one entry per string
+either. Keying `DiagnosticResult`/`DiagnosticFitResult` by string index,
+as the first same-day amendment just did, would have silently broken
+ADR-013's own central claim — "both fit inside ADR-004's `DiagnosticMode`
+base class as written, with no change to `diagnostics/base.py`" — the
+moment either sketched mode was actually built. Caught by the human
+before any `TASK-0015b` code existed (the same "before code" timing
+every amendment to this ADR has had), immediately following the first
+same-day amendment.
+
+**Decision:**
+
+- **`compute()`/`extra_fit()` keep their zero-argument signatures**,
+  unchanged again. What changes, a second time today, is what
+  `DiagnosticResult`/`DiagnosticFitResult` hold — generalized from
+  "keyed by string index" to "a flat, self-identifying collection,
+  however many entries a given mode's one call produces and whatever
+  those entries represent (one per string, one per provider, one for an
+  entire array, ...)."
+- **`DiagnosticStringResult` renamed `DiagnosticSensorResult`, gains a
+  required `sensor_id` and three optional entity hints:**
+  ```python
+  @dataclass(frozen=True)
+  class DiagnosticSensorResult:
+      sensor_id: str
+      state: str
+      attributes: dict[str, Any]
+      name: str | None = None
+      unit: str | None = None
+      device_class: str | None = None
+  ```
+  `state`/`attributes` are exactly `DiagnosticResult`'s original
+  pre-2026-09-02 fields, unchanged again. `sensor_id` is however the
+  producing mode chooses to identify this one entity — a string index as
+  text for `CompareRegressionsMode`, a provider name for a future
+  `compare_providers_daily`, a fixed sentinel for a mode that only ever
+  produces one whole-array entity. `name`/`unit`/`device_class` are
+  optional, plain-`str` hints (not `homeassistant.*` enums — this module
+  stays free of that runtime import, same as before both amendments
+  today) `sensor.py` may use when shaping the real entity beyond its own
+  per-mode defaults; a mode with nothing to override leaves them `None`.
+- **`DiagnosticResult` restructured to a flat list:**
+  ```python
+  @dataclass(frozen=True)
+  class DiagnosticResult:
+      sensors: Sequence[DiagnosticSensorResult]
+  ```
+  `sensor.py`'s per-string `ShadyDiagnosticsSensor` calls `compute()`
+  once and finds its own entry by matching `sensor_id` — one dict/list
+  lookup deeper than the first same-day amendment's text described,
+  since that text (written minutes earlier the same session) predates
+  this second gap being caught.
+- **`DiagnosticFitResult` restructured the same way, keyed by
+  `sensor_id` instead of string index:**
+  ```python
+  @dataclass(frozen=True)
+  class DiagnosticFitResult:
+      by_sensor: Mapping[str, Mapping[str, float]]
+  ```
+  Not explicitly requested by the human alongside `DiagnosticResult`'s
+  change, but applied here for symmetry with the same stated principle
+  (not every mode is string-scoped) — flagged plainly in this amendment
+  so it can be corrected if that symmetry wasn't intended. The inner
+  `Mapping[str, float]` is unchanged — still keyed by compared-source
+  name. `coordinator.py` iterates `by_sensor` and writes each entry's
+  inner mapping into `cache.py` individually, same division of labor as
+  before.
+- **`ShadyDiagnosticsSumSensor` remains unaffected** — it was never
+  calling `compute()` a second time (§5's original text, unchanged by
+  either amendment today); it reads the per-string sensors' own
+  already-computed output and sums that.
+- **ADR-013 §1's "no change to `diagnostics/base.py`" claim is revised**
+  by a matching note in that document — the base class changed twice
+  today, but neither sketched mode there needs any further change of its
+  own beyond what today's two amendments already made: both already
+  described their output as "whatever shape `compute()` decides to
+  build," which is exactly what a flat, self-identifying list gives them
+  cleanly, more so than the string-keyed shape this amendment replaces.
+- **What does not change (a second time today):** the
+  single-active-mode-or-`"off"` dispatch model (§1), `key: ClassVar[str]`,
+  the two cadence getters, the constructor, and the encapsulation
+  boundary — all exactly as both prior amendments left them.
+
+**Decided by:** human (explicit instruction, 2026-09-02, second
+instruction same day), confirmed by Lead Agent.
 
 ---
 

@@ -1,14 +1,47 @@
-"""Shared diagnostic-mode base class and its dataclasses (ADR-004 §1/§5,
-Amendment 2026-08-30).
+"""Shared diagnostic-mode base class and its output dataclasses (ADR-004
+§1/§5, Amendment 2026-09-01, Amendment 2026-09-02, second Amendment
+2026-09-02).
 
 Every concrete diagnostic mode (starting with `compare_regressions.py`'s
 `CompareRegressionsMode`) subclasses `DiagnosticMode` below. This module
-holds only the shared base class and the plain dataclasses its methods
-use — no concrete mode logic lives here, mirroring `providers/base.py`'s
-`Provider` ABC (ADR-012 §1). `DiagnosticContext.samples` is a `Sequence`
-rather than a single value specifically so a future whole-day mode
-(ADR-013 §1, 288 samples) needs no change to this module — only a new
-subclass.
+holds only the shared base class and the plain output dataclasses its
+methods return — no concrete mode logic lives here, mirroring
+`providers/base.py`'s `Provider` ABC (ADR-012 §1).
+
+As of ADR-004 §5's second Amendment (2026-09-01), a `DiagnosticMode` is
+constructed with a reference to the owning `ShadyCoordinator` and pulls
+whatever coordinator-owned data it needs directly, on demand, through
+that reference's **public** interface only (`strings()`, `cache`, ...) —
+never a `_`-prefixed attribute. This trades the module's prior purity
+(no `cache.py`/`homeassistant.*` import) for not having to anticipate
+every future mode's exact inputs ahead of time via a per-call context
+DTO. The `ShadyCoordinator` import below is `TYPE_CHECKING`-only, so no
+runtime import of `coordinator.py` (and therefore no `homeassistant.*`)
+is introduced by this module itself — the cycle is resolved the same way
+this project's own test files already resolve a comparable problem
+(ADR-000 §6), not by restoring purity. `DiagnosticContext` and
+`DiagnosticSlotSample`, the prior per-call input DTOs, are removed
+outright (not deprecated-and-kept) — see ADR-004 §5's second Amendment
+for the full rationale.
+
+As of ADR-004 §5's third Amendment (2026-09-02), `compute()`'s and
+`extra_fit()`'s zero-argument signatures are unchanged, but their output
+dataclasses briefly bundled every configured string in one call, keyed
+by string index — because `coordinator.py`'s `_diagnostic_modes` holds
+one shared instance per mode name, not one per string, so a single call
+has to cover every string at once rather than relying on per-call state
+a shared instance doesn't have.
+
+As of ADR-004 §5's fourth Amendment (2026-09-02, later the same day),
+that string-index keying was replaced: it didn't generalize to a mode
+that isn't string-scoped at all (ADR-013's sketched
+`compare_providers_daily`, e.g., compares providers, not strings).
+`DiagnosticResult`/`DiagnosticFitResult` now hold a flat,
+self-identifying collection instead — each `DiagnosticSensorResult`
+carries its own `sensor_id`, however the producing mode chooses to
+identify it (a string index as text, a provider name, a fixed sentinel
+for a whole-array total, ...), rather than the container itself assuming
+what dimension a mode varies over.
 """
 
 from __future__ import annotations
@@ -16,92 +49,128 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+if TYPE_CHECKING:
+    from ..coordinator import ShadyCoordinator
+
+DiagnosticCadence = Literal["daily", "hourly", "slot"]
+"""How often a mode needs `extra_fit()`/`compute()` to run, declared by
+the mode itself (ADR-004 §5, second Amendment) so `coordinator.py` can
+read it generically instead of hard-coding a case per mode. `"slot"` is
+what `CompareRegressionsMode` (TASK-0015b) declares — it fits/computes
+for exactly one diagnosed 5-minute slot, reusing TASK-0013's existing
+5-minute trigger.
+"""
 
 
 @dataclass(frozen=True)
-class DiagnosticSlotSample:
-    """One slot's already-resolved comparison inputs.
+class DiagnosticSensorResult:
+    """One diagnostic entity's sensor-ready payload, self-identifying via
+    `sensor_id` so `DiagnosticResult` can hold a flat collection of
+    however many of these a given mode's `compute()` call produces — not
+    assumed to be "one per configured string" (ADR-004 §5, fourth
+    Amendment, 2026-09-02). A mode that isn't string-scoped at all
+    (ADR-013's sketched `compare_providers_daily`, comparing providers,
+    or a mode producing a single whole-array total) is represented
+    exactly the same way as `CompareRegressionsMode`'s one-per-string
+    case: a flat collection, however long, each entry carrying its own
+    identity.
 
-    `predicted` is keyed by whatever this mode compares — regression-
-    method name for `CompareRegressionsMode`, provider name for a future
-    provider-comparison mode (ADR-013 §1). `actual` is `None` for a slot
-    that hasn't elapsed yet (mirrors ADR-004 §2a's future-pin handling).
-    `pool` is the optional historical scatter data (ADR-004 §2) —
-    meaningful for a single-slot scatter-style mode, left `None` for a
-    mode with no scatter concept of its own (e.g. a whole-day mode,
-    ADR-013 §1).
+    `state`/`attributes` are `sensor.py`'s sensor-ready payload — it sets
+    `state`/extends its attributes with `attributes` directly, no
+    further shaping. `name`/`unit`/`device_class` are optional, plain-
+    `str` (not `homeassistant.*` enums — this module stays free of that
+    runtime import) hints `sensor.py` may use when shaping the real
+    entity beyond its own per-mode defaults; a mode with nothing to
+    override leaves them `None`.
     """
 
-    slot_of_day: int
-    predicted: Mapping[str, float]
-    actual: float | None
-    pool: Mapping[str, list[tuple[float, float]]] | None = None
-
-
-@dataclass(frozen=True)
-class DiagnosticContext:
-    """One or more slots' already-fetched comparison inputs — never raw
-    HA/recorder access, that's `coordinator.py`'s job before this is
-    built.
-
-    A single-slot mode (`CompareRegressionsMode`, ADR-004) receives
-    exactly one sample; a whole-day mode (ADR-013 §1, not yet scheduled)
-    receives 288 — same shape, different cardinality, no base-class
-    change needed either way. Also the parameter type for `extra_fit()`
-    below — the same already-fetched inputs `compute()` receives, since
-    a mode's extra fitting operates on the same diagnosed slot(s) it is
-    about to render (ADR-004 §1/§5 Amendment).
-    """
-
-    samples: Sequence[DiagnosticSlotSample]
+    sensor_id: str
+    state: str
+    attributes: dict[str, Any]
+    name: str | None = None
+    unit: str | None = None
+    device_class: str | None = None
 
 
 @dataclass(frozen=True)
 class DiagnosticResult:
-    """Pure, sensor-ready payload — `sensor.py` sets `state`/extends its
-    attributes with `attributes` directly, no further shaping.
+    """Every diagnostic entity this mode's one `compute()` call produced,
+    as a flat collection identified by each entry's own `sensor_id` —
+    not keyed by string index or any other dimension the container
+    itself assumes (ADR-004 §5, fourth Amendment). `sensor.py`'s
+    per-string `ShadyDiagnosticsSensor` finds its own entry by matching
+    `sensor_id`; a future mode that isn't string-scoped populates this
+    the same way, with whatever `sensor_id`s make sense for what it
+    compares.
     """
 
-    state: str
-    attributes: dict[str, Any]
+    sensors: Sequence[DiagnosticSensorResult]
 
 
 @dataclass(frozen=True)
 class DiagnosticFitResult:
-    """Whatever a mode's extra fitting produced, per compared source
-    (method or provider name) — `coordinator.py` is the one that writes
-    this into `cache.py`, same division of labor `push()` already has
-    for provider `forward()` results (ADR-012 §4): the mode computes,
-    the coordinator persists.
+    """Every diagnostic entity's extra-fitting output from one
+    `extra_fit()` call, keyed by the same `sensor_id`
+    `DiagnosticResult` uses — not string index (ADR-004 §5, fourth
+    Amendment; same generalization rationale as `DiagnosticResult`
+    above). Each entry's inner mapping is keyed by compared source
+    (method or provider name), unchanged since before either same-day
+    amendment — `coordinator.py` iterates `by_sensor` and writes each
+    entry's inner mapping into `cache.py` individually, same division of
+    labor `push()` already has for provider `forward()` results
+    (ADR-012 §4): the mode computes, the coordinator persists.
     """
 
-    predictions: Mapping[str, float]
+    by_sensor: Mapping[str, Mapping[str, float]]
 
 
 class DiagnosticMode(ABC):
     """Shared base class for diagnostic modes (ADR-004 §1/§5, Amendment
-    2026-08-30).
+    2026-09-01, Amendment 2026-09-02, second Amendment 2026-09-02).
 
-    One required, pure method and one optional, no-op-by-default hook —
-    the same shape `providers/base.py`'s `Provider` ABC already
-    established (ADR-012 §1), dispatched generically by `coordinator.py`
-    without knowing which concrete mode it's talking to. Different
-    triggers than `Provider` (a recalibration trigger for `extra_fit()`,
-    not a live push listener), same shape.
+    Constructed with the owning `ShadyCoordinator`; `compute()`/
+    `extra_fit()` take no further parameters and resolve whatever they
+    need through that reference's public interface, covering every
+    diagnostic entity this mode produces in one call (ADR-004 §5, fourth
+    Amendment). Encapsulation boundary despite dropping purity: a
+    `DiagnosticMode` may use only `coordinator.py`'s public
+    (non-`_`-prefixed) interface — extend the coordinator with a new
+    accessor rather than reach into private state (ADR-004 §5, second
+    Amendment).
     """
 
     key: ClassVar[str]
 
-    @abstractmethod
-    def compute(self, context: DiagnosticContext) -> DiagnosticResult:
-        """Pure. No HA import — zero-mocking tier (ADR-000 §6)."""
+    def __init__(self, coordinator: ShadyCoordinator) -> None:
+        self._coordinator = coordinator
 
-    def extra_fit(self, context: DiagnosticContext) -> DiagnosticFitResult | None:
-        """Optional, pure. Whatever extra per-slot fitting this mode
-        needs beyond the default recalibration (ADR-002 §1) — e.g.
-        fitting `regression/`'s other three strategies for the diagnosed
-        slot, for `CompareRegressionsMode`.
+    @abstractmethod
+    def fit_cadence(self) -> DiagnosticCadence:
+        """How often this mode needs `extra_fit()` to run. Required, no
+        default — core to what the mode is."""
+
+    @abstractmethod
+    def compute_cadence(self) -> DiagnosticCadence:
+        """How often this mode needs `compute()` to run. Required, no
+        default — core to what the mode is."""
+
+    @abstractmethod
+    def compute(self) -> DiagnosticResult:
+        """Resolves whatever it needs via `self._coordinator`'s public
+        interface, for every diagnostic entity this mode produces in one
+        call (ADR-004 §5, fourth Amendment) — not one call per entity.
+        No parameters beyond `self`."""
+
+    def extra_fit(self) -> DiagnosticFitResult | None:
+        """Optional. Whatever extra fitting this mode needs beyond the
+        default recalibration (ADR-002 §1) — e.g. fitting `regression/`'s
+        other three strategies for the diagnosed slot, for
+        `CompareRegressionsMode` — resolved via `self._coordinator`'s
+        public interface, same as `compute()`, for every diagnostic
+        entity this mode produces in one call (ADR-004 §5, fourth
+        Amendment).
 
         Run at the recalibration trigger while this mode is active; the
         returned `DiagnosticFitResult` (or `None`) is what
