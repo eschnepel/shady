@@ -7,10 +7,12 @@ empirically (no horizon-profile input, no sun-geometry calculation).
 file is a condensed, implementation-facing digest — when in doubt, the
 ADR text wins. All 17 ADRs are `Accepted` except ADR-003, which is
 `Superseded` (split into ADR-003a/ADR-003b, content fully absorbed).
-**Current repo state:** brainstorming-phase skeleton only —
-`custom_components/shady/__init__.py`, `const.py`, `manifest.json`,
-`translations/{en,de}.json` exist as placeholders with TODOs; no other
-module exists yet. `tests/__init__.py` is empty.
+**Current repo state (as of 2026-09-05):** every task in
+`tasks/INDEX.md` is `done` (or `superseded`, slug retired) — the full
+module chain in §2 below exists, tested, `mypy --strict`/`ruff` clean,
+414/414 tests passing. `TASK-0016` (this file's own last dependency)
+closed out `__init__.py`, the final module; no `todo`/`in-progress`
+work remains anywhere in the project.
 
 ---
 
