@@ -20,6 +20,18 @@ DEFAULT_REGRESSION_METHOD = "wls2"
 INTRADAY_CORRECTION_MODES: tuple[str, ...] = ("off", "ramping", "blending")
 DEFAULT_INTRADAY_CORRECTION_MODE = "off"
 
+# Diagnostic modes (ADR-004 §1, TASK-0015b) — `select.py`'s
+# `ShadyDiagnosticModeSelect` option list, `coordinator.py`'s
+# `_diagnostic_modes` registry, and `sensor.py`'s per-mode lookup all
+# key off this one list rather than any hard-coded mode name; adding a
+# second entry here (ADR-013's sketched future modes) needs no other
+# code change beyond registering that mode's own `DiagnosticMode`
+# subclass. `"off"` is reserved — never registered in
+# `coordinator._diagnostic_modes` (ADR-004 §1: the absence of an active
+# mode, not a subclass with a no-op body).
+DIAGNOSTIC_MODES: tuple[str, ...] = ("off", "compare_regressions")
+DEFAULT_DIAGNOSTIC_MODE = "off"
+
 # Sentinel used by a config-flow "baseline candidate" dropdown to mean
 # "none of these — enter the entity/attribute manually" (ADR-009 §3),
 # and by a per-string "baseline candidate override" dropdown to mean

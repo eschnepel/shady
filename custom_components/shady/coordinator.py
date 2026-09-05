@@ -154,6 +154,7 @@ from .const import (
     CONF_WEATHER_FORECAST_TEMPERATURE_ENTITY,
     CONF_WINDOW_DAYS,
     CONF_WINDOW_SLOTS,
+    DEFAULT_DIAGNOSTIC_MODE,
     DEFAULT_INTRADAY_CORRECTION_CUTOFF,
     DEFAULT_INTRADAY_CORRECTION_MODE,
     DEFAULT_RAMP_SLOTS,
@@ -162,6 +163,8 @@ from .const import (
     DOMAIN,
     TEMPERATURE_SOURCE_NONE,
 )
+from .diagnostics.base import DiagnosticMode, DiagnosticResult
+from .diagnostics.compare_regressions import CompareRegressionsMode
 from .forecast_adjust import clamp_output, reverse_transformed_forecast
 from .providers.base import Provider
 from .providers.discovery import BaselineProvider
@@ -267,6 +270,63 @@ class _TemperatureResolution:
 
     entity_id: str
     tier: Literal["weather", "cell", "ambient"]
+
+
+@dataclass(frozen=True)
+class RegressionSettings:
+    """Global scalars `string_computation.py`'s `apply_training_
+    corrections`/`fit_string_model` need (ADR-004 §5, second Amendment)
+    — the same five values `_fit_string` already resolves for the
+    default-method 288-slot sweep, exposed read-only so a
+    `DiagnosticMode` can call those same pure functions itself without
+    reaching into this module's private state. Generic, not
+    diagnostics-specific — reusable by ADR-013's sketched future modes.
+    """
+
+    smoothing_radius: int
+    neighbor_fitting_cutoff: float
+    recency_decay_max: float
+    clipping_threshold: float
+    max_uplift_c: float
+
+
+@dataclass(frozen=True)
+class StringComputationConfig:
+    """One configured string's remaining per-string inputs to
+    `string_computation.py`'s functions (ADR-004 §5, second Amendment)
+    — everything `_fit_string`/`_provider_already_corrects`/`_resolve_
+    temperature_entity` already resolve internally, exposed read-only.
+    `baseline_entity_id`/`temperature_entity_id`/`temperature_tier` are
+    `None` when unconfigured/unresolved, exactly as `_fit_string`
+    already treats them (a `None` `baseline_entity_id` means this
+    string cannot be fit/diagnosed at all — no baseline forecast to
+    compare against)."""
+
+    baseline_entity_id: str | None
+    actual_yield_entity_id: str
+    temperature_entity_id: str | None
+    temperature_tier: Literal["weather", "cell", "ambient"] | None
+    converter_limit_w: float | None
+    coefficient_per_c: float
+    provider_already_corrects: bool
+    rated_dc_capacity_wp: float | None
+
+
+@dataclass(frozen=True)
+class DiagnosedSlot:
+    """Which slot is currently "the diagnosed slot" (ADR-004 §2/§2a) —
+    resolved from the pin if one is set, else "the last complete slot"
+    as of `now` (auto-tracking). `index` is the absolute slot index
+    (`Cache.index_for` convention); `slot_of_day` is `index`'s 0-287
+    time-of-day component (`get_pinned_slot_pool`'s own argument);
+    `is_elapsed` is whether this slot's own actual/PV value can exist
+    yet — `False` only for a manually-pinned slot still in the future
+    (§2a's one exception to "selected actual"/accuracy being shown).
+    """
+
+    index: int
+    slot_of_day: int
+    is_elapsed: bool
 
 
 def _resolve_string(index: int, raw: dict[str, Any]) -> _StringConfig:
@@ -423,15 +483,59 @@ class ShadyCoordinator:
         # §2); tests substitute a fixed value the same way `cache.py`'s
         # own `reference` parameter is used elsewhere for determinism.
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
+
+        # -- diagnostics (ADR-004, TASK-0015b) --
+        # Which slot is pinned (§2a) — a full absolute slot index (date
+        # + slot-of-day together), separate from `cache.pinned_
+        # reference` (a bare `date`, ADR-007a §6's own narrower scope:
+        # just the `get_pinned_slot_pool` window anchor). `None` while
+        # auto-tracking. `pin_diagnostic_slot`/`clear_diagnostic_slot`
+        # below are the only mutators, and keep both in sync.
+        self._pinned_slot_index: int | None = None
+        self._active_diagnostic_mode: str = DEFAULT_DIAGNOSTIC_MODE
+        # Per-instance, not module-level (ADR-004 §5, 2026-09-01
+        # Amendment: a `DiagnosticMode` now needs `self` at
+        # construction). Keyed by each mode's own `key` class attribute
+        # rather than a literal string, so this registry entry does not
+        # duplicate a hard-coded mode name anywhere (this task's own
+        # "no hard-coded 'compare_regressions' outside the registry
+        # entry and `const.py`'s option list" acceptance criterion).
+        # `"off"` is reserved and deliberately never a key here — the
+        # absence of an active mode, not a subclass with a no-op body.
+        self._diagnostic_modes: dict[str, DiagnosticMode] = {
+            mode.key: mode for mode in (CompareRegressionsMode(self),)
+        }
+        # Cache for the active mode's `compute()` output (ADR-004 §5,
+        # 2026-09-03 Amendment) — refreshed once per tick by
+        # `_diagnostics_tick_sync` below (mirroring how `extra_fit()`'s
+        # predictions are already cached via `cache.set_diagnostic_fit`),
+        # with `diagnostic_result()` computing lazily on a cache miss
+        # (mode just switched on, or a slot was just pinned/cleared, both
+        # invalidate this immediately below). Every `ShadyDiagnosticsSensor`
+        # (one per `sensor_id` from `diagnostic_sensor_ids()` — string,
+        # sum, or any other id a mode declares) reads this same cached
+        # value rather than calling `compute()` itself — one `compute()`
+        # call serves every entity's every poll in between refreshes,
+        # not one call per entity per poll.
+        self._diagnostic_result_cache: DiagnosticResult | None = None
+
         self._register_schedule()
         self._register_provider_listeners()
         self._register_actual_yield_listeners()
-        if self._intraday_correction_mode != "off":
-            # ADR-006 §1: "Disabled (default)... nothing computed or
-            # retained" — the 5-minute poll itself is only registered
-            # (zero extra cost otherwise) when a state actually needs
-            # it, matching ADR-004 §1's diagnostics-switch philosophy.
-            self._register_intraday_schedule()
+        # Always registered (unlike pre-ADR-004 TASK-0013, which only
+        # registered this when `intraday_correction_mode != "off"`):
+        # ADR-004 §2/§4 reuses this exact same 5-minute trigger for
+        # diagnostics, and the diagnostic-mode select (`select.py`) can
+        # be switched on at any time after setup, independent of
+        # `intraday_correction_mode` — so the trigger must always be
+        # live for that to have any effect. The tick body itself
+        # (`_intraday_tick_sync`/`_diagnostics_tick_sync`) stays a
+        # genuine no-op whenever both intraday correction and every
+        # diagnostic mode are off, preserving ADR-006 §1's "nothing
+        # computed or retained" and ADR-004 §1's "zero cost when off"
+        # guarantees at the per-tick-work level, not the
+        # registration level.
+        self._register_intraday_schedule()
 
     # -- construction helpers --------------------------------------------
 
@@ -766,6 +870,226 @@ class ShadyCoordinator:
         `_StringConfig` list/type.
         """
         return [(string.index, string.name) for string in self._strings]
+
+    # -- diagnostics (ADR-004, TASK-0015b) --------------------------------
+    #
+    # Public accessors a `DiagnosticMode` reaches through its stored
+    # coordinator reference (ADR-004 §5, second Amendment's
+    # encapsulation boundary: coordinator-owned data a mode needs gets
+    # a public accessor here, rather than the mode reaching into
+    # `_`-prefixed state directly) — plus the diagnosed-slot-pin
+    # service methods `__init__.py`'s `shady.select_diagnostic_slot`
+    # handler calls, and the active-mode select/lookup `select.py`/
+    # `sensor.py` call.
+
+    def now(self) -> datetime:
+        """Public read of the injectable clock — lets a `DiagnosticMode`
+        (and its tests) see the same `now` this coordinator itself
+        uses. `compute()`/`extra_fit()` take no parameter (ADR-004 §5,
+        second Amendment), so this is how they reach it instead of a
+        `now`-parameter of their own."""
+        return self._now()
+
+    def diagnosed_slot(self, now: datetime | None = None) -> DiagnosedSlot:
+        """Which slot is currently "the diagnosed slot" (ADR-004
+        §2/§2a) — the pin if `pin_diagnostic_slot` has set one, else
+        the last complete 5-minute slot as of `now` (defaults to
+        `self.now()`)."""
+        resolved_now = now if now is not None else self._now()
+        if self._pinned_slot_index is not None:
+            index = self._pinned_slot_index
+        else:
+            index = Cache.index_for(resolved_now) - 1
+        slot_of_day = index % SLOTS_PER_DAY
+        is_elapsed = Cache.timestamp_for(index + 1) <= resolved_now
+        return DiagnosedSlot(index=index, slot_of_day=slot_of_day, is_elapsed=is_elapsed)
+
+    def pin_diagnostic_slot(self, timestamp: datetime, now: datetime | None = None) -> bool:
+        """ADR-004 §2a: pins the diagnosed slot to `timestamp`, rounded
+        down to the nearest 5-minute boundary (`Cache.index_for`'s own
+        floor-division convention) — the one diagnosed-slot state for
+        this whole config entry, affecting every diagnostic sensor at
+        once, not one pin per sensor. Rejected (returns `False`, no
+        state change) if `timestamp` falls beyond ADR-002 §3's forecast
+        horizon ("remainder of today + all of tomorrow"); accepted
+        (returns `True`) and pinned otherwise, including a `timestamp`
+        in the past — a past pin is always accepted (ADR-007a §6: it
+        may trigger a real recorder fetch outside the live window, but
+        is never rejected for being "too old").
+        """
+        resolved_now = now if now is not None else self._now()
+        if timestamp >= _tomorrow_end(resolved_now):
+            return False
+        index = Cache.index_for(timestamp)
+        self._pinned_slot_index = index
+        self.cache.pin_reference(Cache.timestamp_for(index).date())
+        # A pin changes what the diagnosed slot *is* (§2a), so a
+        # `compute()` result cached against the previous diagnosed slot
+        # is stale the instant this returns (ADR-004 §5, 2026-09-03
+        # Amendment) — the next read recomputes rather than serving the
+        # old slot's numbers until the next tick.
+        self._diagnostic_result_cache = None
+        return True
+
+    def clear_diagnostic_slot(self) -> None:
+        """Undo `pin_diagnostic_slot` — every diagnostic sensor goes
+        back to auto-tracking the last complete slot."""
+        self._pinned_slot_index = None
+        self.cache.clear_reference()
+        self._diagnostic_result_cache = None
+
+    def active_diagnostic_mode(self) -> str:
+        """The currently selected diagnostic mode key (`const.py`'s
+        `DIAGNOSTIC_MODES`, default `"off"`) — `select.py`'s
+        `ShadyDiagnosticModeSelect` reads this for its own
+        `current_option`."""
+        return self._active_diagnostic_mode
+
+    def set_active_diagnostic_mode(self, mode: str) -> None:
+        """Set the currently selected diagnostic mode key — `select.py`
+        calls this from `async_select_option`. Any key not present in
+        `self._diagnostic_modes` (i.e. `"off"`, or any future
+        unregistered key) behaves as "off": `diagnostic_mode()` below
+        returns `None` and `_diagnostics_tick_sync` does no extra
+        fitting (ADR-004 §1)."""
+        self._active_diagnostic_mode = mode
+        # A different (or no) mode invalidates whatever `compute()`
+        # result was cached for the previous mode (ADR-004 §5,
+        # 2026-09-03 Amendment) — otherwise a switch could briefly serve
+        # the old mode's stale output until the next tick.
+        self._diagnostic_result_cache = None
+
+    def diagnostic_mode(self) -> DiagnosticMode | None:
+        """The currently active `DiagnosticMode` instance, or `None`
+        while off/unset (ADR-004 §1) — mainly for `select.py`'s own
+        `current_option` and `sensor.py`'s "disabled" vs "unavailable"
+        distinction. `diagnostic_result()` below is what actually reads
+        `compute()`'s output; nothing outside this module calls
+        `.compute()` directly any more (ADR-004 §5, 2026-09-03
+        Amendment)."""
+        return self._diagnostic_modes.get(self._active_diagnostic_mode)
+
+    def diagnostic_result(self) -> DiagnosticResult | None:
+        """The active mode's cached `compute()` output, or `None` while
+        off (ADR-004 §5, 2026-09-03 Amendment). `_diagnostics_tick_sync`
+        below refreshes this once per tick, keyed off
+        `compute_cadence()` the same way it already keys `extra_fit()`
+        off `fit_cadence()`; a cache miss between ticks (mode just
+        switched on, or a slot was just pinned/cleared — both clear the
+        cache immediately above) computes once here and caches the
+        result for whatever reads follow before the next tick. Every
+        `ShadyDiagnosticsSensor` (`sensor.py`, one per `sensor_id` from
+        `diagnostic_sensor_ids()` below) reads this, never
+        `.compute()` directly — this is what makes one `compute()` call
+        actually cover every entity's every poll, not just every string
+        within a single call's own body (ADR-004 §5, fourth Amendment's
+        original "one call per configured string" already held; this
+        closes the "but one call per *poll*" gap on top).
+        """
+        mode = self.diagnostic_mode()
+        if mode is None:
+            return None
+        if self._diagnostic_result_cache is None:
+            self._diagnostic_result_cache = mode.compute()
+        return self._diagnostic_result_cache
+
+    def diagnostic_sensor_ids(self) -> list[tuple[str, str]]:
+        """Every `(sensor_id, name)` pair any *registered* diagnostic
+        mode declares (`DiagnosticMode.sensor_ids()`) — not just
+        whichever mode is currently active (ADR-004 §5, fifth
+        Amendment). `sensor.py`'s `async_setup_entry` calls this once,
+        at platform-setup time, to create every diagnostic sensor entity
+        up front; entities for a mode that isn't the active selection
+        simply read as `"unavailable"` (`ShadyDiagnosticsSensor._result`
+        finds no matching `sensor_id` in `diagnostic_result()`'s output)
+        until/unless `select.py` switches to that mode — no dynamic
+        add/remove of entities as the selection changes.
+
+        Only one mode is registered today
+        (`self._diagnostic_modes == {"compare_regressions": ...}`), so
+        this is currently equivalent to that one mode's own
+        `sensor_ids()`; the union generalizes for free once a second
+        mode is registered. De-duplicates by `sensor_id`, first
+        registration wins — two modes should never declare the same id
+        in practice, but this keeps `async_setup_entry` from creating
+        two entities with the same `unique_id` if one ever did.
+        """
+        by_id: dict[str, str] = {}
+        for mode in self._diagnostic_modes.values():
+            for sensor_id, name in mode.sensor_ids():
+                by_id.setdefault(sensor_id, name)
+        return list(by_id.items())
+
+    def regression_settings(self) -> RegressionSettings:
+        """The global scalars `string_computation.py`'s functions need
+        (ADR-004 §5, second Amendment) — see `RegressionSettings`'s own
+        docstring."""
+        return RegressionSettings(
+            smoothing_radius=self._smoothing_radius,
+            neighbor_fitting_cutoff=self._neighbor_fitting_cutoff,
+            recency_decay_max=self._recency_decay_max,
+            clipping_threshold=self._clipping_threshold,
+            max_uplift_c=self._max_uplift_c,
+        )
+
+    def string_computation_config(self, string_index: int) -> StringComputationConfig:
+        """One configured string's remaining per-string inputs to
+        `string_computation.py`'s functions (ADR-004 §5, second
+        Amendment) — see `StringComputationConfig`'s own docstring."""
+        string = self._strings[string_index]
+        resolution = self._resolve_temperature_entity(string)
+        return StringComputationConfig(
+            baseline_entity_id=string.baseline_entity_id or self._global_baseline_entity_id,
+            actual_yield_entity_id=string.actual_yield_entity_id,
+            temperature_entity_id=resolution.entity_id if resolution is not None else None,
+            temperature_tier=resolution.tier if resolution is not None else None,
+            converter_limit_w=string.converter_limit_w,
+            coefficient_per_c=string.temperature_coefficient_pct_per_c / 100.0,
+            provider_already_corrects=self._provider_already_corrects(string),
+            rated_dc_capacity_wp=string.rated_dc_capacity_wp,
+        )
+
+    def target_cell_temperature_for_slot(self, string_index: int, index: int) -> float | None:
+        """ADR-003b/003c's `target_cell_temperature` for a single
+        absolute slot `index`, for `CompareRegressionsMode`'s own
+        `predict_string_forecast` call (ADR-004 §5: "the resolved
+        temperature target via the coordinator's own provider access").
+        Reuses `_predict_target_slot_temperature`'s existing per-tier
+        resolution (`TASK-0014`) rather than a second implementation —
+        builds that method's expected whole-day `fc_array` with just
+        this one slot filled in (the rest `NaN`, which `uplift_ambient_
+        to_cell` already treats as excluded), since a diagnostic call
+        only ever needs one slot's worth, not a full day.
+
+        `None` when this string has no resolved temperature source at
+        all, or `_predict_target_slot_temperature` itself returns `None`
+        (see that method's own docstring for its own `None` cases —
+        missing `rated_dc_capacity_wp`, or no temperature model fitted
+        yet)."""
+        string = self._strings[string_index]
+        resolution = self._resolve_temperature_entity(string)
+        if resolution is None:
+            return None
+
+        day_start_index = (index // SLOTS_PER_DAY) * SLOTS_PER_DAY
+        slot_of_day = index - day_start_index
+        day_start = Cache.timestamp_for(day_start_index)
+
+        fc_array = np.full(SLOTS_PER_DAY, np.nan, dtype=np.float64)
+        baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
+        if baseline_entity_id is not None:
+            slot_start = Cache.timestamp_for(index)
+            raw = self.cache.get_time_range(
+                [baseline_entity_id], slot_start, slot_start, on_invalid="raw"
+            )[baseline_entity_id]
+            if raw and isinstance(raw[0], float):
+                fc_array[slot_of_day] = raw[0]
+
+        predicted = self._predict_target_slot_temperature(string, resolution, fc_array, day_start)
+        if predicted is None:
+            return None
+        value = float(predicted[slot_of_day])
+        return None if np.isnan(value) else value
 
     # -- aggregate sensors (ADR-005 §1-§4, TASK-0012) ---------------------
     #
@@ -1325,10 +1649,11 @@ class ShadyCoordinator:
             self.cache.push(self.forecast_sensor_id(string.index), pushed, now_index + 1)
 
     def _register_intraday_schedule(self) -> None:
-        """ADR-006 §1a's independent 5-minute poll — only registered
-        when intraday correction is active (see `__init__`); ADR-004
-        §2's diagnostic-slot advance reuses this exact same trigger
-        rather than introducing a third, near-identical schedule."""
+        """ADR-006 §1a's independent 5-minute poll — now always
+        registered (see `__init__`), not gated on
+        `intraday_correction_mode`. ADR-004 §2/§4's diagnostic-slot
+        advance/extra-fit reuses this exact same trigger rather than
+        introducing a third, near-identical schedule."""
         self._unsub.append(
             async_track_time_interval(self.hass, self._handle_intraday_tick, timedelta(minutes=5))
         )
@@ -1342,12 +1667,77 @@ class ShadyCoordinator:
         access via `cache.py`'s injected `fetch_fn` is blocking I/O) —
         `_intraday_energy_window` reads the actual-yield entity's
         recorder-backed history, mirroring `async_refit`'s own
-        `hass.async_add_executor_job` pattern exactly."""
+        `hass.async_add_executor_job` pattern exactly. `cache.py`'s
+        `get_pinned_slot_pool` (`_diagnostics_tick_sync`, ADR-004 §4)
+        shares the same recorder-backed-fetch concern while
+        auto-tracking a not-yet-cached slot, so it rides this same
+        executor-thread dispatch rather than a second one."""
         await self.hass.async_add_executor_job(self._intraday_tick_sync, now)
 
     def _intraday_tick_sync(self, now: datetime) -> None:
         for string in self._strings:
             self._advance_intraday_string(string, now)
+        self._diagnostics_tick_sync(now)
+
+    def _diagnostics_tick_sync(self, now: datetime) -> None:
+        """ADR-004 §2/§4: while a diagnostic mode is active, refreshes
+        whichever of `extra_fit()`/`compute()` the mode declares a
+        `"slot"` cadence for (ADR-004 §5, 2026-09-01 Amendment —
+        "slot" meaning "every slot", i.e. this same 5-minute trigger,
+        not the once-daily recalibration trigger §4's own original,
+        pre-cadence-getter prose describes) — the two are gated
+        independently since a future mode could need one but not the
+        other, even though `CompareRegressionsMode` currently declares
+        `"slot"` for both.
+
+        `extra_fit()`'s result is cached into `cache.py`
+        (`set_diagnostic_fit`), mirroring how a provider's `forward()`
+        result is cached (ADR-012 §4) — build/cache stays in this
+        module, the mode only computes. `compute()` is attempted
+        *after*, not before, `extra_fit()` within this same method —
+        this only actually matters on a tick where both cadences are
+        `"slot"` (`CompareRegressionsMode`'s own case): there,
+        `compute()` reads back the prediction this same tick's
+        `extra_fit()` call just cached, rather than a stale value from
+        one tick prior. A mode with a coarser `fit_cadence()` than
+        `compute_cadence()` gets no such freshness guarantee from this
+        ordering — `compute()` would just read back whatever
+        `extra_fit()` most recently cached, from whichever earlier tick
+        last satisfied `fit_cadence()`'s own condition, which is the
+        correct behaviour for that mode, not a bug: `compute()` was
+        never promised anything fresher than `fit_cadence()` provides.
+        `compute()`'s own result is cached directly on
+        `self._diagnostic_result_cache` (ADR-004 §5, 2026-09-03
+        Amendment) for `diagnostic_result()` above to serve to every
+        diagnostic entity's every poll until the next tick refreshes
+        it — one `compute()` call per tick, not one per entity per
+        poll.
+
+        Re-fits/-computes unconditionally on every tick, even for an
+        already-elapsed pinned slot whose output cannot actually have
+        changed since the last tick — the same "always redo the
+        per-string work every tick regardless of whether anything
+        actually changed" trade-off `_advance_intraday_string` above
+        already makes; the cost is the same order of magnitude (ADR-004
+        §2a's own "cheap" characterization) and keeping this
+        unconditional is simpler than tracking "did the diagnosed slot
+        change" separately.
+
+        A genuine no-op — zero extra cost (ADR-004 §1) — when no mode
+        is active (`self._active_diagnostic_mode == "off"`, the
+        default) or the active mode declares a coarser cadence for
+        both.
+        """
+        mode = self._diagnostic_modes.get(self._active_diagnostic_mode)
+        if mode is None:
+            return
+        if mode.fit_cadence() == "slot":
+            result = mode.extra_fit()
+            if result is not None:
+                for sensor_id, predictions in result.by_sensor.items():
+                    self.cache.set_diagnostic_fit(sensor_id, dict(predictions))
+        if mode.compute_cadence() == "slot":
+            self._diagnostic_result_cache = mode.compute()
 
     def intraday_attributes(self, string_index: int) -> dict[str, Any]:
         """ADR-006 §4's four scalar transparency attributes

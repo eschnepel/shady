@@ -1,9 +1,16 @@
 """`sensor.py` — `ShadyForecastSensor`, one per configured string
 (ADR-002 §3, ADR-002 §5, TASK-0011; ADR-006 §4 transparency attributes,
-TASK-0013); plus the six config-entry-level aggregate sensors (ADR-005,
+TASK-0013); the six config-entry-level aggregate sensors (ADR-005,
 TASK-0012): `ShadyPvSumSensor`, `ShadyFcSumSensor`, `ShadyFcDaySumSensor`,
 `ShadyFcRemainingTodaySensor`, `ShadyPvEnergyIntegralSensor`,
-`ShadyFcEnergyIntegralSensor`.
+`ShadyFcEnergyIntegralSensor`; plus, as of TASK-0015b, one generic
+`ShadyDiagnosticsSensor` per `(sensor_id, name)` pair any registered
+diagnostic mode declares via `sensor_ids()` (ADR-004 §2/§2a/§2b,
+`coordinator.diagnostic_sensor_ids()`, ADR-004 §5 fifth Amendment) —
+`CompareRegressionsMode` currently declares one per configured string
+plus one `"sum"` entry, but `sensor.py` itself has no notion of "one per
+string plus a sum" baked in anywhere; it just creates one entity per
+declared id.
 
 Thin HA glue only (ADR-000 §3): every value is read directly from
 `coordinator.py` — either a plain coordinator method call
@@ -38,6 +45,7 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
     from .coordinator import ShadyCoordinator
+    from .diagnostics.base import DiagnosticSensorResult
 
 _ONE_DAY = timedelta(days=1)
 _LAST_SLOT_OF_DAY = timedelta(hours=23, minutes=55)
@@ -67,6 +75,10 @@ async def async_setup_entry(
             ShadyPvEnergyIntegralSensor(coordinator, entry),
             ShadyFcEnergyIntegralSensor(coordinator, entry),
         ]
+    )
+    entities.extend(
+        ShadyDiagnosticsSensor(coordinator, entry, sensor_id, name)
+        for sensor_id, name in coordinator.diagnostic_sensor_ids()
     )
     async_add_entities(entities)
 
@@ -288,3 +300,70 @@ class ShadyFcEnergyIntegralSensor(SensorEntity):  # type: ignore[misc]
     @property
     def native_value(self) -> float:
         return self._coordinator.cache.energy_total("fc")
+
+
+class ShadyDiagnosticsSensor(SensorEntity):  # type: ignore[misc]
+    """One per `(sensor_id, name)` pair any registered `DiagnosticMode`
+    declares via `sensor_ids()` (`coordinator.diagnostic_sensor_ids()`,
+    ADR-004 §5, fifth Amendment) — a single generic class for every
+    diagnostic entity, whether it represents one configured string, a
+    cross-string sum, or any other aggregate a mode chooses to produce.
+    `sensor.py` has no notion of "per-string" vs "sum" vs anything else
+    at all: it just looks up its own `sensor_id`, by string match, in
+    `coordinator.diagnostic_result()` — the active diagnostic mode's
+    `compute()` output, cached by `coordinator.py` and refreshed once
+    per tick, never called directly from here. Every entity sharing one
+    cached result is what makes "one `compute()` call covers every
+    entity a mode produces" (ADR-004 §5, fourth Amendment) actually hold
+    at the HA-polling layer, not just within a single `compute()` call's
+    own body — and, as of the fifth Amendment, what makes a mode free to
+    produce several distinct aggregate entities (more than one kind of
+    "sum") without `sensor.py` needing a new subclass per kind: it's
+    still just another declared `sensor_id`.
+
+    `state: "disabled"`, no `series`/`accuracy` attributes, whenever the
+    diagnostic-mode select (`select.py`) is `"off"` (ADR-004 §1) —
+    `coordinator.diagnostic_result()` itself returns `None` in that
+    case, before anything resembling `compute()` runs, which is what
+    keeps "zero extra fitting cost when off" true. `state:
+    "unavailable"` when a mode is active but this particular `sensor_id`
+    doesn't appear in its output — either a different, currently-
+    inactive mode's id (every registered mode's ids get an entity up
+    front, per `diagnostic_sensor_ids()`'s own docstring), or a
+    genuinely missing entry from the active mode itself.
+    """
+
+    def __init__(
+        self,
+        coordinator: ShadyCoordinator,
+        entry: ConfigEntry,
+        sensor_id: str,
+        name: str,
+    ) -> None:
+        self._coordinator = coordinator
+        self._sensor_id = sensor_id
+        self._attr_unique_id = f"{DOMAIN}_diagnostics_{sensor_id}_{entry.entry_id}"
+        self._attr_name = name
+
+    def _result(self) -> DiagnosticSensorResult | None:
+        result = self._coordinator.diagnostic_result()
+        if result is None:
+            return None
+        for sensor in result.sensors:
+            if sensor.sensor_id == self._sensor_id:
+                return sensor
+        return None
+
+    @property
+    def native_value(self) -> str:
+        result = self._result()
+        if result is None:
+            return "disabled" if self._coordinator.diagnostic_mode() is None else "unavailable"
+        return result.state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        result = self._result()
+        if result is None:
+            return {}
+        return result.attributes

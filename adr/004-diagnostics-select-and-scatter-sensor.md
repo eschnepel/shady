@@ -33,6 +33,20 @@ generalize to ADR-013's own sketched non-string-scoped modes.
 `DiagnosticResult`/`DiagnosticFitResult` restructured again to a flat,
 self-identifying `sensor_id`-keyed shape instead. See the fourth
 Amendment block below.
+**Amended a fifth time: 2026-09-03** — §2b/§3/§5 revised: caught during
+human review of `TASK-0015b`'s still-in-progress (pre-review, not yet
+`done`) implementation. `coordinator.py` now caches `compute()`'s
+output, refreshed once per tick via `compute_cadence()` (previously
+declared but never wired to anything) — `sensor.py` no longer calls
+`.compute()` itself at all. `DiagnosticMode` gains a new required
+`sensor_ids()` getter; `sensor.py`'s `ShadyDiagnosticsSumSensor` is
+removed outright, replaced by one generic `ShadyDiagnosticsSensor` per
+declared `sensor_id` — no more hardcoded "one per string plus one sum"
+shape anywhere in `sensor.py`. `CompareRegressionsMode.compute()` now
+builds the `"sum"` entry itself, from raw per-string data it already
+gathered, rather than `sensor.py` reassembling it from sibling sensors'
+finished output — which also fixes a real cross-string day-alignment
+bug in the replaced approach. See the fifth Amendment block below.
 
 ---
 
@@ -563,6 +577,183 @@ instruction same day), confirmed by Lead Agent.
 
 ---
 
+## Amendment — 2026-09-03
+
+**Reason:** Caught during human review of `TASK-0015b`'s own
+still-in-progress implementation — code already existed (per the
+fourth Amendment's shape) but the task was not yet at review/`done`, so
+this is an in-flight correction to that same task, not a Scenario C
+patch against completed work. Two separate observations, addressed
+together since both concern how `sensor.py` and `CompareRegressionsMode`
+divide responsibility for the `"sum"` entry:
+
+1. Every per-string `ShadyDiagnosticsSensor` called `mode.compute()`
+   directly, on every poll — since one call already computes every
+   configured string's data (fourth Amendment), an entry with N
+   strings did the same O(N) work N times over per poll cycle, for data
+   that does not change between ticks. `compute_cadence()` (second
+   Amendment) already existed for exactly this — declared by every
+   mode, read by nothing.
+2. `ShadyDiagnosticsSumSensor` built the `"sum"` `series` itself, in
+   `sensor.py`, from the per-string sensors' own already-computed,
+   already gap-filtered display series, via `zip()` — a mismatch this
+   code's own comments already flagged: two strings with different gap
+   patterns in their historical data can end up compared day-for-day
+   incorrectly, since `zip()` aligns by *position in the filtered
+   list*, not by calendar day. Separately, and regardless of the
+   alignment bug: this shape hardcodes "compute() always produces
+   exactly one aggregate, and `sensor.py` is the one who builds it" —
+   which fixed `sensor.py` to know a specific mode's output shape,
+   contradicting the fourth Amendment's own "the container doesn't
+   assume what dimension a mode varies over" principle, just moved from
+   `DiagnosticResult` itself onto `sensor.py`'s entity-creation code
+   instead.
+
+**Decision:**
+
+- **`coordinator.py` gains `diagnostic_result()`**, a cached accessor
+  for the active mode's `compute()` output:
+  ```python
+  def diagnostic_result(self) -> DiagnosticResult | None:
+      mode = self.diagnostic_mode()
+      if mode is None:
+          return None
+      if self._diagnostic_result_cache is None:
+          self._diagnostic_result_cache = mode.compute()
+      return self._diagnostic_result_cache
+  ```
+  `_diagnostics_tick_sync` (§4) now reads `compute_cadence()` the same
+  way it already reads `fit_cadence()` for `extra_fit()` — independently
+  gated, since a future mode could need one cadence but not the other,
+  even though `CompareRegressionsMode` declares `"slot"` for both.
+  `extra_fit()` is attempted first within that same tick, so on a tick
+  where both cadences are `"slot"`, `compute()` reads back predictions
+  `extra_fit()` just cached rather than the previous tick's; a mode
+  with a coarser `fit_cadence()` than `compute_cadence()` gets no such
+  freshness guarantee from this ordering, which is correct for that
+  mode, not a bug — `compute()` was never promised anything fresher
+  than `fit_cadence()` itself provides. The cache is invalidated
+  (`= None`) on `set_active_diagnostic_mode` (a different mode's
+  `compute()` output is not this mode's), `pin_diagnostic_slot`, and
+  `clear_diagnostic_slot` (both change what the diagnosed slot itself
+  is, per §2a) — a read between ticks with no cached value yet (mode
+  just switched on, or right after a pin/clear) computes once, lazily,
+  and caches that result for whatever reads follow before the next
+  tick refreshes it.
+- **`DiagnosticMode` gains a new required abstract method,
+  `sensor_ids()`:**
+  ```python
+  @abstractmethod
+  def sensor_ids(self) -> Sequence[tuple[str, str]]:
+      """Every (sensor_id, name) pair this mode's compute() will
+      ever produce, resolvable without calling compute() itself."""
+  ```
+  Cheap and static — no recorder fetch, no fitting — so it can run at
+  HA platform-setup time, before any mode is necessarily even active.
+  `CompareRegressionsMode.sensor_ids()` returns one `(str(index),
+  f"{name} Diagnostics")` pair per configured string plus
+  `("sum", "Diagnostics Sum")` — the same two `compute()` already ever
+  produced, just declared up front now.
+- **`coordinator.py` gains `diagnostic_sensor_ids()`**, the union of
+  every *registered* mode's `sensor_ids()` (not just the active one),
+  de-duplicated by `sensor_id`:
+  ```python
+  def diagnostic_sensor_ids(self) -> list[tuple[str, str]]:
+      by_id: dict[str, str] = {}
+      for mode in self._diagnostic_modes.values():
+          for sensor_id, name in mode.sensor_ids():
+              by_id.setdefault(sensor_id, name)
+      return list(by_id.items())
+  ```
+  Union across every registered mode, not just the active selection,
+  so entities stay stable across a `select.py` mode switch rather than
+  needing to be added/removed dynamically — a `sensor_id` belonging to
+  a currently-inactive mode simply reads `"unavailable"`
+  (`ShadyDiagnosticsSensor._result()` finds no match in
+  `diagnostic_result()`'s current output) until that mode is selected.
+  Only one mode is registered as of this ADR (`compare_regressions`),
+  so this is currently equivalent to that mode's own `sensor_ids()`;
+  the generalization is free once a second mode exists.
+- **`sensor.py`'s `ShadyDiagnosticsSumSensor` is removed outright.**
+  `ShadyDiagnosticsSensor` becomes the one, generic diagnostic-sensor
+  class — constructed with `(coordinator, entry, sensor_id, name)`
+  directly, no longer `string_index`/`string_name` specifically — and
+  `async_setup_entry` creates one instance per pair from
+  `coordinator.diagnostic_sensor_ids()`:
+  ```python
+  entities.extend(
+      ShadyDiagnosticsSensor(coordinator, entry, sensor_id, name)
+      for sensor_id, name in coordinator.diagnostic_sensor_ids()
+  )
+  ```
+  `sensor.py` has no notion of "per-string" vs "sum" vs anything else
+  at all now — a mode producing several distinct aggregate entities
+  (more than one kind of "sum") is handled exactly the same way as one
+  that doesn't: it simply declares more `sensor_id`s. `_result()` is
+  unchanged in shape — a `sensor_id` lookup into
+  `coordinator.diagnostic_result()` — but every entity, "sum" included,
+  now shares that one cached call rather than triggering its own.
+- **`CompareRegressionsMode.compute()` builds the `"sum"` entry
+  itself**, from each contributing string's raw pool data gathered in
+  the same pass that builds its own per-string entry (a new
+  `_StringDiagnostic` container holds both, so the pool is fetched
+  once, not twice), summed via a new `_sum_arrays_nan_aware` helper —
+  elementwise across strings, at the raw, fixed-length, day-index-
+  aligned array stage, *before* `_pool_series`'s per-string NaN-
+  filtering:
+  ```python
+  def _sum_arrays_nan_aware(self, arrays: list[NDArray[np.float64]]) -> NDArray[np.float64]:
+      stacked = np.stack(arrays, axis=0)
+      all_missing = np.all(np.isnan(stacked), axis=0)
+      summed = np.nansum(stacked, axis=0)
+      return np.where(all_missing, np.nan, summed)
+  ```
+  This is not just a relocation — it fixes the alignment bug from the
+  Reason above: summing before per-string filtering keeps every day
+  correctly aligned by calendar day across strings, rather than by
+  position in each string's already-filtered list. Verified end-to-end
+  against a real `ShadyCoordinator`: two strings sharing a 3-day window,
+  one with full history, one missing the middle day — the corrected sum
+  correctly keeps that day (counting only the string that has data,
+  `[Σ FC, Σ PV] = [1000, 500]`) rather than dropping it or pairing it
+  with the wrong calendar day. `fc_selected`/`pv_selected`/predictions
+  for the sum are summed via the same pre-existing `aggregation.py`
+  functions (`sum_values`, `sum_predicted`) the replaced `sensor.py`
+  code already used — relocated, not changed — with one confirmed,
+  deliberately-kept asymmetry: `predictions` only sums strings with a
+  cached prediction, while `fc_selected`/`pv_selected` sum every
+  contributing string regardless, so a string with real yield but no
+  fitted model yet still counts toward the actual total without a
+  corresponding predicted contribution. This is inherited unchanged
+  from the design being replaced (not a new decision introduced here),
+  and is being kept deliberately: it reflects currently-unmodeled
+  production honestly rather than silently excluding it, and the
+  accuracy figure itself is still correctly a sum-then-ratio
+  computation, not an average of per-string ratios — `diagnostic_accuracy`
+  and `sum_predicted`'s existing docstrings already document that
+  principle and are unchanged by this amendment.
+  FC and PV pool arrays are summed independently of each other (a
+  string missing PV on a given day still contributes its FC to that
+  day's summed forecast) — deliberate, matching how `sum_values`
+  already treats "no value" as excluded-from-that-quantity rather than
+  requiring joint presence across quantities.
+- **§2b's/§5's prior text describing `ShadyDiagnosticsSumSensor` as
+  reading "each per-string sensor's already-computed series... and
+  summing them pointwise," doing "no new fitting or fetching of its
+  own," is superseded** — that sentence, and the near-identical claim
+  restated in both 2026-09-02 amendments above, described the design
+  this amendment replaces, not the current one.
+- **What does not change:** §1's off-by-default gating and `"disabled"`
+  state, §2/§2a's per-string scatter/accuracy shape and one-shared-
+  diagnosed-slot model, §4's fitting-cost-only-while-active guarantee,
+  and `DiagnosticMode`'s constructor/`key`/cadence getters.
+
+**Decided by:** human (explicit instruction, 2026-09-03, three separate
+rounds of review during `TASK-0015b`'s implementation), confirmed by
+Lead Agent.
+
+---
+
 ## Context
 
 Throughout this project's design process, understanding *why* a given
@@ -582,7 +773,8 @@ opt-in diagnostic feature.
 
 A single `ShadyDiagnosticModeSelect` entity (one per config entry) gates
 all diagnostic sensors — every per-string `ShadyDiagnosticsSensor` (§2)
-and the config-entry-level `ShadyDiagnosticsSumSensor` (§2b) alike. It
+and the config-entry-level `"sum"` entity (§2b, the same
+`ShadyDiagnosticsSensor` class as of the 2026-09-03 Amendment) alike. It
 defaults to **off**. While off, diagnostic sensors exist (so they don't
 appear/disappear from the entity registry, which HA handles awkwardly)
 but report `state: "disabled"` with no `series` attribute, and —
@@ -760,8 +952,9 @@ takes a single optional parameter:
 
 **There is exactly one diagnosed-slot state per config entry — not one
 per sensor.** Every diagnostic sensor, the per-string
-`ShadyDiagnosticsSensor`s (§2) and the summed `ShadyDiagnosticsSumSensor`
-(§2b) alike, shows the *same* moment: whichever slot `cache.py`'s
+`ShadyDiagnosticsSensor`s (§2) and the summed `"sum"` entry (§2b,
+the same class as of the 2026-09-03 Amendment) alike, shows the *same*
+moment: whichever slot `cache.py`'s
 `pinned_reference` (ADR-007a §6) currently names, or "last complete slot"
 if it is unset. There is no per-sensor "is this one pinned or still
 auto-tracking" toggle to keep in sync — the service is not entity-
@@ -850,10 +1043,12 @@ as §4 describes; only *which* slot's data is being displayed, and that
 slot's now-available actual value and accuracy, track the 5-minute
 tick.
 
-### 2b — A summed-up diagnostics sensor across all strings
+### 2b — A summed-up diagnostics sensor across all strings (revised 2026-09-03)
 
-Alongside the per-string sensors (§2), one config-entry-level
-`ShadyDiagnosticsSumSensor` mirrors ADR-005's `ShadyPvSumSensor`/
+Alongside the per-string sensors (§2), one `sensor_id="sum"` entity
+(same `ShadyDiagnosticsSensor` class, per §5's 2026-09-03 revision —
+not a dedicated `ShadyDiagnosticsSumSensor` class) mirrors ADR-005's
+`ShadyPvSumSensor`/
 `ShadyFcSumSensor` pattern: the same `series`/`accuracy` shape as §2, but
 every point is the **pointwise sum across strings** at the one shared
 diagnosed slot (§2a) — e.g. the `"0"` series' day-*i* point is
@@ -863,19 +1058,21 @@ is exactly why §2a makes the diagnosed slot config-entry-wide rather than
 per-sensor: a pointwise sum across strings is only meaningful if "day
 *i*'s point" means the same day and slot for every string being summed.
 
-This sensor does **no new fitting or fetching of its own** — matching
-ADR-005's sum sensors being "plain state-tracking aggregates, updating
-opportunistically whenever the underlying per-string values change"
-rather than independent computations. It reads each per-string sensor's
-already-computed series (§2, §2a) and sums them pointwise; `accuracy` is
-then computed from those *summed* predicted/actual values (`1 -
-|Σ predicted_i − Σ PV_selected| / Σ PV_selected`, same clamping as §2),
-not by averaging the per-string accuracy percentages — consistent with
-deriving ratios from sums rather than summing ratios, the same principle
-ADR-005 applies throughout. It updates on the same triggers as the
-per-string sensors it reads (§2a's 5-minute tick while auto-tracking; a
+This sensor's `series`/`accuracy` are, as of the 2026-09-03 Amendment,
+built by `CompareRegressionsMode.compute()` itself, from each
+contributing string's raw pool data — not assembled in `sensor.py` from
+the per-string sensors' own already-computed output (see that
+Amendment for why: the original approach here was vulnerable to a
+cross-string day-alignment bug once two strings' historical data had
+different gap patterns). `accuracy` is still computed from *summed*
+predicted/actual values (`1 - |Σ predicted_i − Σ PV_selected| /
+Σ PV_selected`, same clamping as §2), not by averaging the per-string
+accuracy percentages — consistent with deriving ratios from sums rather
+than summing ratios, the same principle ADR-005 applies throughout,
+unchanged by the 2026-09-03 revision. It updates on the same triggers
+as the per-string sensors (§2a's 5-minute tick while auto-tracking; a
 pin update; recalibration for the four fitted-model points), gated by
-the same `ShadyDiagnosticsSwitch` (§1).
+the same diagnostic-mode select (§1).
 
 
 
@@ -903,9 +1100,10 @@ exactly what recalibration already fetched moments earlier, so it costs
 nothing extra: no new recorder query, just a read of already-validated
 cache entries. While pinned to a date outside the live window, the same
 call's resolved window is typically *not* already cached, so it is not
-free the same way — see §2a for what that costs. §2b's sum sensor adds
-no third call of its own — it reads whichever result the per-string
-sensors already got back from `get_pinned_slot_pool` and sums it.
+free the same way — see §2a for what that costs. §2b's sum entry adds
+no third fetch of its own — as of the 2026-09-03 Amendment, it's built
+from the same `_gather_pool` call `compute()` already makes for each
+contributing string's own per-string entry, not a separate read.
 
 The cache refreshes on exactly the same triggers as the recalibration
 that produces it — **midnight or button** (ADR-002 §1) — plus **once at
@@ -942,7 +1140,7 @@ ADR-002 §2's irregular baseline-update trigger — so the four predictions
 always match whichever slot's pool and actual value are currently being
 displayed, rather than momentarily lagging behind it.
 
-### 5 — Module responsibility (revised 2026-08-30, 2026-09-01)
+### 5 — Module responsibility (revised 2026-08-30, 2026-09-01, 2026-09-03)
 
 `select.py` adds `ShadyDiagnosticModeSelect`, a simple, single-purpose HA
 entity (`SelectEntity`) with no business logic of its own beyond exposing
@@ -983,25 +1181,31 @@ own `compute()`, having first resolved the predicted/actual values it
 needs via its coordinator reference — `aggregation.py`'s functions
 themselves are untouched by this amendment.
 
-`sensor.py` adds `ShadyDiagnosticsSensor` (§2, one per string) and
-`ShadyDiagnosticsSumSensor` (§2b, one per config entry, following the
-six `ShadyPvSumSensor`-style sensors' placement in `sensor.py` per
-ADR-005's "Module: a new pure aggregation layer" section), both staying
-thin like every other sensor in this design. **As of 2026-09-01, this got
-thinner still:** each reads the `ShadyDiagnosticModeSelect`'s current
-option, looks it up in `coordinator.py`'s `_diagnostic_modes`, and — if
-found — calls that mode's `.compute()` directly (no arguments) and sets
-`state`/`attributes` straight from the returned `DiagnosticResult` (the
-sum sensor reading the per-string sensors' own already-shaped output, not
-`cache.py` a second time); if not found (`"off"` or unset), it reports
-`disabled` as §1 specifies. `sensor.py` no longer assembles anything for
-the mode to consume — resolving which slot is being diagnosed (reading
-`cache.py`'s `pinned_reference` scalar via its coordinator reference, or
-falling back to the last-complete-slot default when unset, §2a) and
-fetching that slot's pool/predicted/actual values are now the mode's own
-job, done inside `compute()`/`extra_fit()` via the coordinator reference
-each was constructed with. This shaping is pure presentation and does not
-belong in `regression/` or `forecast_adjust.py`. The
+`sensor.py` adds `ShadyDiagnosticsSensor` — as of 2026-09-03, one
+generic instance per `(sensor_id, name)` pair from
+`coordinator.diagnostic_sensor_ids()` (§2's per-string ids and §2b's
+`"sum"` id alike, no dedicated `ShadyDiagnosticsSumSensor` class),
+following the six `ShadyPvSumSensor`-style sensors' placement in
+`sensor.py` per ADR-005's "Module: a new pure aggregation layer"
+section — staying thin like every other sensor in this design. **As of
+2026-09-01, this got thinner still, and as of 2026-09-03, thinner
+again:** each instance looks up its own `sensor_id` in
+`coordinator.diagnostic_result()` — a cached accessor over the active
+mode's `.compute()` output, not a direct call — and sets
+`state`/`attributes` straight from the matching entry (the `"sum"`
+entry included: built by the mode itself now, not reassembled here from
+sibling sensors' output); if no mode is active, it reports `disabled`
+as §1 specifies. `sensor.py` no longer assembles anything for the mode
+to consume, nor knows how many entities a mode produces or what any of
+them represent beyond a `(sensor_id, name)` pair — resolving which slot
+is being diagnosed (reading `cache.py`'s `pinned_reference` scalar via
+its coordinator reference, or falling back to the last-complete-slot
+default when unset, §2a), fetching that slot's pool/predicted/actual
+values, and deciding what aggregate entities (if any) to produce
+alongside the per-string ones are all the mode's own job, done inside
+`compute()`/`extra_fit()`/`sensor_ids()` via the coordinator reference
+each was constructed with. This shaping is pure presentation and does
+not belong in `regression/` or `forecast_adjust.py`. The
 `shady.select_diagnostic_slot` service (§2a) is registered in
 `__init__.py` (the usual home for service registration), is **not**
 entity-targeted (§2a — there is one diagnosed-slot state per config

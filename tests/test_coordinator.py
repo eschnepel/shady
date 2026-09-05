@@ -20,7 +20,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 _SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
 
@@ -264,8 +264,22 @@ _load("forecast_adjust.py", "shady.forecast_adjust")
 _load("aggregation.py", "shady.aggregation")
 _load("cache.py", "shady.cache")
 _load("string_computation.py", "shady.string_computation")
+_load("diagnostics/__init__.py", "shady.diagnostics")
+_diagnostics_base_mod = _load("diagnostics/base.py", "shady.diagnostics.base")
+_load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
 _const_mod = _load("const.py", "shady.const")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
+
+# TYPE_CHECKING-only static import mirroring the runtime file-path load
+# above (ADR-000 §6, matching `test_diagnostics_base.py`'s own
+# convention) — gives mypy a real type for `DiagnosticMode` so
+# `_CountingDiagnosticMode` below type-checks normally, without
+# reintroducing the package import (and therefore `homeassistant.*`)
+# the file-path load avoids.
+if TYPE_CHECKING:
+    from shady.diagnostics.base import DiagnosticMode as DiagnosticMode  # noqa: PLC0414
+else:
+    DiagnosticMode = _diagnostics_base_mod.DiagnosticMode
 
 ShadyCoordinator = _coordinator_mod.ShadyCoordinator
 Cache = sys.modules["shady.cache"].Cache
@@ -1055,3 +1069,331 @@ class TestRecomputeTriggersFcAccumulation:
         _run(coordinator.async_refit(_NOW))
         assert coordinator.cache.last_energy_sample("fc") is None
         assert coordinator.cache.energy_total("fc") == 0.0
+
+
+# -- diagnostic_result()/diagnostic_sensor_ids() (ADR-004 §5, fifth Amendment, 2026-09-03) --
+
+
+class _CountingDiagnosticMode(DiagnosticMode):
+    """A hand-written `DiagnosticMode` that records every `compute()`/
+    `extra_fit()` call (count and order) instead of doing real work —
+    substituted directly into `coordinator._diagnostic_modes` (the same
+    "reach into private state for a white-box test" convention this
+    file already uses for `coordinator._now`/`coordinator._models`
+    elsewhere) so `diagnostic_result()`'s caching behaviour can be
+    verified by call count, independent of `CompareRegressionsMode`'s
+    own real computation."""
+
+    key = "compare_regressions"
+
+    def __init__(
+        self, coordinator: Any, fit_cadence: str = "slot", compute_cadence: str = "slot"
+    ) -> None:
+        super().__init__(coordinator)
+        self.compute_calls = 0
+        self.extra_fit_calls = 0
+        self.call_order: list[str] = []
+        self._fit_cadence = fit_cadence
+        self._compute_cadence = compute_cadence
+
+    def fit_cadence(self) -> Any:
+        return self._fit_cadence
+
+    def compute_cadence(self) -> Any:
+        return self._compute_cadence
+
+    def sensor_ids(self) -> list[tuple[str, str]]:
+        return [("0", "Dummy")]
+
+    def compute(self) -> Any:
+        self.compute_calls += 1
+        self.call_order.append("compute")
+        return _diagnostics_base_mod.DiagnosticResult(
+            sensors=[
+                _diagnostics_base_mod.DiagnosticSensorResult(
+                    sensor_id="0", state="ok", attributes={"n": self.compute_calls}
+                )
+            ]
+        )
+
+    def extra_fit(self) -> Any:
+        self.extra_fit_calls += 1
+        self.call_order.append("extra_fit")
+        return None
+
+
+# -- diagnosed_slot()/pin_diagnostic_slot()/clear_diagnostic_slot() (ADR-004 §2/§2a) --
+
+
+class TestDiagnosedSlotAutoTracking:
+    """Given no pin is set, `diagnosed_slot()` (ADR-004 §2) defaults to
+    the last **complete** 5-minute slot as of `now` — not the next
+    upcoming one."""
+
+    def test_defaults_to_the_last_complete_slot(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        now = datetime(2026, 6, 15, 10, 7, tzinfo=UTC)
+
+        diagnosed = coordinator.diagnosed_slot(now)
+
+        # 10:07 -> the slot starting 10:05 is still in progress; the
+        # last *complete* slot is the one starting 10:00.
+        assert diagnosed.index == Cache.index_for(now) - 1
+        assert diagnosed.is_elapsed is True
+
+    def test_uses_coordinators_own_now_when_not_given(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+
+        diagnosed = coordinator.diagnosed_slot()
+
+        assert diagnosed.index == Cache.index_for(_NOW) - 1
+
+
+class TestPinDiagnosticSlot:
+    """`pin_diagnostic_slot()` (ADR-004 §2a): rounds down to the
+    nearest 5-minute boundary, accepts any timestamp within ADR-002
+    §3's horizon (including one in the past), and rejects (no state
+    change) anything at or beyond the end of tomorrow."""
+
+    def test_rounds_down_to_the_five_minute_boundary(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        off_boundary = datetime(2026, 6, 15, 10, 7, 30, tzinfo=UTC)
+
+        ok = coordinator.pin_diagnostic_slot(off_boundary)
+
+        assert ok
+        diagnosed = coordinator.diagnosed_slot()
+        assert diagnosed.index == Cache.index_for(datetime(2026, 6, 15, 10, 5, tzinfo=UTC))
+
+    def test_a_past_pin_is_always_accepted(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+
+        ok = coordinator.pin_diagnostic_slot(_NOW - timedelta(days=30))
+
+        assert ok
+        diagnosed = coordinator.diagnosed_slot()
+        assert diagnosed.index == Cache.index_for(_NOW - timedelta(days=30))
+
+    def test_rejects_a_timestamp_beyond_the_horizon(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        # Horizon is "remainder of today + all of tomorrow"; the day
+        # after tomorrow is out of range.
+        beyond_horizon = datetime(2026, 6, 17, 0, 0, tzinfo=UTC)
+
+        ok = coordinator.pin_diagnostic_slot(beyond_horizon)
+
+        assert ok is False
+        # No state change: still auto-tracking.
+        diagnosed = coordinator.diagnosed_slot()
+        assert diagnosed.index == Cache.index_for(_NOW) - 1
+
+    def test_accepts_the_last_instant_of_the_horizon(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        last_valid = datetime(2026, 6, 16, 23, 55, tzinfo=UTC)
+
+        ok = coordinator.pin_diagnostic_slot(last_valid)
+
+        assert ok
+
+    def test_clear_reverts_to_auto_tracking(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        coordinator.pin_diagnostic_slot(_NOW - timedelta(days=1))
+
+        coordinator.clear_diagnostic_slot()
+
+        diagnosed = coordinator.diagnosed_slot()
+        assert diagnosed.index == Cache.index_for(_NOW) - 1
+
+    def test_is_elapsed_false_for_a_future_pin(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+
+        ok = coordinator.pin_diagnostic_slot(_NOW + timedelta(hours=3))
+
+        assert ok
+        assert coordinator.diagnosed_slot().is_elapsed is False
+
+    def test_is_elapsed_true_for_a_past_pin(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+
+        ok = coordinator.pin_diagnostic_slot(_NOW - timedelta(hours=3))
+
+        assert ok
+        assert coordinator.diagnosed_slot().is_elapsed is True
+
+
+class TestDiagnosticResultCaching:
+    """`coordinator.diagnostic_result()` (ADR-004 §5, fifth Amendment,
+    2026-09-03): caches the active mode's `compute()` output rather
+    than calling it on every read, refreshed once per tick."""
+
+    def test_off_by_default_returns_none_without_calling_compute(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+
+        assert coordinator.diagnostic_result() is None
+        assert fake_mode.compute_calls == 0
+
+    def test_multiple_reads_share_one_compute_call(self) -> None:
+        """Given the mode is active and no tick has refreshed the cache
+        yet, When `diagnostic_result()` is read many times, Then
+        `compute()` is only actually called once — the first read
+        computes and caches; every read after that shares the cached
+        result (this is the exact bug flagged during review: every
+        `ShadyDiagnosticsSensor` used to call `compute()` itself, once
+        per poll)."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        for _ in range(5):
+            result = coordinator.diagnostic_result()
+            assert result is not None
+            assert result.sensors[0].sensor_id == "0"
+
+        assert fake_mode.compute_calls == 1
+
+    def test_tick_refreshes_the_cache(self) -> None:
+        """Given a cached result already exists, When
+        `_diagnostics_tick_sync` runs again (`compute_cadence() ==
+        "slot"`), Then `compute()` is called again — the cache is
+        refreshed once per tick, not frozen forever after the first
+        read."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        coordinator.diagnostic_result()
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 1
+
+        coordinator._diagnostics_tick_sync(_NOW)
+        assert fake_mode.compute_calls == 2
+
+        coordinator.diagnostic_result()
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 2  # still just the one from the tick
+
+    def test_tick_skips_compute_when_compute_cadence_is_coarser(self) -> None:
+        """Given a mode that declares `fit_cadence() == "slot"` but
+        `compute_cadence() != "slot"`, When `_diagnostics_tick_sync`
+        runs, Then `extra_fit()` still runs every tick but `compute()`
+        is never called from the tick — the two cadences are gated
+        independently."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(
+            coordinator, fit_cadence="slot", compute_cadence="daily"
+        )
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        coordinator._diagnostics_tick_sync(_NOW)
+        assert fake_mode.extra_fit_calls == 1
+        assert fake_mode.compute_calls == 0
+
+    def test_extra_fit_runs_before_compute_within_one_tick(self) -> None:
+        """Given both cadences are `"slot"`, When
+        `_diagnostics_tick_sync` runs, Then `extra_fit()` is attempted
+        before `compute()` within that same call — so a mode whose
+        `compute()` reads back `extra_fit()`'s own cached predictions
+        sees this tick's, not last tick's (only guaranteed when both
+        cadences fire the same tick, per the corrected docstring)."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        coordinator._diagnostics_tick_sync(_NOW)
+        assert fake_mode.call_order == ["extra_fit", "compute"]
+
+    def test_switching_mode_invalidates_the_cache(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 1
+
+        coordinator.set_active_diagnostic_mode("off")
+        assert coordinator.diagnostic_result() is None
+
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 2
+
+    def test_pinning_a_slot_invalidates_the_cache(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 1
+
+        coordinator.pin_diagnostic_slot(_NOW - timedelta(days=1))
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 2
+
+    def test_clearing_a_pinned_slot_invalidates_the_cache(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.pin_diagnostic_slot(_NOW - timedelta(days=1))
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 1
+
+        coordinator.clear_diagnostic_slot()
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 2
+
+
+class TestDiagnosticSensorIds:
+    """`coordinator.diagnostic_sensor_ids()` (ADR-004 §5, fifth
+    Amendment, 2026-09-03): the union of every *registered* mode's own
+    `sensor_ids()`, not just whichever mode is currently active."""
+
+    def test_returns_the_one_registered_modes_own_ids(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+
+        assert coordinator.diagnostic_sensor_ids() == [("0", "Dummy")]
+
+    def test_available_even_while_off(self) -> None:
+        """Entities must exist before any mode is necessarily selected
+        (HA entities are added once, at platform setup) — so this must
+        not depend on `active_diagnostic_mode()`."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        assert coordinator.active_diagnostic_mode() == "off"
+
+        assert coordinator.diagnostic_sensor_ids() == [("0", "Dummy")]
+
+    def test_unions_multiple_registered_modes_deduplicated(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        mode_a = _CountingDiagnosticMode(coordinator)
+
+        class _SecondMode(_CountingDiagnosticMode):
+            key = "second_mode"
+
+            def sensor_ids(self) -> list[tuple[str, str]]:
+                return [("0", "Should Not Win"), ("extra", "Extra")]
+
+        mode_b = _SecondMode(coordinator)
+        coordinator._diagnostic_modes = {"compare_regressions": mode_a, "second_mode": mode_b}
+
+        result = coordinator.diagnostic_sensor_ids()
+        assert result == [("0", "Dummy"), ("extra", "Extra")]  # first registration wins for "0"

@@ -281,6 +281,9 @@ _load("forecast_adjust.py", "shady.forecast_adjust")
 _load("aggregation.py", "shady.aggregation")
 _load("cache.py", "shady.cache")
 _load("string_computation.py", "shady.string_computation")
+_load("diagnostics/__init__.py", "shady.diagnostics")
+_load("diagnostics/base.py", "shady.diagnostics.base")
+_load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
 _const_mod = _load("const.py", "shady.const")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
 _sensor_mod = _load("sensor.py", "shady.sensor")
@@ -397,7 +400,13 @@ class TestAsyncSetupEntry:
     `ShadyCoordinator` for a config entry with one configured string,
     When `sensor.py`'s `async_setup_entry` runs, Then one
     `ShadyForecastSensor` per configured string is added, plus the six
-    config-entry-level aggregate sensors (ADR-005, TASK-0012)."""
+    config-entry-level aggregate sensors (ADR-005, TASK-0012), plus —
+    as of `TASK-0015b` — one `ShadyDiagnosticsSensor` per `(sensor_id,
+    name)` pair `coordinator.diagnostic_sensor_ids()` declares (ADR-004
+    §2/§2b, §5 fifth Amendment): `CompareRegressionsMode` declares one
+    id per configured string plus one `"sum"` id, so 1 forecast + 6
+    aggregates + 1 diagnostics + 1 diagnostics-sum = 9 for this
+    fixture's single configured string."""
 
     def test_one_sensor_per_configured_string_plus_six_aggregates(self) -> None:
         coordinator, hass, entry = _make_ready_coordinator()
@@ -406,7 +415,7 @@ class TestAsyncSetupEntry:
 
         _run(async_setup_entry(hass, entry, add_entities))
 
-        assert len(add_entities.added) == 7
+        assert len(add_entities.added) == 9
         forecast_sensors = [e for e in add_entities.added if isinstance(e, ShadyForecastSensor)]
         assert len(forecast_sensors) == 1
         aggregate_types = {

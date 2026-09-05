@@ -1,6 +1,6 @@
 """Shared diagnostic-mode base class and its output dataclasses (ADR-004
 §1/§5, Amendment 2026-09-01, Amendment 2026-09-02, second Amendment
-2026-09-02).
+2026-09-02, fifth Amendment 2026-09-03).
 
 Every concrete diagnostic mode (starting with `compare_regressions.py`'s
 `CompareRegressionsMode`) subclasses `DiagnosticMode` below. This module
@@ -42,6 +42,23 @@ carries its own `sensor_id`, however the producing mode chooses to
 identify it (a string index as text, a provider name, a fixed sentinel
 for a whole-array total, ...), rather than the container itself assuming
 what dimension a mode varies over.
+
+As of ADR-004 §5's fifth Amendment (2026-09-03), `sensor.py` no longer
+special-cases "one entity per configured string plus one fixed sum
+entity" — that shape was `CompareRegressionsMode`'s own, leaking into
+the platform-setup code of a module meant to stay mode-agnostic (the
+same complaint the fourth Amendment already applied to the *output*
+side of `compute()`, now extended to the *entity-creation* side).
+`sensor_ids()` below lets a mode declare, cheaply and without running
+`compute()` itself, exactly which `sensor_id`s (and display names) it
+will ever produce — `sensor.py`'s `async_setup_entry` creates one
+generic diagnostic sensor entity per declared id, for every registered
+mode, not just whichever mode happens to be active at setup time (ADR
+entities are added once for a config entry's lifetime; a mode selected
+later via `select.py` must already have its entities in place). A mode
+producing several distinct aggregate entities — more than one kind of
+"sum" — is handled exactly the same way as one that doesn't: it simply
+declares more `sensor_id`s.
 """
 
 from __future__ import annotations
@@ -155,6 +172,18 @@ class DiagnosticMode(ABC):
     def compute_cadence(self) -> DiagnosticCadence:
         """How often this mode needs `compute()` to run. Required, no
         default — core to what the mode is."""
+
+    @abstractmethod
+    def sensor_ids(self) -> Sequence[tuple[str, str]]:
+        """Every `(sensor_id, name)` pair this mode's `compute()` will
+        ever produce, resolvable cheaply — no recorder fetches, no
+        fitting — without calling `compute()` itself (ADR-004 §5, fifth
+        Amendment). `sensor.py`'s `async_setup_entry` calls this once,
+        at platform-setup time, to create one generic diagnostic sensor
+        entity per declared id; `compute()`'s own output must only ever
+        use `sensor_id`s declared here, never an ad hoc one invented on
+        the fly, or the corresponding entity will never have been
+        created to show it."""
 
     @abstractmethod
     def compute(self) -> DiagnosticResult:

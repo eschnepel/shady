@@ -7,11 +7,10 @@ imports the recorder API itself (ADR-007a §4). Only ever called from
 This module implements the storage core: the three-state (`float | None
 | str`) value model (§1), validated-range tracking (§2), `push`/
 `invalidate` (§3), the injected-`fetch_fn` validate-before-read step
-(§4), and two of the three accessors — the contiguous-range
-`get_time_range` (§5) and the batched, full-288-slot-sweep
-`get_regression_pools` (ADR-008 §2). The third accessor,
-`get_pinned_slot_pool` (ADR-007a §6), is deliberately out of scope here
-— added alongside its own caller, TASK-0015.
+(§4), and all three accessors — the contiguous-range `get_time_range`
+(§5), the batched, full-288-slot-sweep `get_regression_pools` (ADR-008
+§2), and the pinned, single-slot-across-days `get_pinned_slot_pool`
+(ADR-007a §6, TASK-0015b — added alongside its own caller).
 
 Also owns the two energy-integral running totals (ADR-005 §5/§6,
 TASK-0012) — plain in-memory `float`/`last_reset_date` fields, not part
@@ -21,6 +20,18 @@ in this module that is restart-persisted (ADR-007 §1) — `cache.py`
 itself stays plain in-memory either way, per the module's own no-`hass`
 rule; `coordinator.py` is the one that reads/writes Home Assistant's
 `Store` helper and calls `restore_energy_state`/back onto this module.
+
+**Pinned diagnostic reference + `get_pinned_slot_pool` (ADR-007a §6,
+TASK-0015b):** `pinned_reference` is a single cache-wide `date | None`
+scalar (`pin_reference()`/`clear_reference()`) — ADR-004 §2a's "one
+diagnosed-slot state per config entry, not one per sensor" lives here,
+since every diagnostic sensor's `get_pinned_slot_pool` call shares the
+one `Cache` instance. `get_pinned_slot_pool` is the third accessor
+promised (but deliberately deferred) by this module's docstring above:
+one value per day in a `window_days`-day window, all for the same
+`slot_of_day`, anchored on `pinned_reference` when set to a date no
+later than today, otherwise today-anchored — see the method's own
+docstring for the exact window resolution.
 
 **`fetch_fn` calling convention** (established here, binding for every
 caller — `coordinator.py`, and matching `providers/base.py`'s `Provider.
@@ -181,6 +192,23 @@ class Cache:
         # `IntradayState`'s own docstring) — a plain dict store, unlike
         # every time-series-shaped cache above.
         self._intraday_state: dict[int, IntradayState] = {}
+
+        # -- pinned diagnostic reference (ADR-007a §6, TASK-0015b) --
+        # Cache-wide, not per-sensor — ADR-004 §2a's "one diagnosed-slot
+        # state per config entry" (`pin_reference`/`clear_reference`
+        # below are the only mutators).
+        self._pinned_reference: date | None = None
+
+        # -- diagnostic fit cache (ADR-004 §4, TASK-0015b) --
+        # A third "simple dict store" alongside the two above: the
+        # active `DiagnosticMode`'s last `extra_fit()` predictions, one
+        # `Mapping[str, float]` (method/provider name -> predicted
+        # value) per `sensor_id`, refreshed on TASK-0013's 5-minute
+        # trigger (`coordinator.py`'s `_diagnostics_tick_sync`) and read
+        # back by that same mode's `compute()` — mirrors how a
+        # provider's `forward()` result is cached (ADR-012 §4): build in
+        # `coordinator.py`/`diagnostics/`, store here.
+        self._diagnostic_fit: dict[str, dict[str, float]] = {}
 
     # -- index <-> timestamp (ADR-007a §1) -----------------------------------
 
@@ -368,9 +396,23 @@ class Cache:
         Exposed as a parameter (rather than reading the wall clock
         internally) so this stays testable with zero mocking, the same
         way `fetch_fn` injection keeps validation testable.
+
+        ADR-007a §6's "effect on trimming": whenever `pinned_reference`
+        is set, the retained floor also covers the pin's own window
+        (`pinned_reference - window_days`), so a pin outliving several
+        days of real time does not have its own training pool trimmed
+        out from under it while still pinned.
         """
         now = reference if reference is not None else datetime.now(UTC)
         floor = self.index_for(now) - self._window_length() + 1
+        if self._pinned_reference is not None:
+            pinned_now = datetime(
+                self._pinned_reference.year,
+                self._pinned_reference.month,
+                self._pinned_reference.day,
+                tzinfo=UTC,
+            )
+            floor = min(floor, self.index_for(pinned_now) - self._window_length() + 1)
 
         for sensor_id in list(self._values):
             offset = self._list_offset[sensor_id]
@@ -552,6 +594,124 @@ class Cache:
             pools[sensor_id] = gathered.transpose(0, 2, 1).reshape(SLOTS_PER_DAY, -1)
 
         return pools
+
+    # -- pinned diagnostic reference (ADR-007a §6, TASK-0015b) ---------------
+
+    def pin_reference(self, reference: date) -> None:
+        """Pin the diagnostic reference date — every subsequent
+        `get_pinned_slot_pool` call anchors its window here (if
+        `reference` is no later than today) instead of "today", until
+        `clear_reference()`. Cache-wide, not per-sensor (ADR-004 §2a)."""
+        self._pinned_reference = reference
+
+    def clear_reference(self) -> None:
+        """Undo `pin_reference` — subsequent `get_pinned_slot_pool`
+        calls go back to auto-tracking "today"."""
+        self._pinned_reference = None
+
+    @property
+    def pinned_reference(self) -> date | None:
+        """The currently pinned diagnostic reference date, or `None`
+        while auto-tracking."""
+        return self._pinned_reference
+
+    @overload
+    def get_pinned_slot_pool(
+        self,
+        sensor_ids: list[str],
+        slot_of_day: int,
+        on_invalid: Literal["skip"] = "skip",
+    ) -> dict[str, list[float | None | str]]: ...
+
+    @overload
+    def get_pinned_slot_pool(
+        self,
+        sensor_ids: list[str],
+        slot_of_day: int,
+        on_invalid: Literal["raw"],
+    ) -> dict[str, list[float | None | str]]: ...
+
+    @overload
+    def get_pinned_slot_pool(
+        self,
+        sensor_ids: list[str],
+        slot_of_day: int,
+        on_invalid: float,
+    ) -> dict[str, list[float | None | str]]: ...
+
+    def get_pinned_slot_pool(
+        self,
+        sensor_ids: list[str],
+        slot_of_day: int,
+        on_invalid: OnInvalid = "skip",
+    ) -> dict[str, list[float | None | str]]:
+        """One value per day in the rolling window, all for the same
+        `slot_of_day` (0-287) — `window_days` points per sensor, oldest
+        day first, ready for a diagnostic scatter/comparison chart
+        (ADR-007a §6, ADR-004 §2).
+
+        **Window:** `[pinned_reference - window_days, pinned_reference]`
+        if `pinned_reference` (`pin_reference`/`clear_reference` above)
+        is currently set to a date no later than today; otherwise
+        (unset, or pinned to a *future* date — recalibration never
+        trains any slot's model on data newer than yesterday, so there
+        is no future-anchored pool for a future pin to resolve to)
+        falls back to the same today-anchored `[today - window_days,
+        today]` window an auto-tracking sensor already sees.
+
+        Default `on_invalid="skip"` — unlike `get_time_range`'s `0.0`
+        default — since a scatter/comparison chart should never plot a
+        synthetic zero for a day with no data.
+
+        Validates the *whole* day-range spanned by the window in one
+        call per sensor, not just `slot_of_day` within it — the same
+        full-day validate `get_regression_pools` already performs for
+        its own window, so while auto-tracking (the resolved window
+        matching whatever recalibration itself just fetched) this call
+        is typically served entirely from already-validated entries,
+        with no new recorder query.
+        """
+        today = datetime.now(UTC).date()
+        if self._pinned_reference is not None and self._pinned_reference <= today:
+            anchor = self._pinned_reference
+        else:
+            anchor = today
+        window_start_date = anchor - timedelta(days=self.window_days - 1)
+
+        def _day_start_index(day: date) -> int:
+            return self.index_for(datetime(day.year, day.month, day.day, tzinfo=UTC))
+
+        window_start_index = _day_start_index(window_start_date)
+        window_end_index = _day_start_index(anchor) + SLOTS_PER_DAY - 1
+
+        for sensor_id in sensor_ids:
+            self._validate_range(sensor_id, window_start_index, window_end_index)
+
+        result: dict[str, list[float | None | str]] = {}
+        for sensor_id in sensor_ids:
+            shaped_list: list[float | None | str] = []
+            for day_offset in range(self.window_days):
+                index = window_start_index + day_offset * SLOTS_PER_DAY + slot_of_day
+                keep, shaped = _shape(self._read(sensor_id, index), on_invalid)
+                if keep:
+                    shaped_list.append(shaped)
+            result[sensor_id] = shaped_list
+        return result
+
+    # -- diagnostic fit cache (ADR-004 §4, TASK-0015b) ------------------------
+
+    def diagnostic_fit(self, sensor_id: str) -> dict[str, float] | None:
+        """The active `DiagnosticMode`'s last cached `extra_fit()`
+        predictions for `sensor_id` (method/provider name -> predicted
+        value), or `None` if nothing has been fit for it yet (mode just
+        turned on, or this sensor has no baseline configured)."""
+        return self._diagnostic_fit.get(sensor_id)
+
+    def set_diagnostic_fit(self, sensor_id: str, predictions: dict[str, float]) -> None:
+        """Write back `sensor_id`'s freshly `extra_fit()`-ed predictions
+        — `coordinator.py`'s `_diagnostics_tick_sync` calls this once
+        per entry in `DiagnosticFitResult.by_sensor`."""
+        self._diagnostic_fit[sensor_id] = dict(predictions)
 
     # -- energy-integral totals (ADR-005 §5/§6) -------------------------------
 

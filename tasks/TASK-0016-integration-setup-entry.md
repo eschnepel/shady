@@ -85,6 +85,16 @@ Consumed Interfaces, alongside the ADR-002 §1a amendment itself. See
 - Whatever `sensor.py`/`select.py`/`button.py` each need `__init__.py`
   to pass through `hass.data` (→ tasks: TASK-0011, TASK-0012, TASK-0013,
   TASK-0014, TASK-0015b-diagnostics-select-and-scatter-sensors)
+- `coordinator.ShadyCoordinator.pin_diagnostic_slot(timestamp: datetime, now: datetime | None = None) -> bool`
+  and `.clear_diagnostic_slot() -> None` — the two methods the
+  `shady.select_diagnostic_slot` service handler this task registers
+  must call (accept/reject semantics and the 5-minute-boundary rounding
+  are `pin_diagnostic_slot`'s own responsibility, already implemented
+  and tested; the service handler itself is purely a thin
+  `hass.services.async_register` wrapper around them) — from
+  `custom_components/shady/coordinator.py` (→ task:
+  TASK-0015b-diagnostics-select-and-scatter-sensors, 2026-09-04
+  scope-correction note)
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —

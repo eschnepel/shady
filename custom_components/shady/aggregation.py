@@ -20,12 +20,20 @@ number or array out. Three families of pure logic:
   5-minute tick by `coordinator.py`, never per-slot: the same
   `effective_factor`/`w` applies uniformly across every one of a
   string's future slots at a given computation instant (ADR-006 §4).
+- **Diagnostic accuracy** (ADR-004 §2/§2b, TASK-0015b): `diagnostic_
+  accuracy` (`1 - |predicted-actual|/actual`, clamped to `[0, 1]`) and
+  `sum_predicted` (§2b's pointwise per-method sum across strings, ready
+  to feed back into `diagnostic_accuracy` alongside `sum_values`'s own
+  summed actual). Deliberately kept here, not in `diagnostics/`
+  (ADR-004 §5 Amendment) — mode-independent, so ADR-013's sketched
+  future modes can reuse it unmodified.
 
-`coordinator.py` is the only caller (ADR-005's module diagram: "calls
-`aggregation.py` for all six sensors"; ADR-006 §5's module-placement
-note for the three functions above) — `sensor.py` stays thin, reading
-only whatever `coordinator.py` already computed via this module, never
-calling into it directly.
+`coordinator.py`/`diagnostics/` are the only callers (ADR-005's module
+diagram: "calls `aggregation.py` for all six sensors"; ADR-006 §5's
+module-placement note for the three functions above; ADR-004 §5's
+Amendment for the two diagnostic functions) — `sensor.py` stays thin,
+reading only whatever `coordinator.py`/`diagnostics/` already computed
+via this module, never calling into it directly.
 """
 
 from __future__ import annotations
@@ -188,3 +196,45 @@ def crossfade(old_prediction: float, new_prediction: float, ramp_weight: float) 
     would show for the same slot.
     """
     return (1.0 - ramp_weight) * old_prediction + ramp_weight * new_prediction
+
+
+# -- diagnostic accuracy (ADR-004 §2/§2b, TASK-0015b) ------------------------
+
+
+def diagnostic_accuracy(predicted: float, actual: float) -> float:
+    """`1 - |predicted - actual| / actual`, clamped to `[0, 1]` (ADR-004
+    §2) — never a negative number even when `predicted` is more than
+    100% off from `actual`. Used both per-string (`predicted`/`actual`
+    the diagnosed slot's own selected values) and, via `sum_predicted`
+    below, for the diagnostic "sum" sensor's summed-then-accuracy figure
+    (ADR-004 §2b) — the same formula either way, only the inputs differ.
+
+    `actual == 0` has no well-defined ratio; treated defensively
+    (ADR-000 §8) as `0.0` accuracy rather than raising — a real-world
+    zero-yield slot (e.g. deep night) is never actually a *diagnosed*
+    slot in practice (ADR-004 §2's "last complete slot" starts from
+    whatever the baseline forecast already has data for), but this
+    keeps the function total rather than assuming that.
+    """
+    if actual == 0.0:
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - abs(predicted - actual) / actual))
+
+
+def sum_predicted(predicted_by_string: Iterable[dict[str, float]]) -> dict[str, float]:
+    """ADR-004 §2b's pointwise per-method sum across strings: Σpredicted
+    per regression method, ready to pass into `diagnostic_accuracy`
+    alongside `sum_values`'s own Σactual for the diagnostic "sum" sensor
+    — summed *first*, accuracy derived from the sums, not averaged from
+    each string's own already-computed accuracy.
+
+    A string missing a given method entirely (should not happen in
+    practice — every string is fit against the same four strategies —
+    but defensively, ADR-000 §8) simply does not contribute to that
+    method's sum, rather than the whole sum being dropped.
+    """
+    totals: dict[str, float] = {}
+    for predicted in predicted_by_string:
+        for method, value in predicted.items():
+            totals[method] = totals.get(method, 0.0) + value
+    return totals

@@ -186,8 +186,9 @@ when no forecast-capable entity is configured.
 scalar (`pin_reference`/`clear_reference`), `select.py`'s
 `ShadyDiagnosticModeSelect` (replacing the original `ShadyDiagnosticsSwitch`),
 `diagnostics/`'s `DiagnosticMode` base class and `CompareRegressionsMode`
-(the one concrete mode in scope), `sensor.py`'s `ShadyDiagnosticsSensor` +
-`ShadyDiagnosticsSumSensor`, the accuracy pure function in
+(the one concrete mode in scope), `sensor.py`'s one generic
+`ShadyDiagnosticsSensor` class (no dedicated sum-sensor class, ADR-004
+§5 2026-09-03), the accuracy pure function in
 `aggregation.py` (unchanged, mode-independent), and the
 `shady.select_diagnostic_slot` service registered in `__init__.py`. Split
 into two tasks (base architecture, then the concrete mode + entities) —

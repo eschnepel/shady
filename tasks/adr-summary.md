@@ -99,11 +99,17 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   2026-08-30) — `DiagnosticMode` base class (mirrors `providers/base.py`'s
   `Provider` ABC, ADR-012 §1) + one concrete mode, `CompareRegressionsMode`
   (ADR-004 §1/§2/§2a/§2b/§4, moved here verbatim from the original inline
-  design). `compute()` (required) shapes the sensor payload; `extra_fit()`
+  design). `compute()` (required) shapes the sensor payload — as of the
+  2026-09-03 amendment, including a `sensor_id="sum"` entry it builds
+  itself, not `sensor.py`; `extra_fit()`
   (optional, default `None`) does whatever extra per-slot fitting the mode
   needs, via `string_computation.py` directly (ADR-014). Also declares
   `fit_cadence()`/`compute_cadence()` (required, `"daily" | "hourly" |
-  "slot"` — ADR-004 §5, 2026-09-01). **As of the 2026-09-01 amendment, no
+  "slot"` — ADR-004 §5, 2026-09-01; `compute_cadence()` now actually read
+  by `coordinator.py` to drive its own `compute()`-result cache, ADR-004
+  §5, 2026-09-03) and `sensor_ids()` (required, ADR-004 §5, 2026-09-03 —
+  every `(sensor_id, name)` pair the mode will ever produce, without
+  calling `compute()`). **As of the 2026-09-01 amendment, no
   longer pure:** every `DiagnosticMode` is constructed with the owning
   `ShadyCoordinator` (`self._coordinator`), and reaches its public
   interface directly (`cache`, `strings()`, …) for whatever a mode needs —
@@ -313,17 +319,19 @@ into `cache.py`'s `fetch_fn`.
   registry (per-instance as of the 2026-09-01 amendment) — adding a
   future mode (see ADR-013, Proposed, not scheduled) is a new option +
   subclass, not a rework of this entity.
-- **`ShadyDiagnosticsSensor`** (per string, ADR-004 §2) — ApexCharts-
+- **`ShadyDiagnosticsSensor`** (one per `(sensor_id, name)` pair
+  `coordinator.diagnostic_sensor_ids()` declares, ADR-004 §2/§2b, §5
+  2026-09-03 — one per configured string plus one `"sum"` id for
+  `CompareRegressionsMode`, no dedicated sum-sensor class) — ApexCharts-
   shaped `series` (slot-pool scatter + 4 methods' selected-prediction
-  points + actual point) and plain-float `accuracy` dict, built by
-  calling the active `DiagnosticMode`'s `compute()` (today, always
-  `CompareRegressionsMode`) and setting `state`/`attributes` from its
-  returned `DiagnosticResult` directly. Diagnosed slot defaults to "last
+  points + actual point) and plain-float `accuracy` dict, set from
+  `coordinator.diagnostic_result()` — a cached accessor over the active
+  `DiagnosticMode`'s `compute()` output (today, always
+  `CompareRegressionsMode`), refreshed once per tick; entities never call
+  `.compute()` directly. Diagnosed slot defaults to "last
   complete slot"; overridable via the `shady.select_diagnostic_slot`
   service (not entity-targeted — one diagnosed-slot state per **config
   entry**).
-- **`ShadyDiagnosticsSumSensor`** (one/entry, ADR-004 §2b) — pointwise
-  cross-string sum of the above.
 - **6 aggregate sensors** (one/entry, ADR-005): `ShadyPvSumSensor`,
   `ShadyFcSumSensor`, `ShadyFcDaySumSensor` (288-value day array + energy
   state), `ShadyFcRemainingTodaySensor`, `ShadyPvEnergyIntegralSensor`

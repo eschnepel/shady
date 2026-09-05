@@ -104,6 +104,9 @@ class DummyModeMinimal(DiagnosticMode):
     def compute_cadence(self) -> DiagnosticCadence:
         return "slot"
 
+    def sensor_ids(self) -> list[tuple[str, str]]:
+        return [("0", "Dummy")]
+
     def compute(self) -> DiagnosticResult:
         return _single_sensor_result()
 
@@ -197,6 +200,9 @@ class TestDiagnosticCadenceValues:
 
             def compute_cadence(self) -> DiagnosticCadence:
                 return cadence
+
+            def sensor_ids(self) -> list[tuple[str, str]]:
+                return [("0", "Dummy")]
 
             def compute(self) -> DiagnosticResult:
                 return _single_sensor_result()
@@ -299,6 +305,13 @@ class TestDiagnosticResultSensorListGeneralization:
             def compute_cadence(self) -> DiagnosticCadence:
                 return "slot"
 
+            def sensor_ids(self) -> list[tuple[str, str]]:
+                return [
+                    ("string_0", "String 0"),
+                    ("provider_baseline", "Provider Baseline"),
+                    ("array_total", "Array Total"),
+                ]
+
             def compute(self) -> DiagnosticResult:
                 return DiagnosticResult(
                     sensors=[
@@ -360,6 +373,9 @@ class TestDiagnosticFitResult:
             def compute_cadence(self) -> DiagnosticCadence:
                 return "slot"
 
+            def sensor_ids(self) -> list[tuple[str, str]]:
+                return [("0", "Dummy")]
+
             def compute(self) -> DiagnosticResult:
                 return _single_sensor_result()
 
@@ -400,6 +416,9 @@ class TestDiagnosticModeUsesCoordinatorInCompute:
 
             def compute_cadence(self) -> DiagnosticCadence:
                 return "slot"
+
+            def sensor_ids(self) -> list[tuple[str, str]]:
+                return [(str(index), name) for index, name in self._coordinator.strings()]
 
             def compute(self) -> DiagnosticResult:
                 return DiagnosticResult(
