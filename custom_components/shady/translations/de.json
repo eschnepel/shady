@@ -3,19 +3,115 @@
   "name": "Shady",
   "config": {
     "step": {
-      "user": {
-        "title": "Shady konfigurieren",
-        "description": "Platzhalter – Config-Flow-Felder gemäß ADR-001 §6 (z.B. Baseline-Kandidat, Trainingsfenster, Regressionsmethode).",
-        "data": {}
+      "settings": {
+        "title": "Shady – Globale Einstellungen",
+        "description": "Diese Einstellungen gelten für jeden im Folgenden konfigurierten String und können später über die Optionen der Integration geändert werden.",
+        "data": {
+          "baseline_candidate": "Standard-Baseline-Prognose",
+          "baseline_manual_entity_id": "Manuelle Baseline-Entity-ID",
+          "baseline_manual_attribute": "Manuelles Baseline-Attribut (optional)",
+          "baseline_manual_shape": "Manuelles Baseline-Datenformat",
+          "temperature_aware": "Baseline berücksichtigt Temperatur bereits",
+          "window_days": "Trainingsfenster (Tage)",
+          "regression_method": "Regressionsmethode",
+          "smoothing_radius": "Glättungsradius (Slots)",
+          "neighbor_fitting_cutoff": "Nachbar-Ausschlussschwelle",
+          "recency_decay_max": "Maximale Aktualitäts-Abschwächung",
+          "clipping_threshold": "Clipping-Schwelle (% der Wechselrichterleistung)",
+          "default_temperature_source": "Standard-Temperaturquelle (optional)",
+          "max_uplift_c": "Maximaler Umgebungs-zu-Zelle-Aufschlag (°C)",
+          "weather_forecast_temperature_entity": "Wetter-Entity für Temperaturvorhersage (optional)",
+          "temperature_regression_method": "Regressionsmethode für Temperatur",
+          "intraday_correction_mode": "Intraday-Abweichungskorrektur-Modus",
+          "intraday_correction_cutoff": "Intraday-Abweichungskorrektur-Schwelle",
+          "window_slots": "Intraday-Rolling-Fenster (Slots)",
+          "ramp_slots": "Intraday-Ramp-/Blend-Dauer (Slots)"
+        }
+      },
+      "add_string": {
+        "title": "String hinzufügen",
+        "description": "Einen PV-String konfigurieren. Weitere Strings können anschließend hinzugefügt werden.",
+        "data": {
+          "name": "Name",
+          "baseline_override": "Baseline-Überschreibung (optional; bei Standardwert wird die globale Einstellung verwendet)",
+          "actual_yield_entity_id": "Entity für tatsächlichen Ertrag",
+          "configure_advanced": "Erweiterte Korrekturen (Clipping/Derating) für diesen String konfigurieren"
+        }
+      },
+      "add_string_advanced": {
+        "title": "Erweiterte String-Korrekturen",
+        "description": "Clipping- und Temperatur-Derating-Einstellungen für diesen String. Jede wird nur angewendet, wenn die dafür nötigen Eingaben (eine Wechselrichterleistungsgrenze; eine aufgelöste Temperaturquelle) für diesen String tatsächlich vorhanden sind — ein Feld leer lassen, um die zugehörige Korrektur zu überspringen.",
+        "data": {
+          "converter_limit_w": "Wechselrichter-/Konverter-AC-Leistungsgrenze (W, optional)",
+          "temperature_source_entity_id": "Temperaturquelle überschreiben (optional; \"none\" deaktiviert das Derating für diesen String)",
+          "temperature_coefficient_pct_per_c": "Temperaturkoeffizient (%/°C)",
+          "rated_dc_capacity_wp": "Nennleistung DC (Wp, optional)"
+        }
+      },
+      "add_another": {
+        "title": "Weiteren String hinzufügen?",
+        "description": "Jetzt einen weiteren String hinzufügen oder die Einrichtung mit den bisher konfigurierten Strings abschließen.",
+        "data": {
+          "add_another": "Weiteren String hinzufügen"
+        }
       }
     },
-    "error": {}
+    "error": {},
+    "abort": {}
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Shady Optionen",
-        "data": {}
+      "settings": {
+        "title": "Shady – Globale Einstellungen bearbeiten",
+        "description": "Shadys globale Einstellungen aktualisieren. Änderungen gelten für jeden konfigurierten String.",
+        "data": {
+          "baseline_candidate": "Standard-Baseline-Prognose",
+          "baseline_manual_entity_id": "Manuelle Baseline-Entity-ID",
+          "baseline_manual_attribute": "Manuelles Baseline-Attribut (optional)",
+          "baseline_manual_shape": "Manuelles Baseline-Datenformat",
+          "temperature_aware": "Baseline berücksichtigt Temperatur bereits",
+          "window_days": "Trainingsfenster (Tage)",
+          "regression_method": "Regressionsmethode",
+          "smoothing_radius": "Glättungsradius (Slots)",
+          "neighbor_fitting_cutoff": "Nachbar-Ausschlussschwelle",
+          "recency_decay_max": "Maximale Aktualitäts-Abschwächung",
+          "clipping_threshold": "Clipping-Schwelle (% der Wechselrichterleistung)",
+          "default_temperature_source": "Standard-Temperaturquelle (optional)",
+          "max_uplift_c": "Maximaler Umgebungs-zu-Zelle-Aufschlag (°C)",
+          "weather_forecast_temperature_entity": "Wetter-Entity für Temperaturvorhersage (optional)",
+          "temperature_regression_method": "Regressionsmethode für Temperatur",
+          "intraday_correction_mode": "Intraday-Abweichungskorrektur-Modus",
+          "intraday_correction_cutoff": "Intraday-Abweichungskorrektur-Schwelle",
+          "window_slots": "Intraday-Rolling-Fenster (Slots)",
+          "ramp_slots": "Intraday-Ramp-/Blend-Dauer (Slots)"
+        }
+      },
+      "add_string": {
+        "title": "String hinzufügen oder überprüfen",
+        "description": "Bestehende Strings werden einzeln, vorausgefüllt, angezeigt, sodass jeder unverändert bestätigt oder bearbeitet werden kann; anschließend können neue Strings hinzugefügt werden.",
+        "data": {
+          "name": "Name",
+          "baseline_override": "Baseline-Überschreibung (optional; bei Standardwert wird die globale Einstellung verwendet)",
+          "actual_yield_entity_id": "Entity für tatsächlichen Ertrag",
+          "configure_advanced": "Erweiterte Korrekturen (Clipping/Derating) für diesen String konfigurieren"
+        }
+      },
+      "add_string_advanced": {
+        "title": "Erweiterte String-Korrekturen",
+        "description": "Clipping- und Temperatur-Derating-Einstellungen für diesen String. Jede wird nur angewendet, wenn die dafür nötigen Eingaben (eine Wechselrichterleistungsgrenze; eine aufgelöste Temperaturquelle) für diesen String tatsächlich vorhanden sind — ein Feld leer lassen, um die zugehörige Korrektur zu überspringen.",
+        "data": {
+          "converter_limit_w": "Wechselrichter-/Konverter-AC-Leistungsgrenze (W, optional)",
+          "temperature_source_entity_id": "Temperaturquelle überschreiben (optional; \"none\" deaktiviert das Derating für diesen String)",
+          "temperature_coefficient_pct_per_c": "Temperaturkoeffizient (%/°C)",
+          "rated_dc_capacity_wp": "Nennleistung DC (Wp, optional)"
+        }
+      },
+      "add_another": {
+        "title": "Weiteren String hinzufügen?",
+        "description": "Jetzt einen weiteren String hinzufügen oder die Bearbeitung mit den bisher konfigurierten Strings abschließen.",
+        "data": {
+          "add_another": "Weiteren String hinzufügen"
+        }
       }
     },
     "error": {}

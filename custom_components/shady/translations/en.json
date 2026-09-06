@@ -3,19 +3,115 @@
   "name": "Shady",
   "config": {
     "step": {
-      "user": {
-        "title": "Configure Shady",
-        "description": "Placeholder – config flow fields to be defined per ADR-001 §6 (e.g. baseline candidate, training window, regression method).",
-        "data": {}
+      "settings": {
+        "title": "Shady – Global Settings",
+        "description": "These settings apply to every string you configure below and can be changed later from the integration's Options.",
+        "data": {
+          "baseline_candidate": "Default baseline forecast",
+          "baseline_manual_entity_id": "Manual baseline entity ID",
+          "baseline_manual_attribute": "Manual baseline attribute (optional)",
+          "baseline_manual_shape": "Manual baseline data shape",
+          "temperature_aware": "Baseline already accounts for temperature",
+          "window_days": "Training window (days)",
+          "regression_method": "Regression method",
+          "smoothing_radius": "Smoothing radius (slots)",
+          "neighbor_fitting_cutoff": "Neighbor-fitting cutoff",
+          "recency_decay_max": "Maximum recency decay",
+          "clipping_threshold": "Clipping threshold (% of inverter limit)",
+          "default_temperature_source": "Default temperature source (optional)",
+          "max_uplift_c": "Ambient-to-cell max uplift (°C)",
+          "weather_forecast_temperature_entity": "Weather forecast entity for temperature prediction (optional)",
+          "temperature_regression_method": "Temperature regression method",
+          "intraday_correction_mode": "Intraday deviation correction mode",
+          "intraday_correction_cutoff": "Intraday deviation correction cutoff",
+          "window_slots": "Intraday rolling window (slots)",
+          "ramp_slots": "Intraday ramp/blend duration (slots)"
+        }
+      },
+      "add_string": {
+        "title": "Add a String",
+        "description": "Configure one PV string. You can add more strings afterwards.",
+        "data": {
+          "name": "Name",
+          "baseline_override": "Baseline override (optional; leave on the default to use the global setting)",
+          "actual_yield_entity_id": "Actual yield entity",
+          "configure_advanced": "Configure advanced corrections (clipping/derating) for this string"
+        }
+      },
+      "add_string_advanced": {
+        "title": "Advanced String Corrections",
+        "description": "Clipping and temperature-derating settings for this string. Each is only applied if the relevant inputs (a converter limit; a resolved temperature source) are actually available for this string — leave a field empty to skip the correction it controls.",
+        "data": {
+          "converter_limit_w": "Converter/inverter AC power limit (W, optional)",
+          "temperature_source_entity_id": "Temperature source override (optional; \"none\" disables derating for this string)",
+          "temperature_coefficient_pct_per_c": "Temperature coefficient (%/°C)",
+          "rated_dc_capacity_wp": "Rated DC capacity (Wp, optional)"
+        }
+      },
+      "add_another": {
+        "title": "Add Another String?",
+        "description": "Add another string now, or finish setup with the strings configured so far.",
+        "data": {
+          "add_another": "Add another string"
+        }
       }
     },
-    "error": {}
+    "error": {},
+    "abort": {}
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Shady Options",
-        "data": {}
+      "settings": {
+        "title": "Shady – Edit Global Settings",
+        "description": "Update Shady's global settings. Changes apply to every configured string.",
+        "data": {
+          "baseline_candidate": "Default baseline forecast",
+          "baseline_manual_entity_id": "Manual baseline entity ID",
+          "baseline_manual_attribute": "Manual baseline attribute (optional)",
+          "baseline_manual_shape": "Manual baseline data shape",
+          "temperature_aware": "Baseline already accounts for temperature",
+          "window_days": "Training window (days)",
+          "regression_method": "Regression method",
+          "smoothing_radius": "Smoothing radius (slots)",
+          "neighbor_fitting_cutoff": "Neighbor-fitting cutoff",
+          "recency_decay_max": "Maximum recency decay",
+          "clipping_threshold": "Clipping threshold (% of inverter limit)",
+          "default_temperature_source": "Default temperature source (optional)",
+          "max_uplift_c": "Ambient-to-cell max uplift (°C)",
+          "weather_forecast_temperature_entity": "Weather forecast entity for temperature prediction (optional)",
+          "temperature_regression_method": "Temperature regression method",
+          "intraday_correction_mode": "Intraday deviation correction mode",
+          "intraday_correction_cutoff": "Intraday deviation correction cutoff",
+          "window_slots": "Intraday rolling window (slots)",
+          "ramp_slots": "Intraday ramp/blend duration (slots)"
+        }
+      },
+      "add_string": {
+        "title": "Add or Review a String",
+        "description": "Existing strings are shown one at a time, pre-filled, so each can be re-confirmed as-is or edited; new strings can be appended afterwards.",
+        "data": {
+          "name": "Name",
+          "baseline_override": "Baseline override (optional; leave on the default to use the global setting)",
+          "actual_yield_entity_id": "Actual yield entity",
+          "configure_advanced": "Configure advanced corrections (clipping/derating) for this string"
+        }
+      },
+      "add_string_advanced": {
+        "title": "Advanced String Corrections",
+        "description": "Clipping and temperature-derating settings for this string. Each is only applied if the relevant inputs (a converter limit; a resolved temperature source) are actually available for this string — leave a field empty to skip the correction it controls.",
+        "data": {
+          "converter_limit_w": "Converter/inverter AC power limit (W, optional)",
+          "temperature_source_entity_id": "Temperature source override (optional; \"none\" disables derating for this string)",
+          "temperature_coefficient_pct_per_c": "Temperature coefficient (%/°C)",
+          "rated_dc_capacity_wp": "Rated DC capacity (Wp, optional)"
+        }
+      },
+      "add_another": {
+        "title": "Add Another String?",
+        "description": "Add another string now, or finish editing with the strings configured so far.",
+        "data": {
+          "add_another": "Add another string"
+        }
       }
     },
     "error": {}
