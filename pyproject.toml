@@ -37,18 +37,11 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["custom_components"]
 
-[tool.mypy]
-python_version = "3.14"
-mypy_path = "."
-no_namespace_packages = true
-ignore_missing_imports = true
-warn_unused_ignores = true
-
 [tool.ruff]
 line-length = 100
 # Deliberately pinned one Python feature-release behind
-# `requires-python`/`[tool.mypy] python_version` (both 3.14): PEP 758
-# (Python 3.14) made parentheses around a multi-exception `except`
+# `requires-python` (3.14): PEP 758 (Python 3.14) made parentheses
+# around a multi-exception `except`
 # clause optional, and `ruff format` — inferring its target grammar
 # from `requires-python` when `target-version` isn't set explicitly —
 # was stripping the (still perfectly valid, just no longer mandatory)
