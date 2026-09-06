@@ -64,7 +64,7 @@ value, not against time or sun position:
    with a confidence aggregated to a daily total (`FC`-weighted across all
    of the day's slots — a single slot's confidence is not very meaningful
    on its own).
-6. Optional (diagnostics switch, default off): a scatter-chart sensor per
+6. Optional (a diagnostic-mode select entity, default off): a scatter-chart sensor per
    string comparing all four regression methods directly on the string's
    own historical data, pre-shaped for ApexCharts — including a hit rate
    per method (as a number in the `accuracy` attribute and directly in

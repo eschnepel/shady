@@ -1,6 +1,6 @@
 # Task: HACS/Tooling-Config Cleanup — Finish the switch→select Rename
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-004, ADR-000]
 - **Dependencies:** [TASK-0015b-diagnostics-select-and-scatter-sensors, TASK-0016-integration-setup-entry]
 
@@ -74,3 +74,32 @@ and `tests/`.
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. Be exact —
      downstream tasks depend on this information. -->
+- `hacs.json` (repo root — **not**
+  `custom_components/shady/hacs.json` as the Estimated Footprint hint
+  guessed; corrected here since downstream readers of this block should
+  get the real path, not the estimate) → `"domains"` changed to
+  `["sensor", "select", "button"]`; `"homeassistant"` changed to
+  `"2026.3"` (patch digit dropped).
+- `mypy.ini` → `[mypy-shady.switch]` section removed; `[mypy-shady.select]`
+  section added (`warn_unused_ignores = False`), same treatment as
+  `config_flow`/`sensor`/`coordinator`/`button`; the shared comment block
+  above it updated to name `select.py` (`ShadyDiagnosticModeSelect`,
+  ADR-004 §2a) instead of `switch.py`/`ShadyDiagnosticsSwitch`.
+- `README.md` → point 6's "diagnostics switch, default off" reworded to
+  "a diagnostic-mode select entity, default off"; no other text in that
+  paragraph changed.
+- No `.py` source file touched; no new external dependency —
+  `tasks/DEPENDENCIES.md` unchanged.
+- Verification: full suite 414/414 (behavior-unchanged, config/docs-only
+  task); `mypy --config-file mypy.ini custom_components/ tests/` clean on
+  52 source files; `ruff check .` clean repo-wide; `ruff format --check .`
+  shows only the two pre-existing, unrelated drift files already on
+  record in `tasks/INDEX.md`'s refinement log
+  (`tests/test_regression.py`, `adr/004-diagnostics-select-and-scatter-sensor.md`'s
+  embedded code block) — neither touched by this task.
+  `git diff --stat` confirms only `README.md`, `hacs.json`, `mypy.ini`
+  changed.
+- Remaining "switch" mentions repo-wide (checked via grep) are all
+  inside already-`done` task files / `tasks/adr-summary.md`, describing
+  the historical rename itself or listing an older task's own original
+  scope wording — not this task's Acceptance Criteria, left untouched.
