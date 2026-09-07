@@ -1,6 +1,6 @@
 # Audit Task: Coordinator
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-002 §1, ADR-002 §1a, ADR-002 §2, ADR-002 §3, ADR-002 §4, ADR-002 §5, ADR-012 §4, ADR-000 §5, ADR-001 §4a, ADR-003c §1, ADR-003c §2, ADR-003c §3, ADR-003c §4, ADR-003c §5, ADR-003c §6, ADR-003c §7, ADR-006 §1a, ADR-006 §1b, ADR-006 §4]
 - **Dependencies:** [] (TASK-0010 + 3 patches, TASK-0014, TASK-0017,
@@ -157,3 +157,13 @@ which lives almost entirely in this file) is correctly gated.
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0005-coordinator-findings.md` — full findings: 17/17
+  Audit Criteria PASS or PASS-with-noted-nuance (one PARTIAL folded
+  into the ADR-staleness discussion), 6 Test-Coverage Criteria (5
+  COVERED, 1 GAP). No behavioral FAIL. Two ADR-text-staleness items
+  flagged for human decision (ADR-002 §5's "two registrations" Con no
+  longer matches the code's single merged listener; ADR-014 §4's
+  "all four methods delegate to `string_computation.py`" overclaims
+  for `_predict_day_basis`/`_clamp_basis`, whose exception is already
+  justified in TASK-0017's own Acceptance Criteria but not reflected
+  in the ADR text itself). No code changes made.

@@ -1,6 +1,6 @@
 # Audit Task: Aggregation Module
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-005 §1, ADR-005 §2, ADR-005 §3, ADR-005 §4, ADR-005 §5, ADR-005 §6, ADR-006 §1, ADR-006 §1a, ADR-006 §1b, ADR-006 §2, ADR-006 §3, ADR-006 §4, ADR-006 §5]
 - **Dependencies:** [] (TASK-0012, TASK-0013 are `done`)
@@ -118,3 +118,12 @@ haven't blurred into each other now that they're co-located.
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0007-aggregation-findings.md` — full findings: 13/13
+  Audit Criteria PASS, plus one additional FAIL found outside the
+  enumerated checklist (both ADR-005's module diagram and ADR-000 §3's
+  canonical module graph claim an `aggregation --> forecast_adjust`
+  edge that does not exist — `aggregation.py` has zero non-stdlib
+  imports; confirmed via grep). 6 Test-Coverage Criteria (5 COVERED, 1
+  GAP: Ramping vs. Blending divergence mid-ramp is never asserted,
+  only their convergence at `w=1`). Both test files re-installed
+  pytest and re-run live: 19/19 passed. No code changes made.

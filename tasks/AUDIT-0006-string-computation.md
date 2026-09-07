@@ -1,6 +1,6 @@
 # Audit Task: String Computation Module
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-014 §1, ADR-014 §2, ADR-014 §3, ADR-014 §4, ADR-014 §5, ADR-014 §6, ADR-000 §3, ADR-000 §5, ADR-000 §6]
 - **Dependencies:** [] (TASK-0017 is `done`)
@@ -101,3 +101,14 @@ itself stays pure per ADR-014 §1.
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0006-string-computation-findings.md` — full findings:
+  7/7 Audit Criteria PASS or PASS-with-one-FAIL-embedded, 4
+  Test-Coverage Criteria (3 COVERED, 1 GAP). **One genuine FAIL**:
+  `string_computation.py`'s own docstring and `predict_string_forecast`'s
+  own docstring falsely claim `coordinator.py`'s no-intraday-correction
+  path calls `predict_string_forecast` — it never does (confirmed via
+  `grep`; `coordinator.py` only ever calls `apply_training_corrections`/
+  `fit_string_model`). Same underlying fact as AUDIT-0005's finding B,
+  viewed from the module's own (inaccurate) self-description. All 14
+  existing tests re-run live during this audit: 14/14 passed. No code
+  changes made.

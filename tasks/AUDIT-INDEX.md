@@ -69,10 +69,10 @@ file belongs to two groups, and every group maps to at least one ADR.
 | AUDIT-0002-regression-package | Regression Package | review | ADR-001 §2/§2a/§3/§3a, ADR-008 §1, ADR-011, ADR-000 §4 | Lead Agent (inline) — PASS, 1 real coverage gap noted |
 | AUDIT-0003-cache-module | Cache Module | review | ADR-007, ADR-007a, ADR-008 §2/§3 | Lead Agent (inline) — **1 FAIL**: model cache lives in coordinator.py, not cache.py |
 | AUDIT-0004-yield-forecast-corrections | Yield & Forecast Corrections | review | ADR-003a, ADR-003b, ADR-001 §2, ADR-006 §1b | Lead Agent (inline) — clean PASS, best-tested pair so far |
-| AUDIT-0005-coordinator | Coordinator | todo | ADR-002, ADR-012 §4, ADR-000 §5, ADR-001 §4a, ADR-003c, ADR-006 | — |
-| AUDIT-0006-string-computation | String Computation Module | todo | ADR-014, ADR-000 §3/§5/§6 | — |
-| AUDIT-0007-aggregation | Aggregation Module | todo | ADR-005, ADR-006 | — |
-| AUDIT-0008-diagnostics-package | Diagnostics Package | todo | ADR-004, ADR-012 §1, ADR-013 §1, ADR-014, ADR-000 §3/§6 | — |
+| AUDIT-0005-coordinator | Coordinator | review | ADR-002, ADR-012 §4, ADR-000 §5, ADR-001 §4a, ADR-003c, ADR-006 | Lead Agent (inline) — PASS, no behavioral FAIL; 2 ADR-text-staleness items flagged for human decision, 1 minor coverage gap noted |
+| AUDIT-0006-string-computation | String Computation Module | review | ADR-014, ADR-000 §3/§5/§6 | Lead Agent (inline) — **1 FAIL**: module's own docstring falsely claims `coordinator.py` calls `predict_string_forecast` (it never does); 1 minor coverage gap noted; all 14 tests re-run live, 14/14 pass |
+| AUDIT-0007-aggregation | Aggregation Module | review | ADR-005, ADR-006 | Lead Agent (inline) — 13/13 criteria PASS; **1 FAIL found outside checklist**: ADR-005 + ADR-000 §3 both claim a stale `aggregation --> forecast_adjust` edge that doesn't exist in code; 1 coverage gap (Ramping vs. Blending mid-ramp divergence untested); 19/19 tests re-run live |
+| AUDIT-0008-diagnostics-package | Diagnostics Package | review | ADR-004, ADR-012 §1, ADR-013 §1, ADR-014, ADR-000 §3/§6 | Lead Agent (inline) — clean PASS, 10/10 criteria, 4/4 coverage; no FAIL, no gap; supersession check on TASK-0015a-patch-1 triply corroborated |
 | AUDIT-0009-entity-layer | HA Entity Layer (sensor/button/select) | todo | ADR-000 §3, ADR-002 §3/§5, ADR-004 §2/§2a/§2b, ADR-005, ADR-006 | — |
 | AUDIT-0010-config-flow-translations | Config Flow & Translations | todo | ADR-010, ADR-001 §1/§4a, ADR-009 §3 | — |
 | AUDIT-0011-integration-setup | Integration Setup & Wiring | todo | ADR-002 §1a/§5, ADR-000 | — |
@@ -139,15 +139,21 @@ block with that path.
 | 2026-09-06 | AUDIT-0002 | Executed; Status → `review`; findings written | Same |
 | 2026-09-06 | AUDIT-0003 | Executed; Status → `review`; findings written; **1 FAIL found** (model cache location vs. ADR-007 §1/ADR-007a §5) | Same |
 | 2026-09-06 | AUDIT-0004 | Executed; Status → `review`; findings written; clean PASS, 1 minor coverage gap noted | Same |
+| 2026-09-06 | AUDIT-0005 | Executed; Status → `review`; findings written; no behavioral FAIL; **2 ADR-text-staleness items flagged** (ADR-002 §5's "two registrations" Con vs. actual single merged listener; ADR-014 §4's "all four methods delegate" claim vs. `_predict_day_basis`/`_clamp_basis`'s justified exception); 1 minor coverage gap (absence of a second `strings()`-bypassing enumeration path is untested) | Human requested strictly-sequential execution of the remaining audit tasks (5–8), one zip per task |
+| 2026-09-06 | AUDIT-0006 | Executed; Status → `review`; findings written; **1 FAIL**: `string_computation.py`'s own docstring and `predict_string_forecast`'s docstring falsely claim `coordinator.py`'s no-intraday-correction path calls it — confirmed via `grep` that it never does (same underlying fact as AUDIT-0005's finding B, now pinned to the audited file itself); 1 minor coverage gap noted; all 14 existing tests re-run live during the audit, 14/14 passed | Same |
+| 2026-09-06 | AUDIT-0007 | Executed; Status → `review`; findings written; 13/13 checklist criteria PASS; **1 FAIL found outside the checklist**: both ADR-005's module diagram and ADR-000 §3's canonical module graph claim a stale `aggregation --> forecast_adjust` edge that doesn't exist in code (confirmed via `grep` — zero non-stdlib imports in `aggregation.py`); 1 coverage gap (Ramping vs. Blending mid-ramp divergence is never asserted, only their `w=1` convergence); both test files re-installed pytest and re-run live, 19/19 passed | Same |
+| 2026-09-06 | AUDIT-0008 | Executed; Status → `review`; findings written; 10/10 criteria PASS, 4/4 coverage criteria COVERED — no FAIL, no gap, the cleanest of the four audits run this session. Required `TASK-0015a-patch-1` supersession check triply corroborated (task file header + ADR-004 §5 second Amendment + independent `grep`/code inspection all agree). `test_diagnostics_base.py` re-run live, 22/22 passed; `test_diagnostics_compare_regressions.py` requires real `homeassistant` (not installed in sandbox), verified by manual reading instead. One tooling aside noted for AUDIT-0012 (mypy.ini `python_version` quoting bug) | Same |
 
 ## Session pause note (2026-09-06)
 
-AUDIT-0001 through AUDIT-0004 executed and closed out this session.
-AUDIT-0005 (Coordinator) through AUDIT-0012 (Tooling & Release Config)
-remain `todo`. Continue strictly sequentially from AUDIT-0005 in a
-future session — the same process each prior audit followed: read the
-task's Related ADRs in full, read its Scope source/test files, fill in
-the Audit/Test-Coverage Criteria tables with file:line evidence, write
+AUDIT-0001 through AUDIT-0008 executed and closed out this session
+(0001–0004 in an earlier pass; 0005–0008 run strictly sequentially per
+explicit human request, one zip per task). AUDIT-0009 (Config Flow &
+Options Flow) through AUDIT-0012 (Tooling & Release Config) remain
+`todo`. Continue strictly sequentially from AUDIT-0009 in a future
+session — the same process each prior audit followed: read the task's
+Related ADRs in full, read its Scope source/test files, fill in the
+Audit/Test-Coverage Criteria tables with file:line evidence, write
 `tasks/AUDIT-000N-<slug>-findings.md`, flip Status to `review`, update
 this index's table and refinement log, zip, present.
 
@@ -158,11 +164,32 @@ this index's table and refinement log, zip, present.
 - AUDIT-0001's PARTIAL (ADR-009 §1 sunshine-duration "rescaling" wording
   vs. unscaled actual behavior) is likewise still awaiting a human
   decision.
-- Coordinator (AUDIT-0005) and Diagnostics (AUDIT-0008) were flagged
-  ahead of time as the highest drift-risk remaining groups — expect the
-  next interesting findings there, including the noted ADR-002 §5 vs.
-  ADR-014 §4 staleness question and the TASK-0015a-patch-1 supersession
-  check.
+- AUDIT-0005's two ADR-text-staleness items (ADR-002 §5's "two
+  registrations" Con vs. the actual single merged provider listener;
+  ADR-014 §4's "all four methods delegate to `string_computation.py`"
+  claim vs. `_predict_day_basis`/`_clamp_basis`'s justified but
+  ADR-undocumented exception) are likewise awaiting a human decision on
+  whether/how to amend ADR-002 and ADR-014.
+- AUDIT-0006's FAIL (`string_computation.py`'s own docstring and
+  `predict_string_forecast`'s docstring falsely claim `coordinator.py`'s
+  no-intraday-correction path calls it) is the same underlying fact as
+  the ADR-014 §4 item above, viewed from the module's own
+  self-description — both should be corrected together.
+- AUDIT-0007's FAIL (both ADR-005's module diagram and ADR-000 §3's
+  canonical module graph claim a stale `aggregation --> forecast_adjust`
+  edge that doesn't exist in code) needs an ADR-diagram correction —
+  no code change needed.
+- AUDIT-0008 was the one clean pass this session — no FAIL, no
+  coverage gap. Nothing carried forward from it except the incidental
+  `mypy.ini` `python_version = "3.14"` quoting bug noted for AUDIT-0012.
+- Six ADR-text/diagram corrections are now queued across AUDIT-0005
+  through AUDIT-0007's findings; the human may want to batch them into
+  one amendment pass across ADR-002, ADR-005, ADR-000, and ADR-014
+  rather than four separate edits, since several describe the same
+  underlying fact from different angles.
+- AUDIT-0012 (Tooling & Release Config) now has two small incidental
+  items waiting for it: the `mypy.ini` quoting bug above, plus whatever
+  else that audit's own checklist covers.
 
 ## Next steps (not executed)
 

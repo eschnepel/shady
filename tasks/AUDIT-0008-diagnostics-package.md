@@ -1,6 +1,6 @@
 # Audit Task: Diagnostics Package
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-004 §1, ADR-004 §2, ADR-004 §2a, ADR-004 §2b, ADR-004 §3, ADR-004 §4, ADR-004 §5, ADR-012 §1, ADR-013 §1, ADR-013 §2, ADR-014 §5, ADR-000 §3, ADR-000 §6]
 - **Dependencies:** [] (TASK-0015a-diagnostic-mode-base-architecture +
@@ -153,3 +153,21 @@ inconsistent one.
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0008-diagnostics-package-findings.md` — full findings:
+  10/10 Audit Criteria PASS, 4/4 Test-Coverage Criteria COVERED. No
+  FAIL, no coverage GAP found — the first of AUDIT-0005 through
+  AUDIT-0008 with a completely clean result. Required supersession
+  check (`TASK-0015a-patch-1`) confirmed genuinely superseded via
+  three independent, cross-checked sources (the task file's own
+  header, ADR-004 §5's second Amendment, and direct code inspection —
+  `grep` confirms zero references to `DiagnosticContext`/
+  `DiagnosticSlotSample`/`query_fc`/`fit_inputs` anywhere in
+  `diagnostics/`). One empirical scratch-test performed (confirmed a
+  `TYPE_CHECKING`-guard regression would fail the whole test file's
+  collection, not modifying the repo). `test_diagnostics_base.py`
+  re-run live: 22/22 passed. `test_diagnostics_compare_regressions.py`
+  requires the real `homeassistant` package (not installed in this
+  sandbox) and was verified by full manual reading instead. One
+  tooling aside noted in passing for AUDIT-0012 (a quoting bug in
+  `mypy.ini`'s `python_version` setting), not otherwise investigated.
+  No code changes made.
