@@ -1,6 +1,6 @@
 # Audit Task: HA Entity Layer (sensor / button / select)
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-000 §3, ADR-002 §3, ADR-002 §5, ADR-004 §1, ADR-004 §2, ADR-004 §2a, ADR-004 §2b, ADR-005 §1, ADR-005 §2, ADR-005 §3, ADR-005 §4, ADR-005 §5, ADR-005 §6, ADR-006 §4, ADR-013 §1]
 - **Dependencies:** [] (TASK-0011, TASK-0012, TASK-0013, TASK-0015b,
@@ -126,3 +126,10 @@ residue.
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0009-entity-layer-findings.md` — no FAIL; 1 PARTIAL
+  (ADR-000 §3 module-boundary: `sensor.py` reaches into
+  `coordinator.cache` directly for 3 of 9 sensor classes, task-time
+  reviewed but undocumented in ADR-000 §3's own diagram/text); 1
+  coverage GAP (no ≥2-string `unique_id`-distinctness test in this
+  layer's own test files); all 40 tests across the 5 Scope Test Files
+  re-run live, 40/40 passed.

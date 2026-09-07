@@ -1,6 +1,6 @@
 # Audit Task: Integration Setup & Wiring
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-002 §1a, ADR-002 §5, ADR-000 §1, ADR-000 §3, ADR-000 §8]
 - **Dependencies:** [] (TASK-0016 is `done`; TASK-0018 touched
@@ -98,3 +98,14 @@ surface as a setup-time failure.
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0011-integration-setup-findings.md` — no behavioral
+  FAIL; startup-ordering logic (ADR-002 §1a) matches the ADR's
+  three-step decision tree closely, no silent exception swallowing.
+  **2 PARTIALs**, both documentation staleness: ADR-002 §1a's own text
+  still names the removed `switch` platform; ADR-000 §3's diagram draws
+  `init --> entity_glue` (no real import behind it) and omits the real
+  `init --> coordinator` construction-time import. **3 coverage GAPs**:
+  no test for a genuine setup-time failure (malformed entry/discovery
+  exception); service-unregistration half of teardown untested; no
+  executable `services.yaml`-vs-registered-handlers check. 13/13 tests
+  re-run live.

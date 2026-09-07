@@ -1,6 +1,6 @@
 # Audit Task: Config Flow & Translations
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-010, ADR-001 §1, ADR-001 §4a, ADR-009 §3, ADR-003c §3]
 - **Dependencies:** [] (TASK-0009 + 2 patches, TASK-0019 are `done`)
@@ -104,3 +104,12 @@ not a crash).
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0010-config-flow-translations-findings.md` — **1 FAIL**:
+  `baseline_manual_shape` (`TASK-0009-patch-1`) is a real, correctly
+  implemented and translated field never added to ADR-010's own field
+  list/amendment history — a documentation-sync gap, not a behavioral
+  bug. All other criteria PASS, including a fully type-checked
+  (`Literal`-shared) contract between the manual-shape selector and
+  `providers/normalize.py`. 2 coverage GAPs (no dedicated en/de
+  key-set-equality test; manual-shape selector's runtime parser
+  contract untested, only its storage). 19/19 tests re-run live.
