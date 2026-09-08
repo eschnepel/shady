@@ -57,6 +57,9 @@ the following two paths.**
   a flat "drop the claim." Surface this as a third option if the human
   seems undecided between A and B.
 
+## Decision
+Proceed with Option A.
+
 ## Acceptance Criteria
 - Given the human's decision recorded in this task's own `Open
   Questions` section, When implementation begins, Then the worker

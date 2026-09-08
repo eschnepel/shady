@@ -45,6 +45,9 @@ project's history.
   preference** — it's the minimal, lowest-risk fix and matches what the
   audit itself recommended.
 
+## Descision
+change the triggers.
+
 ## Acceptance Criteria
 - Given `.github/workflows/codeql.yml`, When read after this task,
   Then both the `push` and `pull_request` triggers' `branches:` list

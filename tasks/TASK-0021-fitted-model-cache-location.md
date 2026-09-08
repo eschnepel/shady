@@ -63,6 +63,9 @@ option without an explicit answer recorded here first.
   §5's text already answers this (bare `dict`) — flagged here only so
   the worker doesn't second-guess it once Option B is chosen.
 
+## Decision
+Proceed with Option B including the validated range logic.
+
 ## Acceptance Criteria
 *(Both options share the first two; the rest are option-specific.)*
 - Given the human's decision is recorded in this task's own `Known

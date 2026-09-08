@@ -50,6 +50,9 @@ the following two paths.**
   so all nine sensor classes follow one uniform access pattern — no
   `sensor.py` class touches `cache.py` directly afterward.
 
+## Decision
+coordinator.cache should be a readonly accessor. So also a wrong implementation within a sensor should not harm the cache variable.
+
 ## Acceptance Criteria
 - Given the human's decision recorded in this task's own `Open
   Questions` section, When implementation begins, Then the worker
