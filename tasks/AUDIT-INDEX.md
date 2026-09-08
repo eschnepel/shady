@@ -76,7 +76,7 @@ file belongs to two groups, and every group maps to at least one ADR.
 | AUDIT-0009-entity-layer | HA Entity Layer (sensor/button/select) | review | ADR-000 §3, ADR-002 §3/§5, ADR-004 §2/§2a/§2b, ADR-005, ADR-006 | Lead Agent (inline) — no FAIL; 1 PARTIAL (sensor.py's direct `coordinator.cache` access, 3/9 classes, undocumented in ADR-000 §3's diagram); 1 coverage gap (no ≥2-string unique_id test in this layer); 40/40 tests re-run live |
 | AUDIT-0010-config-flow-translations | Config Flow & Translations | review | ADR-010, ADR-001 §1/§4a, ADR-009 §3 | Lead Agent (inline) — 1 FAIL (`baseline_manual_shape` undocumented in ADR-010, docs-only gap); all other criteria PASS; 2 coverage gaps (en/de key-set equality untested; manual-shape selector's runtime parser contract untested); 19/19 tests re-run live |
 | AUDIT-0011-integration-setup | Integration Setup & Wiring | review | ADR-002 §1a/§5, ADR-000 | Lead Agent (inline) — no behavioral FAIL; 2 PARTIALs (ADR-002 §1a's stale `switch` platform reference; ADR-000 §3's diagram edge doesn't match the real import graph); 3 coverage gaps (no genuine setup-failure test; service-unregistration teardown untested; no executable services.yaml symmetry check); 13/13 tests re-run live |
-| AUDIT-0012-tooling-release-config | Tooling & Release Configuration | todo | ADR-000 §1/§2/§4/§7 | — |
+| AUDIT-0012-tooling-release-config | Tooling & Release Configuration | review | ADR-000 §1/§2/§4/§7 | Lead Agent (inline) — 2 FAIL (`mypy.ini` python_version quoting bug is invalid/unenforced; `docs/architecture.mmd` still switch-based, only file in repo with that staleness, missed by TASK-0018), 1 FAIL outside checklist (`pytest.ini`/`pyproject.toml` duplicate config, pytest itself confirms `pyproject.toml`'s section — incl. `pythonpath` — is silently ignored), 1 Test-Coverage FAIL confirmed live (codeql.yml targets nonexistent `main` branch; real default branch is `master`), 2 Test-Coverage GAPs (bare ndarray untyped, self-acknowledged in ADR text; no CI sync-check for architecture.mmd, and it has demonstrably drifted); 1 criterion resolved opposite of the obvious reading (extend-select=["E","F"] does catch `except Exception:` via BLE001/S110, live-verified 3x); mypy/ruff/pytest all actually installed and run live against this checkout, not just read |
 
 No cross-group dependencies are declared: every group audits code that is
 already `done`, so groups 1–12 can run in parallel, in any order, or be
@@ -146,6 +146,7 @@ block with that path.
 | 2026-09-06 | AUDIT-0009 | Executed; Status → `review`; findings written; no behavioral FAIL; **1 PARTIAL**: `sensor.py`'s `ShadyForecastSensor`/`ShadyPvEnergyIntegralSensor`/`ShadyFcEnergyIntegralSensor` (3 of 9 sensor classes) read `coordinator.cache` directly instead of through a coordinator wrapper method like the other 6 classes — an explicit TASK-0011-time-reviewed decision, but not reflected in ADR-000 §3's own module diagram/"only coordinator.py imports cache.py" text; 1 coverage gap (no test in this layer's own files asserts `unique_id` distinctness with a ≥2-string fixture, though the underlying id-collision-freedom is covered elsewhere); zero switch→select rename residue found; all 40 tests across the 5 Scope Test Files re-run live, 40/40 passed, no `homeassistant` package needed | Human requested strictly-sequential execution of AUDIT-0009 through AUDIT-0012, one zip per task |
 | 2026-09-06 | AUDIT-0010 | Executed; Status → `review`; findings written; **1 FAIL**: `baseline_manual_shape` (added by `TASK-0009-patch-1`, correctly implemented/tested/translated) was never added to ADR-010's own field list or amendment history, contradicting ADR-010's own stated Con about staying in sync — a documentation-only gap, no code defect; all other criteria PASS, including a fully type-checked (shared `Literal`) contract between the manual-shape selector and `providers/normalize.py`; 2 coverage gaps (no dedicated en/de key-set-equality test — manually verified identical, 74/74 keys, during this audit; manual-shape selector's stored output never round-tripped through the actual normalizer, only proven stored correctly); 19/19 tests across both Scope Test Files re-run live after installing the already-declared dev dependency `voluptuous` | Same |
 | 2026-09-06 | AUDIT-0011 | Executed; Status → `review`; findings written; no behavioral FAIL; **2 PARTIALs**, both documentation staleness: ADR-002 §1a's own decision text still names the removed `switch` platform instead of `select` (code is correct throughout); ADR-000 §3's module diagram draws `init --> entity_glue` (no real Python import behind that edge — platform forwarding is HA's own name-based mechanism) and omits the real `init --> coordinator` construction-time import the code actually needs; 3 coverage gaps (no test for a genuine non-`ConfigEntryNotReady` setup failure; `async_unload_entry`'s deliberate non-unregistration of the domain-wide service is undocumented and untested either way; no executable `services.yaml`-vs-registered-handlers check, only this audit's manual one); `manifest.json`/`pyproject.toml`/`DEPENDENCIES.md` numpy version triple-confirmed consistent; 13/13 tests re-run live | Same |
+| 2026-09-08 | AUDIT-0012 | Executed; Status → `review`; findings written. **2 FAIL**: `mypy.ini`'s `python_version = "3.14"` is invalid ini syntax — mypy itself rejects it live (`Invalid python version '"3.14"' (expected format: 'x.y')`) and silently falls back to auto-detecting the interpreter version instead of enforcing the ADR-000 §4-Amendment floor; `docs/architecture.mmd` still shows the pre-2026-08-30 `switch`-based diagnostics architecture — repo-wide grep confirms it is the *only* remaining file outside `tasks/`/`adr/` referencing "switch," meaning `TASK-0018`'s dedicated cleanup task missed a fourth file it should have caught. **1 FAIL outside the checklist**: `pytest.ini` and `pyproject.toml`'s `[tool.pytest.ini_options]` both configure pytest simultaneously — pytest's own runtime output confirms `pytest.ini` wins and `pyproject.toml`'s section (including its `pythonpath` entry) is silently, completely ignored, the same class of dead-duplicate-config bug `TASK-0020` already fixed once for `mypy.ini`/`[tool.mypy]`. **1 Test-Coverage FAIL confirmed live, not hypothetical**: `codeql.yml`'s push/pull_request triggers target branch `"main"`, but this repo's actual default branch (confirmed via `git ls-remote --symref`) is `master` — no `main` branch exists at all, so CodeQL only ever runs on its weekly cron, never gating an actual PR. **2 Test-Coverage GAPs**: a bare-`np.ndarray` regression is genuinely untyped-checked by `mypy --strict` (self-acknowledged already in ADR-000 §4's own text, formally confirmed live here); no CI check keeps `docs/architecture.mmd` in sync with the module graph, and — unlike the other hypothetical gaps in this audit series — this one is demonstrated rather than theoretical, since the file has, in fact, drifted. **1 criterion resolved opposite of its obvious reading**: `extend-select = ["E", "F"]` *does* catch a deliberately introduced `except Exception:`, via `BLE001`/`S110` — confirmed three times, including against a live copy of a real source file with the real `pyproject.toml`; ruff's actual default rule set already includes those categories independent of the E/F entries, which a literal reading of the config would not suggest. All other criteria PASS/COVERED. `mypy`, `ruff`, and `pytest` were all actually installed and run against this checkout during the audit (not just read); one false lead (2 apparent `untyped-decorator` errors) was traced to this sandbox initially missing the `pytest` dev-dependency and resolved by installing the full declared dev group, confirming `adr-summary.md`'s "mypy --strict clean" claim still holds. No code or config file modified | Human requested execution of AUDIT-0012, the final remaining audit task, followed by a zip for download |
 
 ## Session pause note (2026-09-06)
 
@@ -222,17 +223,51 @@ this index's table and refinement log, zip, present.
   related documentation-sync drift, and two (the `switch`→`select`
   leftovers in ADR-002 §1a and ADR-007) are trivially the same fix
   applied twice.
-- AUDIT-0012 (Tooling & Release Config) now has two small incidental
-  items waiting for it: the `mypy.ini` quoting bug above, plus whatever
-  else that audit's own checklist covers.
+- AUDIT-0012 (Tooling & Release Config) confirmed the `mypy.ini` quoting
+  bug flagged above by AUDIT-0008, plus its own checklist's findings: the
+  `docs/architecture.mmd` switch/select staleness (a fourth file
+  `TASK-0018` should have caught but didn't), a `pytest.ini` vs.
+  `pyproject.toml` duplicate-config bug in the same family as the
+  `mypy.ini`/`[tool.mypy]` one `TASK-0020` already fixed, and a live,
+  confirmed `codeql.yml` branch-name bug (`"main"` vs. the repo's real
+  `master`) that leaves CodeQL never running on an actual PR today.
+
+## All 12 audits now complete (2026-09-08)
+
+AUDIT-0001 through AUDIT-0012 have all been executed; every task in this
+index is `review`, none remain `todo`. This closes the audit *execution*
+phase — no finding above has been fixed yet (by design: audits report,
+they don't repair). Across all twelve groups the running tally is: **4
+behavioral FAILs against ADR text** (AUDIT-0003's model-cache location;
+AUDIT-0006's/AUDIT-0005's shared string_computation-docstring claim;
+AUDIT-0007's stale `aggregation --> forecast_adjust` diagram edge;
+AUDIT-0010's undocumented `baseline_manual_shape` field), **2 FAILs
+found by AUDIT-0012** against the tooling layer specifically (the
+`mypy.ini` quoting bug; `docs/architecture.mmd`'s switch/select
+staleness), **1 additional FAIL found outside AUDIT-0012's own checklist**
+(the `pytest.ini`/`pyproject.toml` duplicate-config bug), **1 live,
+confirmed Test-Coverage FAIL** (`codeql.yml`'s nonexistent-branch
+trigger), a double-digit collection of PARTIALs/coverage-GAPs (see each
+audit's own findings file), and zero application-logic defects that
+would produce an incorrect forecast — every behavioral FAIL found across
+all twelve groups has been either a stale ADR/diagram/docstring claim or
+a tooling-config bug, never a wrong number reaching a sensor.
 
 ## Next steps (not executed)
 
-1. Human reviews this grouping and the 12 task files for completeness —
-   equivalent to a Gate before any auditor runs.
-2. Once approved, each `AUDIT-XXXX-*.md`'s Status moves `todo` →
-   `in-progress` as an auditor is assigned; findings land in
-   `tasks/AUDIT-XXXX-<slug>-findings.md`; Status moves to `review`.
-3. Any FAIL/GAP found becomes a candidate new task or Scenario-C patch
-   task against the relevant `TASK-00XX`, scheduled through the normal
-   Phase 6 refinement process — **not** fixed silently during the audit.
+1. ~~Human reviews this grouping and the 12 task files for completeness~~
+   — done; all 12 audits executed per explicit human request, strictly
+   sequentially, one zip per task.
+2. ~~Each `AUDIT-XXXX-*.md`'s Status moves `todo` → `in-progress` →
+   `review`~~ — done for all twelve; findings live in each
+   `tasks/AUDIT-XXXX-<slug>-findings.md`.
+3. **Remaining:** every FAIL/GAP/PARTIAL recorded across the twelve
+   findings files is still just that — a recorded finding, not yet
+   scheduled as a fix. The next step is for the human to decide, per
+   finding, whether it becomes a new task, a Scenario-C patch task
+   against the relevant `TASK-00XX`/ADR, or a batched ADR-amendment pass
+   (several findings — the repeated `switch`→`select` text leftovers, the
+   two dead-duplicate-config bugs, the diagram-staleness items — cluster
+   naturally and may be worth fixing together rather than one task each).
+   Nothing above has been fixed silently; that's deliberate, per this
+   audit phase's own stated role.

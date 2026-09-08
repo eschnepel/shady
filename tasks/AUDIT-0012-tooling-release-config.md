@@ -1,6 +1,6 @@
 # Audit Task: Tooling & Release Configuration
 
-- **Status:** todo
+- **Status:** review
 - **Type:** Code/ADR Conformance Audit (read-only — no implementation)
 - **Related ADRs:** [ADR-000 §1, ADR-000 §2, ADR-000 §4, ADR-000 §4 Amendment (2026-08-22), ADR-000 §7, ADR-000 §9]
 - **Dependencies:** [] (TASK-0018, TASK-0020 are `done`)
@@ -134,3 +134,21 @@ level up).
 
 ## Delivered Artifacts
 <!-- Filled by the Auditor AFTER the audit runs. Empty until then. -->
+- `tasks/AUDIT-0012-tooling-release-config-findings.md` — full findings
+  report. Verdict: 2 FAILs (`mypy.ini`'s quoted `python_version = "3.14"`
+  is invalid and silently unenforced; `docs/architecture.mmd` still
+  describes the pre-select `switch`-based diagnostics architecture — the
+  only remaining file in the repo with that staleness, missed by
+  `TASK-0018`), 1 FAIL outside the checklist (`pytest.ini` vs.
+  `pyproject.toml [tool.pytest.ini_options]` duplicate config, same class
+  of bug `TASK-0020` already fixed once for mypy), 1 Test-Coverage FAIL
+  confirmed live (`codeql.yml` triggers target a nonexistent `main`
+  branch; repo's real default branch is `master`), 1 Test-Coverage GAP
+  self-acknowledged in ADR-000's own text (bare `np.ndarray` regressions
+  untyped-checked), 1 Test-Coverage GAP demonstrated rather than
+  hypothetical (no CI check keeps `docs/architecture.mmd` in sync — and
+  it has, in fact, drifted). All other Audit/Test-Coverage criteria PASS
+  or COVERED, including one criterion resolved in the non-obvious
+  direction (`extend-select = ["E", "F"]` does catch broad
+  `except Exception:` via `BLE001`/`S110`, confirmed live three times).
+  No code or config file modified.
