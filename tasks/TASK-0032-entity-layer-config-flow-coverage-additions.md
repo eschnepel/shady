@@ -1,6 +1,6 @@
 # Task: Entity-Layer & Config-Flow Test-Coverage Additions
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-004, ADR-009, ADR-010]
 - **Dependencies:** [TASK-0015b-diagnostics-select-and-scatter-sensors, TASK-0019-config-flow-translations, TASK-0009-patch-1-manual-baseline-shape]
 
@@ -58,6 +58,14 @@ test-coverage gaps in the entity/config-flow layer:
   task file was written against. Check `TASK-0022`'s own status/
   Delivered Artifacts before writing that specific sub-case.
 
+**Resolved — 2026-09-08:** `TASK-0022` is still `todo` (checked
+`tasks/INDEX.md` before writing item 3), so the pre-rescale
+`weather_sunshine` behavior this task file was written against is the
+correct one to test here — no adjustment needed. Item 3's scope
+question resolved to the default: all four `_BASELINE_SHAPES` values
+covered, one synthetic payload each; none were impractical to
+synthesize.
+
 ## Acceptance Criteria
 - Given `tests/test_sensor_diagnostics.py`, When run after this task,
   Then it contains a new test asserting `unique_id` distinctness across
@@ -108,3 +116,46 @@ test-coverage gaps in the entity/config-flow layer:
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `tests/test_sensor_diagnostics.py` → new
+  `TestDiagnosticsSensorUniqueIdDistinctness` class (inserted before
+  `TestDiagnosticsSensorNeverCallsComputeItself`), one test:
+  `test_unique_id_differs_across_two_sensor_ids` — reuses the existing
+  `_make_setup()`/`_CountingDiagnosticMode` two-string fixture,
+  constructs `sensor_0`/`sensor_1` the same way the existing tests do,
+  asserts `_attr_unique_id` distinctness and that each contains its own
+  `sensor_id`.
+- `tests/test_translations.py` → new `_flatten_keys()` helper and new
+  `test_en_and_de_have_identical_key_sets` test (inserted before
+  `test_every_step_has_a_real_title_and_description`) — recursively
+  flattens both `_TRANSLATIONS["en"]`/`["de"]` dicts into dotted-path
+  key sets and asserts symmetric-difference is empty in both
+  directions, independent of the existing schema-key-driven check.
+- `tests/test_config_flow.py` → `_normalize_mod` now captures
+  `providers/normalize.py`'s already-loaded module (previously loaded
+  but discarded); new `import pytest`; new
+  `test_selected_shape_round_trips_through_the_real_parser` on
+  `TestManualBaselineShape`, `@pytest.mark.parametrize`d over all four
+  `_BASELINE_SHAPES` values, each with a payload actually shaped like
+  that source (`sensor_dict`: timestamp-keyed dict; `sensor_list`:
+  list-of-dicts with `datetime`/`value`; `weather_sunshine`:
+  list-of-dicts with `datetime`/`sunshine_duration`; `weather_cloud`:
+  list-of-dicts with `datetime`/`cloud_coverage`, verified the inversion
+  applies: `cloud_coverage=40.0` → series value `60.0`). Drives the
+  manual-entry path through the real flow, then feeds the exact stored
+  `(entity_id, attribute, shape)` triple's `shape` into
+  `normalize_candidate_series` with the matching synthetic payload,
+  asserting a non-empty canonical series. All four payloads verified
+  empirically against the real `providers/normalize.py` module before
+  being written into the test — none were impractical, so item 3's open
+  scope question resolved to the audit's own default (all four).
+- No production `.py` file touched — `git diff --stat` confirms exactly
+  the three test files above, matching the Estimated Footprint.
+- External dependencies added: none. `tasks/DEPENDENCIES.md` unchanged.
+- Full local gate after this task: `pytest` 433/433 passed (427 + 6
+  new: 1 + 1 + 4-parametrized); `mypy --config-file mypy.ini
+  custom_components/ tests/` clean on 53 source files; `ruff check .`
+  clean repo-wide; `ruff format --check .` shows only the one
+  pre-existing, unrelated, already-documented drift file
+  (`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code
+  block), untouched, out of scope — none of this task's three edited
+  files needed reflowing this time.

@@ -94,6 +94,28 @@ def _make_setup() -> tuple[Any, _CountingDiagnosticMode]:
     return coordinator, fake_mode
 
 
+class TestDiagnosticsSensorUniqueIdDistinctness:
+    """Given the two `ShadyDiagnosticsSensor` instances the existing
+    two-string `_CountingDiagnosticMode` fixture (`sensor_ids() ->
+    [("0", ...), ("1", ...)]`) already supports, When both are
+    constructed, Then their `_attr_unique_id` values differ (ADR-004
+    §5). The underlying guarantee — that `sensor_ids()`-produced ids are
+    themselves distinct — is already tested at the producer level in
+    `test_diagnostics_compare_regressions.py`; nothing in this entity
+    layer's own tests exercised the consumer side directly until now."""
+
+    def test_unique_id_differs_across_two_sensor_ids(self) -> None:
+        coordinator, _fake_mode = _make_setup()
+        sensor_0 = ShadyDiagnosticsSensor(coordinator, tf._make_entry(), "0", "String 0")
+        sensor_1 = ShadyDiagnosticsSensor(coordinator, tf._make_entry(), "1", "String 1")
+
+        assert sensor_0._attr_unique_id != sensor_1._attr_unique_id
+        # And each is genuinely derived from its own sensor_id, not just
+        # "different by accident" (e.g. object identity).
+        assert "0" in sensor_0._attr_unique_id
+        assert "1" in sensor_1._attr_unique_id
+
+
 class TestDiagnosticsSensorNeverCallsComputeItself:
     """Given several `ShadyDiagnosticsSensor` instances sharing one
     coordinator, When their `native_value`/`extra_state_attributes` are

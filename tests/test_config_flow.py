@@ -23,6 +23,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 _SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
 
 
@@ -127,7 +129,7 @@ _install_ha_stub()
 # same multi-module load-order convention `test_forecast_adjust.py`
 # already relies on.
 _load("providers/base.py", "shady.providers.base")
-_load("providers/normalize.py", "shady.providers.normalize")
+_normalize_mod = _load("providers/normalize.py", "shady.providers.normalize")
 _discovery_mod = _load("providers/discovery.py", "shady.providers.discovery")
 _const_mod = _load("const.py", "shady.const")
 _flow_mod = _load("config_flow.py", "shady.config_flow")
@@ -442,6 +444,80 @@ class TestManualBaselineShape:
         data = _finish_minimal_flow(hass)
         assert data["baseline_entity_id"] == "sensor.forecast_solar_estimate"
         assert data["baseline_shape"] == "sensor_dict"
+
+    @pytest.mark.parametrize(
+        ("shape", "raw_payload"),
+        [
+            (
+                "sensor_dict",
+                {
+                    "2026-01-01T10:00:00+00:00": 500.0,
+                    "2026-01-01T10:05:00+00:00": 520.0,
+                },
+            ),
+            (
+                "sensor_list",
+                [
+                    {"datetime": "2026-01-01T10:00:00+00:00", "value": 500.0},
+                    {"datetime": "2026-01-01T10:05:00+00:00", "value": 520.0},
+                ],
+            ),
+            (
+                "weather_sunshine",
+                [
+                    {"datetime": "2026-01-01T10:00:00+00:00", "sunshine_duration": 300.0},
+                    {"datetime": "2026-01-01T10:05:00+00:00", "sunshine_duration": 280.0},
+                ],
+            ),
+            (
+                "weather_cloud",
+                [
+                    {"datetime": "2026-01-01T10:00:00+00:00", "cloud_coverage": 40.0},
+                    {"datetime": "2026-01-01T10:05:00+00:00", "cloud_coverage": 60.0},
+                ],
+            ),
+        ],
+    )
+    def test_selected_shape_round_trips_through_the_real_parser(
+        self, shape: str, raw_payload: Any
+    ) -> None:
+        """Drives the manual-entry path with `baseline_manual_shape=shape`
+        the same way `test_manual_shape_field_present_and_stored` does,
+        then feeds a payload actually shaped like that source through
+        `normalize_candidate_series` using the exact stored
+        `(entity_id, attribute, shape)` triple — proving the selector's
+        output is real, working input to the parser, not just a stored
+        string. Covers all four `_BASELINE_SHAPES` values; all four
+        were practical to synthesize a payload for (no skip needed).
+        """
+        hass = FakeHomeAssistant([])
+        flow = ShadyConfigFlow()
+        flow.hass = hass
+        settings_form = flow_call(flow.async_step_settings, None)
+        defaults = _defaults_from_schema(settings_form["data_schema"])
+        defaults["baseline_manual_entity_id"] = "sensor.my_manual_baseline"
+        defaults["baseline_manual_attribute"] = "hourly"
+        defaults["baseline_manual_shape"] = shape
+        result = flow_call(flow.async_step_settings, defaults)
+        add_string_defaults = _defaults_from_schema(result["data_schema"])
+        add_string_defaults["name"] = "Dach Süd"
+        add_string_defaults["actual_yield_entity_id"] = "sensor.string_a_yield"
+        add_string_defaults["configure_advanced"] = False
+        result = flow_call(flow.async_step_add_string, add_string_defaults)
+        add_another_defaults = _defaults_from_schema(result["data_schema"])
+        add_another_defaults["add_another"] = False
+        final = flow_call(flow.async_step_add_another, add_another_defaults)
+
+        stored_entity_id = final["data"]["baseline_entity_id"]
+        stored_attribute = final["data"]["baseline_attribute"]
+        stored_shape = final["data"]["baseline_shape"]
+        assert stored_entity_id == "sensor.my_manual_baseline"
+        assert stored_attribute == "hourly"
+        assert stored_shape == shape
+
+        series = _normalize_mod.normalize_candidate_series(stored_shape, raw_payload)
+        assert series != []
+        assert all(isinstance(value, float) for _timestamp, value in series)
 
 
 class TestRecencyDecayMax:

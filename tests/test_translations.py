@@ -194,6 +194,38 @@ def test_every_schema_key_has_a_translation_label() -> None:
     assert not missing, "Missing/empty translation label(s):\n" + "\n".join(missing)
 
 
+def _flatten_keys(data: Any, prefix: str = "") -> set[str]:
+    """Recursively collect every dict node's dotted key path — the
+    structural key set only, never the (necessarily different,
+    per-language) string values themselves."""
+    keys: set[str] = set()
+    if isinstance(data, dict):
+        for key, value in data.items():
+            path = f"{prefix}.{key}" if prefix else key
+            keys.add(path)
+            keys |= _flatten_keys(value, path)
+    return keys
+
+
+def test_en_and_de_have_identical_key_sets() -> None:
+    """Independent of and complementary to
+    `test_every_schema_key_has_a_translation_label` above (which only
+    ever iterates schema-derived keys, in one direction): directly
+    compares the two translation files' own flattened key sets for
+    equality, both directions. Catches a key added to one language file
+    that isn't tied to a real schema field at all — a leftover, a
+    typo'd duplicate, a future non-schema string — which the
+    schema-driven check above cannot see either way. This is the same
+    manual comparison `AUDIT-0010` performed by hand; this test makes it
+    durable."""
+    en_keys = _flatten_keys(_TRANSLATIONS["en"])
+    de_keys = _flatten_keys(_TRANSLATIONS["de"])
+    only_in_en = en_keys - de_keys
+    only_in_de = de_keys - en_keys
+    assert not only_in_en, f"Keys only in en.json: {sorted(only_in_en)}"
+    assert not only_in_de, f"Keys only in de.json: {sorted(only_in_de)}"
+
+
 def test_every_step_has_a_real_title_and_description() -> None:
     """Every `config.step.*`/`options.step.*` entry must have a real,
     non-placeholder `title` and `description` — no literal "Placeholder"
