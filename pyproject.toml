@@ -30,7 +30,7 @@ dev = [
   "pytest",
   "pytest-asyncio",
   "pytest-cov",
-  "ruff",
+  "ruff==0.16.4",
   "voluptuous",
 ]
 
@@ -60,8 +60,3 @@ target-version = "py313"
 extend-select = ["E", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
-pythonpath = ["custom_components"]

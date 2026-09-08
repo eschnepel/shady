@@ -1,6 +1,6 @@
 # Task: Tooling Config Hardening, Round 3
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-000]
 - **Dependencies:** [TASK-0020-release-pipeline-hardening]
 
@@ -68,6 +68,10 @@ duplicate:
   purely a "which file should be the project's one canonical tool-
   config location going forward" preference call for the human.
 
+**Decision recorded — 2026-09-08:** Option (a) — keep `pytest.ini`,
+delete `pyproject.toml`'s `[tool.pytest.ini_options]` section.
+**Decided by:** human (confirmed by Lead Agent).
+
 ## Acceptance Criteria
 - Given `mypy.ini`, When read after this task, Then `python_version =
   3.14` (no quotes), and `mypy --config-file mypy.ini
@@ -114,3 +118,36 @@ duplicate:
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `mypy.ini` → `python_version = 3.14` (unquoted; was `"3.14"`, invalid
+  ini syntax mypy silently ignored). `mypy --config-file mypy.ini
+  custom_components/ tests/` now runs clean with no "Invalid python
+  version" warning, still `Success: no issues found in 53 source
+  files`.
+- `pyproject.toml` → `[tool.pytest.ini_options]` section deleted
+  outright (pytest-config direction chosen: **(a) consistency with
+  precedent** — `pytest.ini` is the project's one canonical pytest
+  config, matching how `TASK-0020` resolved the analogous
+  `mypy.ini`/`[tool.mypy]` duplicate). `pytest --collect-only -v` now
+  reports `configfile: pytest.ini` with no "WARNING: ignoring pytest
+  config in pyproject.toml!" line; still collects/passes all 419 tests
+  unchanged. The `pythonpath = ["custom_components"]` entry that only
+  existed in the deleted section is gone — confirmed nothing depended
+  on it (every test already uses ADR-000 §6's file-path-loading
+  convention, not `pythonpath`-based imports).
+- `pyproject.toml` → `[dependency-groups] dev`'s `"ruff"` entry pinned
+  to `"ruff==0.16.4"`, matching `.pre-commit-config.yaml`'s
+  `ruff-pre-commit` hook `rev: v0.16.4` exactly (verified: `ruff
+  --version` → `ruff 0.16.4` after `pip install ruff==0.16.4`).
+- External dependencies added: none — this only pins an
+  already-declared dev dependency's version. `tasks/DEPENDENCIES.md`
+  unchanged.
+- Full local gate after this task: `pytest` 419/419 passed; `mypy
+  --config-file mypy.ini custom_components/ tests/` clean on 53 source
+  files; `ruff check .` clean repo-wide; `ruff format --check .` shows
+  only the one pre-existing, unrelated, already-documented drift file
+  (`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code
+  block — `tests/test_regression.py`, the other drift file on record
+  in `tasks/INDEX.md`'s refinement log, is no longer drifted as of this
+  check), untouched, out of scope. `git diff --stat` confirms exactly
+  `mypy.ini` and `pyproject.toml` changed — matches the Estimated
+  Footprint.
