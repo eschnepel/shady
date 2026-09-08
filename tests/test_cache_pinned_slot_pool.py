@@ -359,6 +359,59 @@ class TestGetPinnedSlotPoolValidatesWholeWindowInOneFetchCall:
         assert len(calls) == 1
 
 
+# -- AUDIT-0003/TASK-0030 item 3: differential vs. get_regression_pools -----
+
+
+class TestMatchesGetRegressionPoolsCenterColumnForSameSensorAndSlot:
+    """Both accessors share the same underlying shadow-array read path
+    (ADR-008 §2) -- given the same sensor, the same slot-of-day, and
+    windows independently aligned to the same calendar range,
+    `get_pinned_slot_pool`'s single-slot read equals
+    `get_regression_pools`'s `smoothing_radius=0` (center-only) column
+    for that slot, cell-for-cell.
+
+    Window alignment: `get_pinned_slot_pool`'s window ends *at* its
+    anchor date (inclusive); `get_regression_pools`'s window ends the
+    day *before* its `reference` ("yesterday", ADR-008 §2's own
+    "never today" rule). Pinning `get_pinned_slot_pool` to date `D` and
+    calling `get_regression_pools` with `reference` set to midnight of
+    `D + 1 day` makes both windows resolve to the identical
+    `[D - window_days + 1, D]` calendar range.
+    """
+
+    def test_pinned_single_slot_matches_regression_pools_center_column(self) -> None:
+        window_days = 5
+        slot_of_day = 123
+        pinned = date(2026, 2, 10)
+
+        cache = cache_mod.Cache(window_days=window_days, fetch_fn=_index_valued_fetch_fn)
+        cache.pin_reference(pinned)
+        pinned_result = cache.get_pinned_slot_pool(["fc"], slot_of_day)
+
+        reference = _midnight(pinned) + timedelta(days=1)
+        pools = cache.get_regression_pools(["fc"], smoothing_radius=0, reference=reference)
+        regression_row = pools["fc"][slot_of_day, :]
+
+        assert pinned_result["fc"] == list(regression_row.tolist())
+
+    def test_matches_across_several_sensors_and_slots(self) -> None:
+        window_days = 4
+        pinned = date(2026, 3, 1)
+
+        cache = cache_mod.Cache(window_days=window_days, fetch_fn=_index_valued_fetch_fn)
+        cache.pin_reference(pinned)
+        reference = _midnight(pinned) + timedelta(days=1)
+
+        for slot_of_day in (0, 1, 287):
+            pinned_result = cache.get_pinned_slot_pool(["fc", "pv"], slot_of_day)
+            pools = cache.get_regression_pools(
+                ["fc", "pv"], smoothing_radius=0, reference=reference
+            )
+            for sensor_id in ("fc", "pv"):
+                regression_row = pools[sensor_id][slot_of_day, :]
+                assert pinned_result[sensor_id] == list(regression_row.tolist())
+
+
 # -- effect on trim() (ADR-007a §6's own note) -------------------------------
 
 

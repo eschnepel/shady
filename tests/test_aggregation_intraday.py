@@ -129,6 +129,46 @@ class TestCrossfade:
 # -- ADR-006 §1b: Blending converges to Ramping's own steady state -------
 
 
+class TestRampingVsBlendingDivergeMidRamp:
+    """Given the same old/new prediction pair and the same partial ramp
+    weight (`w=0.25`, mid-ramp -- neither `0` nor `ramp_slots`), When
+    Ramping and Blending each compute their own result, Then the two
+    values are numerically different (ADR-006 §1a/§1b) -- the
+    structural counterpart to `TestBlendingConvergesToRampingSteadyState`
+    above: Ramping's `new_value * intraday_correction_factor(...)`
+    ignores `old_prediction` entirely, while Blending's
+    `crossfade(old_prediction, new_prediction, w)` is still mostly
+    `old_prediction` before the ramp completes. A regression that
+    accidentally called `crossfade` under Ramping mode (or vice-versa)
+    would not be caught by the convergence test alone, since both modes
+    agree there by construction."""
+
+    def test_ramping_and_blending_diverge_at_partial_ramp_weight(self) -> None:
+        # Same fixture values as TestBlendingConvergesToRampingSteadyState
+        # above, for direct consistency -- only the ramp weight differs.
+        new_value = 850.0
+        old_value = 900.0
+        old_effective_factor = 0.85  # whatever the frozen old side happened to be
+
+        partial_weight = agg_mod.ramp_weight(3, 12)
+        assert 0.0 < partial_weight < 1.0  # genuinely mid-ramp, not a boundary
+
+        effective_factor = agg_mod.intraday_correction_factor(1200.0, 1000.0, partial_weight, 0.3)
+        ramping_result = new_value * effective_factor
+
+        old_prediction = old_value * old_effective_factor
+        new_prediction = new_value * effective_factor
+        blending_result = agg_mod.crossfade(old_prediction, new_prediction, partial_weight)
+
+        assert ramping_result != blending_result
+        # And confirm each is what it structurally must be: Ramping is
+        # exactly new_prediction (old_prediction plays no role at all);
+        # Blending is a genuine mix, not silently collapsed to either side.
+        assert ramping_result == new_prediction
+        assert blending_result != old_prediction
+        assert blending_result != new_prediction
+
+
 class TestBlendingConvergesToRampingSteadyState:
     """Given the same new basis and the same ramp progression, When
     Blending's crossfade reaches `w_blend=1`, Then it produces the

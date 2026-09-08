@@ -1,6 +1,6 @@
 # Task: Intraday Ramping-vs-Blending Divergence Test
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-006]
 - **Dependencies:** [TASK-0013-intraday-deviation-correction]
 
@@ -63,3 +63,34 @@ vice-versa) would not be caught by any existing test.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `tests/test_aggregation_intraday.py` → new
+  `TestRampingVsBlendingDivergeMidRamp` class (inserted immediately
+  before the existing `TestBlendingConvergesToRampingSteadyState`, same
+  fixture values reused for direct consistency), one test:
+  `test_ramping_and_blending_diverge_at_partial_ramp_weight` — computes
+  Ramping's and Blending's outputs from the same old/new prediction
+  pair at `ramp_weight(3, 12) == 0.25` (genuinely mid-ramp, asserted
+  `0.0 < w < 1.0`) and asserts they differ; also asserts Ramping's
+  result equals `new_prediction` exactly (old side plays no role) and
+  Blending's result equals neither `old_prediction` nor `new_prediction`
+  (a genuine mix, not silently collapsed to either side). Exercises all
+  three functions named in Consumed Interfaces (`ramp_weight`,
+  `intraday_correction_factor`, `crossfade`). Divergence verified
+  empirically against the real module before being written into the
+  test (`ramping_result=892.5` vs `blending_result=796.875` at this
+  fixture's values).
+- `TestBlendingConvergesToRampingSteadyState` (the existing convergence
+  test) is unchanged — confirmed via `git diff`, only new lines added,
+  no existing lines touched.
+- No production `.py` file touched — `git diff --stat` confirms exactly
+  `tests/test_aggregation_intraday.py`, matching the Estimated
+  Footprint.
+- External dependencies added: none. `tasks/DEPENDENCIES.md` unchanged.
+- Full local gate after this task: `pytest` 427/427 passed (426 + 1
+  new); `mypy --config-file mypy.ini custom_components/ tests/` clean
+  on 53 source files; `ruff check .` clean repo-wide; `ruff format`
+  applied to the edited file (one line-length reflow under the
+  now-pinned `ruff==0.16.4`); `ruff format --check .` afterward shows
+  only the one pre-existing, unrelated, already-documented drift file
+  (`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code
+  block), untouched, out of scope.

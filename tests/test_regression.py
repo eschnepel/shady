@@ -568,6 +568,60 @@ class TestSmoothingRadiusZeroReproducesIndependentSlots:
         assert pool.fc.shape == (n_slots, window_days)
 
 
+# -- AUDIT-0002/TASK-0030 item 1: predict_unclamped() called directly ------
+
+
+class TestPredictUnclampedPreservesRawValue:
+    """Given each of the four real strategies fit on the shared
+    clipping-ceiling fixture, when `predict_unclamped()` is called
+    directly at a query FC of 0.0 -- where `predict()`'s own
+    `clamp_to_forecast` step always clips to exactly `[0, 0]`, so any
+    genuinely nonzero model output is forced to `0.0` -- the raw,
+    unclamped value is preserved and visibly differs from `predict()`'s
+    clamped output (`TASK-0005-patch-2`/`TASK-0005-patch-3`).
+
+    Only incidental coverage of `predict_unclamped()` existed before
+    this test (via `test_coordinator_temperature_forecast.py`, a
+    different audit group's file) -- this proves `test_regression.py`
+    alone catches a strategy that silently clamps inside
+    `predict_unclamped` itself.
+    """
+
+    def test_unclamped_differs_from_clamped_at_zero_query_fc(self) -> None:
+        fc_by_offset, pv_by_offset = _clipping_ceiling_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+        fc_query = np.zeros(n_slots)
+
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)
+            raw, raw_confidence = model.predict_unclamped(fc_query)
+            clamped, clamped_confidence = model.predict(fc_query)
+
+            # predict() always clamps to exactly 0.0 here: safe_fc == 0
+            # forces np.clip's own [0, 0] range regardless of the raw value.
+            assert np.array_equal(clamped, np.zeros(n_slots)), (
+                f"{strategy.__name__}: expected predict() to clamp to 0.0 at FC=0"
+            )
+            # predict_unclamped() preserves the model's real raw value --
+            # nonzero here for every real strategy on this fixture -- proving
+            # it is genuinely unclamped, not a silent re-clamp of predict().
+            assert not np.array_equal(raw, clamped), (
+                f"{strategy.__name__}: predict_unclamped did not diverge "
+                "from predict at FC=0 -- fixture no longer exercises the clamp"
+            )
+            assert np.all(np.isfinite(raw))
+            # Confidence is untouched by clamping either way (only the
+            # adjusted-value half of the tuple is ever clamped).
+            assert np.array_equal(raw_confidence, clamped_confidence)
+
+
 @pytest.mark.parametrize("strategy", ALL_STRATEGIES, ids=lambda mod: mod.__name__.split(".")[-1])
 class TestEveryStrategyHandlesTheSharedFixtures:
     """Sanity: every strategy fits and predicts without error against

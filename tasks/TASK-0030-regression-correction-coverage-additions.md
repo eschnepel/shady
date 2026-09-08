@@ -1,6 +1,6 @@
 # Task: Regression & Correction-Layer Test-Coverage Additions
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-001, ADR-006, ADR-008]
 - **Dependencies:** [TASK-0005-regression-fitting-pipeline, TASK-0005-patch-2-unclamped-predict, TASK-0005-patch-3-consolidate-predict, TASK-0002-cache-core-time-series-store]
 
@@ -99,3 +99,49 @@ be caught by today's test suite" gaps:
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `tests/test_regression.py` → new `TestPredictUnclampedPreservesRawValue`
+  class, one test:
+  `test_unclamped_differs_from_clamped_at_zero_query_fc` — fits all
+  four real strategies (`linear`, `wls2`, `wls3`, `kernel`) on the
+  existing `_clipping_ceiling_pool()` fixture, calls
+  `predict_unclamped()` directly at query `FC=0.0` (where `predict()`'s
+  own `clamp_to_forecast` always clips to exactly `[0, 0]`), and asserts
+  the raw value differs from the clamped one, is finite, and that
+  confidence is untouched by clamping either way.
+- `tests/test_forecast_adjust.py` → four new module-level loads
+  (`linear_mod`, `wls2_mod`, `wls3_mod`, `kernel_mod`, exposed as
+  `ALL_STRATEGIES`) alongside the existing stub-based ones; new
+  `_real_strategy_pool()` helper (a small, seeded, real `build_pool()`
+  fixture); new `pytest` import (needed for the parametrize decorator);
+  new `TestRealStrategiesCallPredictUnclampedNotPredict` class,
+  parametrized over all four real strategies, one test:
+  `test_reverse_transform_uses_the_real_raw_prediction` — proves
+  `reverse_transformed_forecast` matches a `predict_unclamped`-based
+  computation and diverges from the wrong, `predict()`-based one, using
+  the same `FC=0` divergence mechanism as the `test_regression.py`
+  addition above.
+- `tests/test_cache_pinned_slot_pool.py` → new
+  `TestMatchesGetRegressionPoolsCenterColumnForSameSensorAndSlot` class,
+  two tests: `test_pinned_single_slot_matches_regression_pools_center_column`
+  and `test_matches_across_several_sensors_and_slots` — cross-checks
+  `get_pinned_slot_pool`'s single-slot read against
+  `get_regression_pools(smoothing_radius=0)`'s center column for the
+  same sensor/slot, using `pin_reference(D)` +
+  `get_regression_pools(reference=D+1 day)` to align both accessors'
+  independently-computed windows to the identical calendar range
+  (`get_pinned_slot_pool`'s window ends *at* its anchor;
+  `get_regression_pools`'s ends the day *before* its `reference`).
+  Reuses this file's existing `_index_valued_fetch_fn`/`_midnight`
+  helpers, no new fixture machinery needed.
+- No production `.py` file touched — `git diff --stat` confirms exactly
+  the three test files above, matching the Estimated Footprint.
+- External dependencies added: none. `tasks/DEPENDENCIES.md` unchanged.
+- Full local gate after this task: `pytest` 426/426 passed (419 + 7 new:
+  1 + 4-parametrized + 2); `mypy --config-file mypy.ini
+  custom_components/ tests/` clean on 53 source files; `ruff check .`
+  clean repo-wide; `ruff format --check .` shows only the one
+  pre-existing, unrelated, already-documented drift file
+  (`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code
+  block), untouched, out of scope — `ruff format` was applied to all
+  three edited test files during this task to keep them clean under the
+  now-pinned `ruff==0.16.4` (`TASK-0025`).

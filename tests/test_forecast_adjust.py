@@ -19,6 +19,7 @@ from pathlib import Path
 from types import ModuleType
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 _SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
@@ -55,6 +56,11 @@ def _load(relative_path: str, module_name: str) -> ModuleType:
 # name, the same way test_regression.py's multi-module load order
 # already relies on for `regression/linear.py`'s `from .base import ...`.
 base_mod = _load("regression/base.py", "shady.regression.base")
+linear_mod = _load("regression/linear.py", "shady.regression.linear")
+wls2_mod = _load("regression/wls2.py", "shady.regression.wls2")
+wls3_mod = _load("regression/wls3.py", "shady.regression.wls3")
+kernel_mod = _load("regression/kernel.py", "shady.regression.kernel")
+ALL_STRATEGIES = [linear_mod, wls2_mod, wls3_mod, kernel_mod]
 yc_mod = _load("yield_correction.py", "shady.yield_correction")
 fa_mod = _load("forecast_adjust.py", "shady.forecast_adjust")
 
@@ -234,6 +240,90 @@ class TestUsesPredictUnclampedNotPredict:
         fc = np.array([500.0])
         adjusted, _confidence = fa_mod.adjust_forecast(_AssertingStub(), fc, None, None, None)
         assert adjusted[0] == 250.0
+
+
+# -- AUDIT-0004/TASK-0030 item 2: real strategies, not hand-built stubs ----
+
+
+def _real_strategy_pool() -> object:
+    """A small, deterministic (RNG-seeded) pool built via the real
+    `regression.base.build_pool`, mirroring `test_regression.py`'s own
+    fixture-construction style -- reused across all four real strategy
+    modules below, not a per-strategy bespoke fixture."""
+    n_slots = 2
+    window_days = 12
+    rng = np.random.default_rng(20260908)
+    fc_by_offset: dict[int, NDArray[np.float64]] = {}
+    pv_by_offset: dict[int, NDArray[np.float64]] = {}
+    for offset in (-1, 0, 1):
+        fc = np.linspace(200.0, 900.0, window_days)
+        fc = np.tile(fc, (n_slots, 1)) + rng.normal(0, 5, size=(n_slots, window_days))
+        pv = fc * 0.8 + rng.normal(0, 2.0, size=(n_slots, window_days))
+        fc_by_offset[offset] = fc
+        pv_by_offset[offset] = pv
+    return base_mod.build_pool(
+        fc_by_offset,
+        pv_by_offset,
+        smoothing_radius=1,
+        neighbor_fitting_cutoff=0.25,
+        recency_decay_max=0.0,
+    )
+
+
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES, ids=lambda mod: mod.__name__.split(".")[-1])
+class TestRealStrategiesCallPredictUnclampedNotPredict:
+    """Given each of the four real `regression/` strategies (not
+    hand-built stubs -- mirroring `test_regression.py`'s own
+    `TestEveryStrategyHandlesTheSharedFixtures` parametrization pattern),
+    when `reverse_transformed_forecast`/`adjust_forecast` run with a
+    temperature derate configured, the reverse transform is applied to
+    the model's raw, unclamped prediction, not to `predict()`'s
+    already-clamped output.
+
+    FC=0 makes the two paths observably different for every real
+    strategy: `predict(0)` always clamps to exactly `0.0`
+    (`regression/base.py`'s `clamp_to_forecast` clips to `[0, 0]`), so a
+    (wrong) implementation that clamped before transforming would have
+    nothing left for the derate factor to multiply -- the transformed
+    result would stay `0.0` regardless of the model's true raw
+    prediction. The existing `TestUsesPredictUnclampedNotPredict` test
+    above proves this call-pattern with one hand-built asserting stub;
+    this test proves the same property holds for the four real strategy
+    implementations `coordinator.py` actually uses.
+    """
+
+    def test_reverse_transform_uses_the_real_raw_prediction(self, strategy: ModuleType) -> None:
+        pool = _real_strategy_pool()
+        model = strategy.fit(pool)
+        n_slots = 2
+        fc_query = np.zeros(n_slots)
+        target_cell_temperature = -75.0
+        coefficient_per_c = -0.004
+
+        reverse_transformed, confidence = fa_mod.reverse_transformed_forecast(
+            model,
+            fc_query,
+            target_cell_temperature,
+            coefficient_per_c,
+            provider_already_corrects=False,
+        )
+
+        raw, expected_confidence = model.predict_unclamped(fc_query)
+        correct = yc_mod.apply_derate_to_prediction(raw, target_cell_temperature, coefficient_per_c)
+        clamped, _ = model.predict(fc_query)
+        wrong = yc_mod.apply_derate_to_prediction(
+            clamped, target_cell_temperature, coefficient_per_c
+        )
+
+        assert np.allclose(reverse_transformed, correct), (
+            f"{strategy.__name__}: reverse_transformed_forecast did not match "
+            "the predict_unclamped-based computation"
+        )
+        assert not np.allclose(reverse_transformed, wrong), (
+            f"{strategy.__name__}: result matches the wrong (predict()-based) "
+            "order -- reverse_transformed_forecast may be clamping too early"
+        )
+        assert np.array_equal(confidence, expected_confidence)
 
 
 # -- clamp_output, tested directly ------------------------------------------
