@@ -1,6 +1,6 @@
 # Task: Integration-Setup Test-Coverage & Teardown-Semantics
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-002, ADR-000]
 - **Dependencies:** [TASK-0016-integration-setup-entry]
 
@@ -106,3 +106,51 @@ down alongside its test:
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `custom_components/shady/__init__.py` → module docstring gained a
+  new "Service lifetime across unload (ADR-004 §2a/§5)" paragraph
+  explaining why `async_unload_entry` deliberately never unregisters
+  `SERVICE_SELECT_DIAGNOSTIC_SLOT`. No logic changed — `git diff`
+  confirms only docstring lines added, no code touched.
+- `tests/test_init.py` → new `CONF_WINDOW_DAYS` module-level binding
+  (from `_const_mod`), and three new test classes:
+  - `TestAsyncSetupEntryGenuineConstructionFailure`, one test:
+    `test_malformed_entry_missing_required_field_propagates_unhandled`
+    — deletes `CONF_WINDOW_DAYS` from a config entry's data (the one
+    field `coordinator.py`'s own `__init__` reads via plain `data[...]`
+    with no `.get()` fallback), asserts `async_setup_entry` lets the
+    resulting `KeyError` propagate unconverted (explicitly not
+    `ConfigEntryNotReady`), with nothing stored/forwarded. No harness
+    expansion was needed — achievable entirely with the existing
+    `_make_entry()` fixture, confirming the audit's own framing.
+  - `TestServicePersistsAcrossPartialUnload`, one test:
+    `test_service_stays_registered_after_unloading_one_of_two_entries`
+    — reuses `TestServiceRegistration`'s own two-entry construction
+    pattern; unloads `entry_a` and asserts the domain-wide service is
+    still registered (for `entry_b`, still loaded). **Found and fixed a
+    real bug in this test during development, not in production code:**
+    `_make_entry()` always hard-codes the same `"test_entry"` id, so
+    without an explicit `entry_b.entry_id = "test_entry_b"` override,
+    `entry_b`'s setup silently overwrote `entry_a`'s
+    `hass.data[DOMAIN]` slot instead of adding a second one — caught by
+    running the test and seeing the assertion fail before it was ever
+    marked done, not assumed to work from reading the code alone.
+  - `TestServicesYamlMatchesRegisteredHandlers`, one test:
+    `test_declared_and_registered_service_names_match` — a
+    dependency-free top-level-key scan of `services.yaml` (deliberately
+    not adding a PyYAML dependency for this one file-structure read;
+    `tasks/DEPENDENCIES.md` unchanged), cross-checked bidirectionally
+    (`==`, not one-directional `has_service` calls) against
+    `hass.services._handlers`' actually-registered `(domain, service)`
+    pairs after `_register_services` runs. Verified empirically first:
+    the scanner extracts exactly `{'select_diagnostic_slot'}` from the
+    real file.
+- External dependencies added: none. `tasks/DEPENDENCIES.md` unchanged.
+- Full local gate after this task: `pytest` 436/436 passed (433 + 3
+  new); `mypy --config-file mypy.ini custom_components/ tests/` clean
+  on 53 source files; `ruff check .` clean repo-wide; `ruff format`
+  applied to `tests/test_init.py` (one line-length reflow); `ruff
+  format --check .` afterward shows only the one pre-existing,
+  unrelated, already-documented drift file, untouched. `git diff
+  --stat` confirms exactly `custom_components/shady/__init__.py`
+  (docstring only) and `tests/test_init.py`, matching the Estimated
+  Footprint.

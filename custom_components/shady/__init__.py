@@ -38,6 +38,20 @@ with the result:
   hand back to HA's own `ConfigEntryNotReady`/backoff path via
   `async_schedule_reload` after a short delay, rather than inventing a
   second retry mechanism.
+
+**Service lifetime across unload (ADR-004 §2a/§5):**
+`async_unload_entry` deliberately never unregisters
+`shady.select_diagnostic_slot` on a single config entry's unload. The
+service is registered once per running Home Assistant instance
+(`_register_services`'s own idempotent guard, not once per config
+entry) — unregistering it the moment *any* one entry unloads would
+break every other still-loaded entry relying on it, since the service
+call itself carries no config-entry-selecting parameter and applies
+broadcast-style across every currently-loaded coordinator (see
+`_register_services`'s own handler comment). The service is only ever
+registered, never removed, for the lifetime of the running Home
+Assistant instance — asymmetric with per-entry teardown by design, not
+an oversight.
 """
 
 from __future__ import annotations

@@ -364,6 +364,7 @@ _init_mod = _load("__init__.py", "shady")
 
 ShadyCoordinator = _coordinator_mod.ShadyCoordinator
 CONF_STRINGS = _const_mod.CONF_STRINGS
+CONF_WINDOW_DAYS = _const_mod.CONF_WINDOW_DAYS
 DOMAIN = _const_mod.DOMAIN
 async_setup_entry = _init_mod.async_setup_entry
 async_unload_entry = _init_mod.async_unload_entry
@@ -450,6 +451,123 @@ def _seed_required_entities(hass: FakeHomeAssistant) -> None:
 
 
 # -- tests --------------------------------------------------------------
+
+
+class TestAsyncSetupEntryGenuineConstructionFailure:
+    """AUDIT-0011 item 1: a genuine (non-`ConfigEntryNotReady`)
+    exception during `ShadyCoordinator` construction must propagate
+    unhandled -- `__init__.py` has zero `try`/`except` around this call
+    (ADR-000 §8), so a malformed config entry's exception reaches Home
+    Assistant's own loader directly, never swallowed or converted into
+    a different exception type. `coordinator.py`'s own `__init__` does
+    a plain `data[CONF_WINDOW_DAYS]` lookup with no `.get()` fallback
+    (unlike several later-added fields it *does* default) -- a config
+    entry missing that key is the natural "malformed" case, achievable
+    entirely within the existing `hass`/`ConfigEntry` stub convention,
+    no harness expansion needed."""
+
+    def test_malformed_entry_missing_required_field_propagates_unhandled(self) -> None:
+        hass = FakeHomeAssistant()
+        entry = _make_entry()
+        del entry.data[CONF_WINDOW_DAYS]
+
+        raised: BaseException | None = None
+        try:
+            _run(async_setup_entry(hass, entry))
+        except BaseException as exc:  # noqa: BLE001 -- deliberately broad: proving *any* exception propagates, unconverted, not just a specific expected type
+            raised = exc
+
+        assert isinstance(raised, KeyError)
+        assert not isinstance(raised, ConfigEntryNotReady)
+        # Not swallowed into a return value or a stored coordinator --
+        # the failed construction never got that far.
+        assert entry.entry_id not in hass.data.get(DOMAIN, {})
+        assert hass.config_entries.forwarded == []
+
+
+class TestServicePersistsAcrossPartialUnload:
+    """AUDIT-0011 item 2: `async_unload_entry` deliberately never
+    unregisters the domain-wide service on a single entry's unload --
+    see `__init__.py`'s own module docstring for the reasoning this
+    test verifies. Reuses `TestServiceRegistration`'s own two-entry
+    construction pattern for consistency."""
+
+    def test_service_stays_registered_after_unloading_one_of_two_entries(self) -> None:
+        hass = FakeHomeAssistant()
+        entry_a = _make_entry()
+        _seed_required_entities(hass)
+        _run(async_setup_entry(hass, entry_a))
+
+        second_yield_entity = "sensor.string_b_yield"
+        entry_b = _make_entry(
+            **{
+                CONF_STRINGS: [
+                    {
+                        "name": "Dach Nord",
+                        "baseline_entity_id": None,
+                        "baseline_attribute": None,
+                        "baseline_shape": None,
+                        "actual_yield_entity_id": second_yield_entity,
+                        "converter_limit_w": None,
+                        "temperature_source_entity_id": None,
+                        "temperature_coefficient_pct_per_c": -0.4,
+                        "rated_dc_capacity_wp": None,
+                    }
+                ]
+            }
+        )
+        hass.states.set(second_yield_entity, {})
+        # `_make_entry()` always hard-codes the same "test_entry" id --
+        # a real second config entry has a distinct one; without this,
+        # entry_b's setup would silently overwrite entry_a's
+        # hass.data[DOMAIN] slot instead of adding a second one.
+        entry_b.entry_id = "test_entry_b"
+        _run(async_setup_entry(hass, entry_b))
+        assert hass.services.has_service(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
+
+        _run(async_unload_entry(hass, entry_a))
+
+        assert entry_a.entry_id not in hass.data[DOMAIN]
+        # entry_b is still loaded ...
+        assert entry_b.entry_id in hass.data[DOMAIN]
+        # ... and the domain-wide service was not touched by entry_a's
+        # unload, exactly the asymmetry the module docstring documents.
+        assert hass.services.has_service(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
+
+
+class TestServicesYamlMatchesRegisteredHandlers:
+    """AUDIT-0011 item 3: the executable version of the manual
+    `services.yaml`-vs-registered-handlers check the audit performed by
+    hand, mirroring `test_translations.py`'s own dynamic-introspection
+    pattern. Deliberately does not add a PyYAML dependency for this one
+    file-structure read (real Home Assistant instances always provide
+    PyYAML at runtime for this exact file, but this project declares no
+    such dependency for its own test suite) -- `services.yaml`'s own
+    shape is simple enough (one service, all its fields indented
+    beneath it) that a top-level-key scan is sufficient and exact."""
+
+    @staticmethod
+    def _services_yaml_top_level_keys(path: Path) -> set[str]:
+        keys: set[str] = set()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line or line[0] in (" ", "\t", "#"):
+                continue
+            if ":" not in line:
+                continue
+            key = line.split(":", 1)[0].strip()
+            if key:
+                keys.add(key)
+        return keys
+
+    def test_declared_and_registered_service_names_match(self) -> None:
+        services_yaml_path = _SHADY_DIR / "services.yaml"
+        declared = self._services_yaml_top_level_keys(services_yaml_path)
+
+        hass = FakeHomeAssistant()
+        _init_mod._register_services(hass)
+        registered = {service for (domain, service) in hass.services._handlers if domain == DOMAIN}
+
+        assert declared == registered
 
 
 class TestAsyncSetupEntryHassRunning:
