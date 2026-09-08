@@ -261,13 +261,13 @@ a tooling-config bug, never a wrong number reaching a sensor.
 2. ~~Each `AUDIT-XXXX-*.md`'s Status moves `todo` → `in-progress` →
    `review`~~ — done for all twelve; findings live in each
    `tasks/AUDIT-XXXX-<slug>-findings.md`.
-3. **Remaining:** every FAIL/GAP/PARTIAL recorded across the twelve
+3. ~~Remaining: every FAIL/GAP/PARTIAL recorded across the twelve
    findings files is still just that — a recorded finding, not yet
-   scheduled as a fix. The next step is for the human to decide, per
-   finding, whether it becomes a new task, a Scenario-C patch task
-   against the relevant `TASK-00XX`/ADR, or a batched ADR-amendment pass
-   (several findings — the repeated `switch`→`select` text leftovers, the
-   two dead-duplicate-config bugs, the diagram-staleness items — cluster
-   naturally and may be worth fixing together rather than one task each).
-   Nothing above has been fixed silently; that's deliberate, per this
-   audit phase's own stated role.
+   scheduled as a fix~~ — **done, 2026-09-08:** every finding is now
+   grouped by type/impact, weighted, and mapped onto a concrete task in
+   `tasks/AUDIT-REMEDIATION-INDEX.md`. Thirteen new tasks (`TASK-0021`
+   through `TASK-0033`) exist in `tasks/INDEX.md`, all `todo`. Three of
+   them (`TASK-0021`, `TASK-0022`, `TASK-0023`) still require a human
+   decision before implementation can start — see each task's own "Open
+   Questions for Execution" section. Nothing has been fixed yet; this
+   closes the *planning* gap, not the underlying findings themselves.
