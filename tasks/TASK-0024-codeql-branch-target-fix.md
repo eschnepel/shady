@@ -1,6 +1,6 @@
 # Task: CodeQL Branch-Target Fix
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-000]
 - **Dependencies:** []
 
@@ -82,3 +82,14 @@ change the triggers.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `.github/workflows/codeql.yml` → `push.branches` and `pull_request.branches`
+  changed from `["main"]` to `["master"]` (option (a), per the recorded
+  `## Descision` "change the triggers"). The `schedule` cron trigger is
+  byte-for-byte unchanged. No other workflow file, `.py` file, or test
+  file touched — `git diff --stat` confirms exactly one file changed,
+  2 lines modified.
+- Verified against the live remote: `git ls-remote --symref origin HEAD`
+  → `ref: refs/heads/master`, matching the new trigger targets exactly.
+- External dependencies added: none — `tasks/DEPENDENCIES.md` unchanged.
+- Full test suite re-run post-change: 436/436 passed (unchanged from
+  baseline, as expected for a workflow-YAML-only change).
