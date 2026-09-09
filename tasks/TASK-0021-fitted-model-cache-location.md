@@ -1,6 +1,6 @@
 # Task: Fitted-Model Cache Location — Decision & Fix
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-007, ADR-007a, ADR-014]
 - **Dependencies:** [TASK-0002-cache-core-time-series-store, TASK-0006-cache-batched-regression-pool-accessor, TASK-0010-coordinator-recalibration-recompute-push, TASK-0017-string-computation-module]
 
@@ -127,3 +127,106 @@ Proceed with Option B including the validated range logic.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- **Option chosen:** Option B, relocate — with the model store carrying
+  explicit validity tracking rather than ADR-007a §5's originally-
+  specified bare `dict[key, value]`, per the human's own recorded
+  `## Decision` ("Proceed with Option B including the validated range
+  logic") plus a direct clarification obtained when the Lead Agent
+  flagged that "validated range logic" was ambiguous for a non-time-
+  series object: "midnight invalidates. Fitting model updates over the
+  day just refresh/push future slots."
+- `custom_components/shady/cache.py` → new `ModelKind = Literal["shading",
+  "temperature"]` type alias; `Cache.__init__` gained
+  `self._models: dict[tuple[ModelKind, int], FittedModel]` and
+  `self._models_valid: dict[tuple[ModelKind, int], bool]`; three new
+  public methods — `get_model(kind, string_index) -> FittedModel | None`,
+  `set_model(kind, string_index, model) -> None`, `invalidate_models()
+  -> None`. New top-level import `from .regression.base import
+  FittedModel`. Module docstring updated with a new paragraph describing
+  the relocated cache and why only the time-series design's *validity*
+  half (not `fetch_fn`/`_validate_range`) applies to it.
+- `custom_components/shady/coordinator.py` → removed the
+  `self._models: dict[int, FittedModel]` / `self._temperature_models:
+  dict[int, FittedModel]` field declarations entirely.
+  `_refit_sync` now calls `self.cache.invalidate_models()` once before
+  its per-string fit loop, then `self.cache.set_model("shading",
+  string.index, model)` / `self.cache.set_model("temperature",
+  string.index, temperature_model)` in place of the old direct dict
+  writes. `_recompute_string` and `_predict_day_basis` read via
+  `self.cache.get_model("shading", string.index)` (the latter with an
+  `assert model is not None`, matching the file's existing narrowing-
+  assert convention, since the caller already guarantees non-`None`).
+  `_predict_target_slot_temperature` reads via `self.cache.get_model
+  ("temperature", string.index)`. The `from .regression.base import
+  FittedModel` import is retained — still used for two method type
+  hints (`_fit_string`/`_fit_temperature_string` return types).
+- **Behavior note (not a pure relocation):** `invalidate_models()` being
+  called unconditionally at the start of every `_refit_sync` is an
+  intentional behavior change, not just a storage move — the prior
+  `coordinator.py`-resident dicts never cleared a string's entry on a
+  failed refit, so a persistently-failing `_fit_string` could silently
+  keep serving an arbitrarily stale model across many cycles. The
+  amended behavior surfaces that state explicitly as "no valid model"
+  instead. Recorded in both ADRs' Amendment blocks below.
+- `adr/007-coordinator-cache-split.md` → new `## Amendment — 2026-09-08`
+  block (Context/Decision's "fitted-model cache lives in `cache.py`"
+  claim is accurate again as written; no text edit needed there beyond
+  the amendment itself) plus a top-of-file `**2026-09-08**` pointer line.
+- `adr/007a-cache-storage-and-accessor-design.md` → §5's "model cache
+  stays a bare `dict[key, value]`" paragraph gained an inline forward-
+  pointer note; new `## Amendment — 2026-09-08` block at the end of the
+  document with the full accessor-shape rationale, including the
+  explicit "not `fetch_fn`/`_validate_range`" scoping note and the
+  behavior-change callout above; top-of-file `**2026-09-08**` pointer
+  line added alongside the existing `**Amended:**` line.
+- `tasks/adr-summary.md` §5 → cache-listing item 1 rewritten to describe
+  the new `get_model`/`set_model`/`invalidate_models` shape and its
+  validity-tracking rationale, in place of the old one-line "dict"
+  description.
+- `tests/test_cache_core.py` → new imports (`dataclass`, `numpy`,
+  `NDArray`); pre-loads `regression/base.py` as `"shady.regression.base"`
+  before `cache.py` (now required — `cache.py` imports `FittedModel`);
+  new `_StubModel(base_mod.FittedModel)` fixture (real subclass, zero-
+  mocking, mirrors `tests/test_forecast_adjust.py`'s own `_StubModel`);
+  new `TestFittedModelCacheRoundTrip` (3 tests) and
+  `TestFittedModelCacheInvalidation` (4 tests) — 7 new tests total,
+  covering never-set → `None`, set/get round-trip, cross-key
+  independence, invalidate-clears-every-key, invalidate-retains-the-
+  stale-object-internally (reaches into `cache._models` directly,
+  matching this file's existing `cache._list_offset` precedent),
+  set-after-invalidate re-validates, and invalidate-on-empty-cache is a
+  no-op. Module docstring updated to mention the addition.
+- `tests/test_cache_pinned_slot_pool.py`,
+  `tests/test_cache_regression_pools.py` → same required
+  `regression/base.py` pre-load added before `cache.py`'s load (no new
+  tests in either file — out of scope for this task, per its own
+  Estimated Footprint hint listing `test_cache_core.py`/
+  `test_coordinator.py` as the test files to change).
+- `tests/test_coordinator.py` → `TestRefitSharedCodePath` (2 tests),
+  `TestStartupSafetyNet` (1 test), and the `test_no_recompute_attempted_
+  when_fitting_fails` test in `TestRefitTriggersRecompute` updated from
+  direct `coordinator._models[...]` access to
+  `coordinator.cache.get_model("shading", ...)` — behavior-preserving,
+  no test deleted. One stale docstring cross-reference (naming the
+  now-removed `coordinator._models` as an example of the file's
+  "reach into private state" convention) corrected.
+- `tests/test_coordinator_temperature_forecast.py` → three direct
+  `coordinator._temperature_models[string.index] = model` fixture
+  writes converted to `coordinator.cache.set_model("temperature",
+  string.index, model)`; the `test_cell_tier_none_when_no_model_fitted_
+  yet` assertion converted from `string.index not in coordinator.
+  _temperature_models` to `coordinator.cache.get_model("temperature",
+  string.index) is None`.
+- `tests/test_button.py` → `test_press_triggers_a_real_refit` converted
+  from direct `coordinator._models` access to `coordinator.cache.
+  get_model("shading", 0)`.
+- External dependencies added: none — `tasks/DEPENDENCIES.md` unchanged.
+- Full test suite: 436 → 443/443 passed (7 new, all in
+  `test_cache_core.py`; zero deleted). `mypy --config-file mypy.ini
+  custom_components/ tests/` clean on 53 source files. `ruff check .`
+  clean repo-wide. `ruff format --check .` shows only the one
+  pre-existing, unrelated, already-documented drift file (`adr/
+  004-diagnostics-select-and-scatter-sensor.md`'s embedded code block),
+  untouched — none of this task's edited files needed reflowing.
+  `git status --short` confirms exactly the 11 files listed above
+  changed, no others.

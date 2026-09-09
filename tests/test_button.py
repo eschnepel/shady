@@ -416,12 +416,13 @@ class TestRecalculateButtonPress:
 
     def test_press_triggers_a_real_refit(self) -> None:
         coordinator, _hass = _make_coordinator()
-        assert coordinator._models == {}
+        assert coordinator.cache.get_model("shading", 0) is None
         button = ShadyRecalculateButton(coordinator, coordinator.entry)
 
         _run(button.async_press())
 
-        assert coordinator._models  # the same `_refit_sync` path TASK-0010 tests directly
+        # the same `_refit_sync` path TASK-0010 tests directly
+        assert coordinator.cache.get_model("shading", 0) is not None
 
     def test_press_swallows_a_refit_exception(self) -> None:
         coordinator, _hass = _make_coordinator()

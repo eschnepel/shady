@@ -21,6 +21,19 @@ itself stays plain in-memory either way, per the module's own no-`hass`
 rule; `coordinator.py` is the one that reads/writes Home Assistant's
 `Store` helper and calls `restore_energy_state`/back onto this module.
 
+**Fitted-model cache (ADR-007 §1, ADR-007a §5-Amendment, TASK-0021):**
+`get_model`/`set_model`/`invalidate_models` hold each string's fitted
+shading model and (where applicable) fitted temperature model — moved
+here from `coordinator.py`, closing the deviation `AUDIT-0003` found
+between the as-built location and ADR-007 §1's own text. Keyed by
+`(kind, string_index)`, with an explicit per-key validity flag rather
+than ADR-007a §5's originally-specified bare `dict[key, value]` (see
+that section's own amendment for why) — a `FittedModel` object has no
+index/range shape of its own, so this reuses only the *validity*
+half of the time-series machinery above, not `fetch_fn`/`_validate_
+range`: nothing about a fitted model is ever fetched from the recorder,
+it is always produced locally by `coordinator.py`'s own fit loop.
+
 **Pinned diagnostic reference + `get_pinned_slot_pool` (ADR-007a §6,
 TASK-0015b):** `pinned_reference` is a single cache-wide `date | None`
 scalar (`pin_reference()`/`clear_reference()`) — ADR-004 §2a's "one
@@ -63,6 +76,8 @@ from typing import Literal, overload
 import numpy as np
 from numpy.typing import NDArray
 
+from .regression.base import FittedModel
+
 SLOT_MINUTES = 5
 SLOT_DURATION = timedelta(minutes=SLOT_MINUTES)
 SLOTS_PER_DAY = 24 * 60 // SLOT_MINUTES  # 288
@@ -80,6 +95,15 @@ OnInvalid = Literal["skip", "raw"] | float
 # is the only caller, for both of the source sums each kind integrates:
 # "pv" tracks `pv_sum()` (§1), "fc" tracks `fc_sum()` (§2).
 EnergyKind = Literal["pv", "fc"]
+
+# The two fitted-model kinds `coordinator.py` maintains per string
+# (ADR-001, ADR-003c §2, ADR-007-Amendment, TASK-0021): "shading" is the
+# per-string shading/yield model every string has once fit at least
+# once; "temperature" is the optional per-slot temperature-forecast
+# model a `cell`/`ambient`-tier string gains (ADR-003c §2) — absent
+# entirely for a `weather`-tier string or one with no resolved
+# temperature source.
+ModelKind = Literal["shading", "temperature"]
 
 
 @dataclass(frozen=True)
@@ -209,6 +233,31 @@ class Cache:
         # provider's `forward()` result is cached (ADR-012 §4): build in
         # `coordinator.py`/`diagnostics/`, store here.
         self._diagnostic_fit: dict[str, dict[str, float]] = {}
+
+        # -- fitted-model cache (ADR-007 §1, ADR-007a §5-Amendment,
+        # TASK-0021) --
+        # Relocated from `coordinator.py` to close the ADR-007/ADR-007a
+        # deviation `AUDIT-0003` found. Keyed by `(kind, string_index)`
+        # rather than two separate dicts, mirroring the file's own
+        # `EnergyKind`-parametrized pair (`energy_total`/
+        # `set_energy_total`) above. `_models_valid` gives this store an
+        # explicit validity flag per key — deliberately *not* the bare
+        # `dict[key, value]` ADR-007a §5's original text called for
+        # (amended below): `get_model` returns `None` for an invalidated
+        # entry even though the stale `FittedModel` object is still
+        # physically present in `_models`, exactly mirroring how an
+        # `invalidate()`d time-series range still holds `None` writes
+        # rather than forgetting the entry outright. `invalidate_models`
+        # is called once at the start of every recalibration pass
+        # (`coordinator.py`'s `_refit_sync`); `set_model` then
+        # re-validates each string's entry as its own fit completes —
+        # the same "invalidate first, then re-populate incrementally"
+        # shape `_validate_range`/`_fetch_and_store` already use for the
+        # time-series stores above, adapted for a store with no
+        # index/range concept of its own (a fitted model is a single
+        # object per string, not a per-slot series).
+        self._models: dict[tuple[ModelKind, int], FittedModel] = {}
+        self._models_valid: dict[tuple[ModelKind, int], bool] = {}
 
     # -- index <-> timestamp (ADR-007a §1) -----------------------------------
 
@@ -712,6 +761,51 @@ class Cache:
         — `coordinator.py`'s `_diagnostics_tick_sync` calls this once
         per entry in `DiagnosticFitResult.by_sensor`."""
         self._diagnostic_fit[sensor_id] = dict(predictions)
+
+    # -- fitted-model cache (ADR-007 §1, ADR-007a §5-Amendment, TASK-0021) ---
+
+    def get_model(self, kind: ModelKind, string_index: int) -> FittedModel | None:
+        """The currently valid fitted model for `string_index`/`kind`,
+        or `None` if no fit has completed for it yet this cycle, or the
+        model cache has since been invalidated (`invalidate_models`
+        below) and not yet re-populated by this cycle's fit for this
+        particular string — the same "no valid entry" answer a never-
+        fit string has always returned, now also covering a string
+        whose fit failed partway through the current recalibration pass
+        rather than silently continuing to serve a previous cycle's
+        now-superseded model."""
+        if not self._models_valid.get((kind, string_index), False):
+            return None
+        return self._models.get((kind, string_index))
+
+    def set_model(self, kind: ModelKind, string_index: int, model: FittedModel) -> None:
+        """Write back a freshly-fit model and mark it valid —
+        `coordinator.py`'s `_refit_sync` calls this once per string per
+        successful fit. Mirrors `push()`'s "always current, never
+        re-queried" semantics (ADR-007a §2): once set, an entry stays
+        valid — and intraday recomputes (`_recompute_string`) keep
+        reading the same model unchanged all day, only the *predicted
+        slot values* get refreshed/pushed as new baseline data arrives
+        — until the next `invalidate_models` call, exactly like a
+        pushed time-series range never falls back to re-fetching."""
+        self._models[(kind, string_index)] = model
+        self._models_valid[(kind, string_index)] = True
+
+    def invalidate_models(self) -> None:
+        """Mark every currently-stored model invalid, without
+        discarding the stale objects themselves — `get_model` still
+        returns `None` for an invalidated entry until it is
+        `set_model`-ed again (mirrors `invalidate()`'s "reset, force a
+        fresh write before serving again" semantics for the time-series
+        stores above, ADR-007a §3). `coordinator.py`'s `_refit_sync`
+        calls this exactly once, before its per-string fit loop begins
+        — every string's entry is re-validated incrementally as that
+        string's own fit succeeds, so a string whose fit fails this
+        cycle correctly reads back as "no valid model" for the
+        remainder of the day rather than silently serving an
+        ever-more-stale one from a previous successful cycle."""
+        for key in self._models_valid:
+            self._models_valid[key] = False
 
     # -- energy-integral totals (ADR-005 §5/§6) -------------------------------
 

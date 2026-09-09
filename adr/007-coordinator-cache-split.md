@@ -10,6 +10,10 @@ changes.
 **2026-08-19** — split: `cache.py`'s storage scheme and accessor design
 (formerly §1a–§1f) moved out to ADR-007a — see the Revision note at the
 end of this document.
+**2026-09-08** — Amendment: the fitted-model cache, listed in §1's
+Context/Decision as living in `cache.py`, actually lived in
+`coordinator.py` until this date — relocated to close the gap; see the
+Amendment block above the Revision note.
 
 ---
 
@@ -189,6 +193,35 @@ only what sits directly beneath it.
 See ADR-007a's own Consequences for the storage-scheme and accessor
 trade-offs (index-addressable design, the three-state value model,
 `fetch_fn` injection, the two-accessor-shape trade-off).
+
+## Amendment — 2026-09-08
+
+**Reason:** `AUDIT-0003-cache-module` found that this section's own
+claim — "the fitted-model cache lives in `cache.py`" — did not match
+the as-built code: `self._models`/`self._temperature_models` were
+constructed and read/written directly in `coordinator.py`, alongside,
+not inside, `self.cache = Cache(...)`. The audit itself judged this
+architecturally defensible either way (a `FittedModel` is an object,
+not a time-series value), so `TASK-0021` was created to get a human
+decision between amending this document to match the as-built
+`coordinator.py` location, or relocating the code to match this
+document as originally written.
+
+**Decision:** Relocate — `cache.py` now genuinely owns the fitted-model
+cache (`Cache.get_model`/`set_model`/`invalidate_models`, keyed by
+`(kind, string_index)`), closing the gap rather than documenting it
+away. This section's "Per-string, per-slot fitted-model cache" listing
+above is accurate again as written; no further edit to it was needed.
+See ADR-007a §5's own Amendment (same date) for the accessor's exact
+shape, which itself deviates from that section's original "bare
+`dict[key, value]`" specification.
+
+**Decided by:** human (Enrico, via this task's own recorded `##
+Decision` — "Proceed with Option B including the validated range
+logic" — plus a follow-up clarification on what "validated range
+logic" should concretely mean for a non-time-series object: "midnight
+invalidates. Fitting model updates over the day just refresh/push
+future slots.").
 
 ## Revision note
 

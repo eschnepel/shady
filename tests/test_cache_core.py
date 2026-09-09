@@ -1,4 +1,6 @@
-"""Zero-mocking tests for `cache.py`'s storage core (ADR-007a §1-§5, ADR-000 §6).
+"""Zero-mocking tests for `cache.py`'s storage core (ADR-007a §1-§5, ADR-000 §6),
+plus the relocated fitted-model cache (ADR-007 §1, ADR-007a §5-Amendment,
+TASK-0021).
 
 Loaded via direct file-path import, not package import, so that
 `custom_components/shady/__init__.py` (which imports `homeassistant.*`)
@@ -9,9 +11,13 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
+
+import numpy as np
+from numpy.typing import NDArray
 
 _SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
 
@@ -26,6 +32,13 @@ def _load(relative_path: str, module_name: str) -> ModuleType:
     return module
 
 
+# `cache.py` does `from .regression.base import FittedModel` (the
+# relocated fitted-model cache, TASK-0021) — `regression/base.py` must
+# be loaded and registered in sys.modules under its real dotted name
+# first, the same way `tests/test_forecast_adjust.py`'s multi-module
+# load order already relies on for `forecast_adjust.py`'s own
+# `from .regression.base import FittedModel`.
+base_mod = _load("regression/base.py", "shady.regression.base")
 cache_mod = _load("cache.py", "shady.cache")
 
 
@@ -364,3 +377,107 @@ class TestEnergyIntegralTotals:
         assert cache.energy_total("fc") == 0.0
         assert cache.last_energy_sample("pv") is None
         assert cache.last_energy_sample("fc") is None
+
+
+# -- fitted-model cache (ADR-007 §1, ADR-007a §5-Amendment, TASK-0021) -----
+
+
+@dataclass(frozen=True)
+class _StubModel(base_mod.FittedModel):  # type: ignore[name-defined,misc]
+    """A hand-written stand-in inheriting the real
+    `regression.base.FittedModel` base class (ADR-000 §6, same pattern
+    `tests/test_forecast_adjust.py`'s own `_StubModel` already
+    establishes) — `cache.py`'s model-cache methods never inspect a
+    model's contents, only store/return the object, so a minimal
+    concrete subclass with a `tag` field (to tell instances apart in
+    assertions) is enough; `predict_unclamped` itself is never called
+    here."""
+
+    tag: str
+
+    def predict_unclamped(
+        self, fc: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        return fc, np.ones_like(fc)
+
+
+class TestFittedModelCacheRoundTrip:
+    """Given a model is `set_model`-ed for a given `(kind, string_index)`,
+    when `get_model` is called with the same key, then the exact same
+    object comes back — and every other key stays independently `None`
+    (ADR-007 §1, ADR-007a §5-Amendment)."""
+
+    def test_never_set_key_returns_none(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        assert cache.get_model("shading", 0) is None
+
+    def test_set_then_get_returns_the_same_object(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        model = _StubModel(tag="string-0-shading")
+
+        cache.set_model("shading", 0, model)
+
+        assert cache.get_model("shading", 0) is model
+
+    def test_kind_and_string_index_are_independent_keys(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        shading_0 = _StubModel(tag="shading-0")
+        temperature_0 = _StubModel(tag="temperature-0")
+        shading_1 = _StubModel(tag="shading-1")
+
+        cache.set_model("shading", 0, shading_0)
+        cache.set_model("temperature", 0, temperature_0)
+        cache.set_model("shading", 1, shading_1)
+
+        assert cache.get_model("shading", 0) is shading_0
+        assert cache.get_model("temperature", 0) is temperature_0
+        assert cache.get_model("shading", 1) is shading_1
+        assert cache.get_model("temperature", 1) is None  # never set
+
+
+class TestFittedModelCacheInvalidation:
+    """Given one or more models are `set_model`-ed, when
+    `invalidate_models` is called, then `get_model` returns `None` for
+    every key — mirroring `invalidate()`'s "reset, force a fresh write
+    before serving again" contract for the time-series stores — but the
+    stale object itself is still physically retained internally, not
+    discarded, exactly like an invalidated time-series range still
+    holds its now-stale entries rather than forgetting them outright."""
+
+    def test_invalidate_clears_every_key(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        cache.set_model("shading", 0, _StubModel(tag="shading-0"))
+        cache.set_model("temperature", 0, _StubModel(tag="temperature-0"))
+        cache.set_model("shading", 1, _StubModel(tag="shading-1"))
+
+        cache.invalidate_models()
+
+        assert cache.get_model("shading", 0) is None
+        assert cache.get_model("temperature", 0) is None
+        assert cache.get_model("shading", 1) is None
+
+    def test_invalidate_retains_the_stale_object_internally(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        stale = _StubModel(tag="shading-0")
+        cache.set_model("shading", 0, stale)
+
+        cache.invalidate_models()
+
+        assert cache.get_model("shading", 0) is None  # not served
+        assert cache._models[("shading", 0)] is stale  # but not discarded
+
+    def test_set_model_after_invalidate_makes_it_valid_again(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        cache.set_model("shading", 0, _StubModel(tag="old"))
+        cache.invalidate_models()
+        assert cache.get_model("shading", 0) is None
+
+        fresh = _StubModel(tag="new")
+        cache.set_model("shading", 0, fresh)
+
+        assert cache.get_model("shading", 0) is fresh
+
+    def test_invalidate_on_an_empty_cache_is_a_no_op(self) -> None:
+        cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
+        cache.invalidate_models()  # must not raise
+        assert cache.get_model("shading", 0) is None

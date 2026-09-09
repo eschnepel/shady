@@ -43,6 +43,10 @@ def _load(relative_path: str, module_name: str) -> ModuleType:
     return module
 
 
+# `cache.py` does `from .regression.base import FittedModel` (the
+# relocated fitted-model cache, TASK-0021) — pre-load it under its real
+# dotted name first, same convention as `tests/test_cache_core.py`.
+base_mod = _load("regression/base.py", "shady.regression.base")
 cache_mod = _load("cache.py", "shady.cache")
 
 

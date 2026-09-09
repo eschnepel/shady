@@ -419,7 +419,8 @@ class TestRefitSharedCodePath:
     def test_button_and_midnight_produce_the_same_fit(self) -> None:
         coordinator, _hass = _make_coordinator()
         _run(coordinator.async_refit(_NOW))
-        button_model = coordinator._models[0]
+        button_model = coordinator.cache.get_model("shading", 0)
+        assert button_model is not None
 
         coordinator2, hass2 = _make_coordinator()
 
@@ -428,7 +429,8 @@ class TestRefitSharedCodePath:
             await hass2.drain()
 
         _run(_drive_midnight())
-        midnight_model = coordinator2._models[0]
+        midnight_model = coordinator2.cache.get_model("shading", 0)
+        assert midnight_model is not None
 
         assert (button_model.coefficients == midnight_model.coefficients).all()
         assert coordinator._last_fit_at == _NOW
@@ -445,9 +447,11 @@ class TestRefitSharedCodePath:
         coordinator_clean, _hass_clean = _make_coordinator()
         _run(coordinator_clean.async_refit(_NOW))
 
-        assert (
-            coordinator._models[0].coefficients == coordinator_clean._models[0].coefficients
-        ).all()
+        model = coordinator.cache.get_model("shading", 0)
+        model_clean = coordinator_clean.cache.get_model("shading", 0)
+        assert model is not None
+        assert model_clean is not None
+        assert (model.coefficients == model_clean.coefficients).all()
 
 
 class TestStartupSafetyNet:
@@ -457,9 +461,9 @@ class TestStartupSafetyNet:
 
     def test_async_startup_fits_when_no_model_yet(self) -> None:
         coordinator, _hass = _make_coordinator()
-        assert coordinator._models == {}
+        assert coordinator.cache.get_model("shading", 0) is None
         _run(coordinator.async_startup(_NOW))
-        assert 0 in coordinator._models
+        assert coordinator.cache.get_model("shading", 0) is not None
         assert coordinator._last_fit_at is not None
 
     def test_async_startup_skips_when_recently_fitted(self) -> None:
@@ -528,7 +532,7 @@ class TestRefitTriggersRecompute:
 
         _run(coordinator.async_refit(_NOW))
 
-        assert coordinator._models == {}
+        assert coordinator.cache.get_model("shading", 0) is None
         # `validated_range` alone is no longer a reliable "nothing
         # happened" check on its own: TASK-0012's `fc_sum()` (called
         # from `_accumulate_fc_energy` at the end of every refit) also
@@ -1079,10 +1083,10 @@ class _CountingDiagnosticMode(DiagnosticMode):
     `extra_fit()` call (count and order) instead of doing real work —
     substituted directly into `coordinator._diagnostic_modes` (the same
     "reach into private state for a white-box test" convention this
-    file already uses for `coordinator._now`/`coordinator._models`
-    elsewhere) so `diagnostic_result()`'s caching behaviour can be
-    verified by call count, independent of `CompareRegressionsMode`'s
-    own real computation."""
+    file already uses for `coordinator._now` elsewhere) so
+    `diagnostic_result()`'s caching behaviour can be verified by call
+    count, independent of `CompareRegressionsMode`'s own real
+    computation."""
 
     key = "compare_regressions"
 

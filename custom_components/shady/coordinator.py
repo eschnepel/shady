@@ -458,24 +458,17 @@ class ShadyCoordinator:
         self._energy_store: Store[dict[str, Any]] = Store(
             self.hass, _ENERGY_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_energy_totals"
         )
-        self._models: dict[int, FittedModel] = {}
-        # ADR-003c §2, TASK-0014: one fitted per-slot temperature model
-        # per `cell`/`ambient`-tier string (keyed by `string.index`,
-        # same convention as `self._models`) — absent for a `weather`-
-        # tier string (never needs one) or a string with no resolved
-        # temperature source at all. Same in-memory-only scope decision
-        # as `self._models` (see its own comment just above): a restart
-        # already implies "no model fitted yet", which is exactly
-        # ADR-002 §1's startup safety net regardless.
-        self._temperature_models: dict[int, FittedModel] = {}
-        # In-memory only (this task's own scope decision — see
-        # Delivered Artifacts): every restart already implies "no model
-        # fitted yet" below, which alone satisfies ADR-002 §1's startup
-        # safety net on every restart regardless of this timestamp: the
-        # >24h branch only ever matters within one long-lived process
-        # (e.g. the midnight trigger silently failing to fire once).
+        # Fitted-model cache (shading model, every string; temperature
+        # model, `cell`/`ambient`-tier strings only) now lives in
+        # `self.cache.get_model`/`set_model`/`invalidate_models`
+        # (ADR-007 §1, ADR-007a §5-Amendment, TASK-0021) — relocated out
+        # of this class, which no longer holds either dict directly.
+        # In-memory only either way: every restart already implies "no
+        # model fitted yet" below, which alone satisfies ADR-002 §1's
+        # startup safety net regardless of this timestamp: the >24h
+        # branch only ever matters within one long-lived process (e.g.
+        # the midnight trigger silently failing to fire once).
         self._last_fit_at: datetime | None = None
-
         self._unsub: list[Callable[[], None]] = []
         # Injectable clock (a plain callable, not a `Mock`) — the one
         # place this module reads "now" without an explicit parameter
@@ -711,13 +704,14 @@ class ShadyCoordinator:
         await self._async_persist_energy_state()
 
     def _refit_sync(self, now: datetime) -> None:
+        self.cache.invalidate_models()
         for string in self._strings:
             model = self._fit_string(string, now)
             if model is not None:
-                self._models[string.index] = model
+                self.cache.set_model("shading", string.index, model)
                 temperature_model = self._fit_temperature_string(string, now)
                 if temperature_model is not None:
-                    self._temperature_models[string.index] = temperature_model
+                    self.cache.set_model("temperature", string.index, temperature_model)
                 # Recalibration completion is itself a recompute trigger
                 # (ADR-002 §2, trigger 1) — reuses the exact same
                 # `_recompute_string` path §2's second trigger (a
@@ -1302,7 +1296,7 @@ class ShadyCoordinator:
         await self._async_persist_energy_state()
 
     def _recompute_string(self, string: _StringConfig, now: datetime) -> None:
-        model = self._models.get(string.index)
+        model = self.cache.get_model("shading", string.index)
         if model is None:
             return
         baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
@@ -1365,7 +1359,8 @@ class ShadyCoordinator:
         clamp happens immediately (`_clamp_basis`) or later, after an
         intraday correction/crossfade (`_compute_intraday_output`).
         """
-        model = self._models[string.index]
+        model = self.cache.get_model("shading", string.index)
+        assert model is not None  # guaranteed by _recompute_string's own check above
         day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
         fc_array = np.full(SLOTS_PER_DAY, np.nan, dtype=np.float64)
         for slot, value in slot_values.items():
@@ -1429,7 +1424,7 @@ class ShadyCoordinator:
         `rated_dc_capacity_wp` for a tier that needs uplift, or (a
         cold-start edge case — every other call site already assumes
         `_fit_temperature_string` has run at least once, the same
-        assumption `self._models[string.index]`'s own direct-index
+        assumption `_predict_day_basis`'s own `cache.get_model`
         lookup above makes for the shading model) no temperature model
         fitted yet for this string.
         """
@@ -1447,7 +1442,7 @@ class ShadyCoordinator:
             )
             return np.asarray(uplifted, dtype=np.float64)
 
-        temperature_model = self._temperature_models.get(string.index)
+        temperature_model = self.cache.get_model("temperature", string.index)
         if temperature_model is None:
             return None
         assert self._weather_forecast_temperature_entity_id is not None

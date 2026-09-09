@@ -255,7 +255,18 @@ only pure-tier exceptions — tested against a real `hass` fixture.
 ## 5 — `cache.py` design (ADR-007, ADR-007a, ADR-008)
 
 Owns 5 independent caches, only ever called by `coordinator.py`:
-1. Per-string/per-slot fitted-model cache (dict).
+1. Per-string/per-slot fitted-model cache — `get_model`/`set_model`/
+   `invalidate_models`, keyed by `(kind, string_index)` where `kind` is
+   `"shading"` or `"temperature"` (ADR-007 §1, ADR-007a §5-Amendment,
+   TASK-0021 — relocated from `coordinator.py`, where it lived until
+   `AUDIT-0003` found the deviation). Carries an explicit per-key
+   validity flag, not a bare `dict`: `invalidate_models()` (called once
+   at the start of every `coordinator.py` recalibration pass) marks
+   every entry invalid without discarding the stale object; `set_model`
+   re-validates a key as its own fit completes. No `fetch_fn`
+   involvement — a fitted model is never fetched from the recorder, so
+   only the time-series design's *validity* half is reused, not the
+   fetch-on-demand half.
 2. Per-string whole-day snapshot array (time-series shaped).
 3. Two restart-persisted energy-integral running totals (ADR-005 §5/§6)
    — the *only* restart-persisted cache; carries `last_reset_date` for

@@ -426,7 +426,7 @@ class TestPredictTargetSlotTemperature:
         string = coordinator._strings[0]
         model = coordinator._fit_temperature_string(string, _NOW)
         assert model is not None
-        coordinator._temperature_models[string.index] = model
+        coordinator.cache.set_model("temperature", string.index, model)
 
         resolution = coordinator._resolve_temperature_entity(string)
         assert resolution is not None and resolution.tier == "cell"
@@ -457,7 +457,7 @@ class TestPredictTargetSlotTemperature:
         string = coordinator._strings[0]
         model = coordinator._fit_temperature_string(string, _NOW)
         assert model is not None
-        coordinator._temperature_models[string.index] = model
+        coordinator.cache.set_model("temperature", string.index, model)
 
         resolution = coordinator._resolve_temperature_entity(string)
         assert resolution is not None and resolution.tier == "ambient"
@@ -489,7 +489,7 @@ class TestPredictTargetSlotTemperature:
         string = coordinator._strings[0]
         model = coordinator._fit_temperature_string(string, _NOW)
         assert model is not None
-        coordinator._temperature_models[string.index] = model
+        coordinator.cache.set_model("temperature", string.index, model)
         resolution = coordinator._resolve_temperature_entity(string)
         assert resolution is not None
         fc_array = np.full(SLOTS_PER_DAY, 0.0, dtype=np.float64)
@@ -510,7 +510,7 @@ class TestPredictTargetSlotTemperature:
         string = coordinator._strings[0]
         resolution = coordinator._resolve_temperature_entity(string)
         assert resolution is not None
-        assert string.index not in coordinator._temperature_models
+        assert coordinator.cache.get_model("temperature", string.index) is None
         fc_array = np.full(SLOTS_PER_DAY, 0.0, dtype=np.float64)
         assert (
             coordinator._predict_target_slot_temperature(string, resolution, fc_array, _DAY_START)
