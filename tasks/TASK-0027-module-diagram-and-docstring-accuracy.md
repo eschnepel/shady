@@ -1,6 +1,6 @@
 # Task: Module-Diagram & Docstring Call-Graph Accuracy
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-000, ADR-002, ADR-005, ADR-014]
 - **Dependencies:** [TASK-0007-yield-corrections, TASK-0010-coordinator-recalibration-recompute-push, TASK-0017-string-computation-module]
 
@@ -153,3 +153,85 @@ task batches all five into one documentation-accuracy pass:
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- **Finding 1** (`AUDIT-0005`) — `adr/005-aggregate-sum-and-integral-sensors.md`
+  → module diagram's `aggregation --> forecast_adjust` edge removed;
+  `forecast_adjust.py` bullet now states explicitly that
+  `aggregation.py` never imports it (confirmed zero non-stdlib imports)
+  and that `coordinator.py` applies the correction upstream. `adr/000-
+  coding-standards.md` §3 → same edge removed from the canonical module
+  graph.
+- **Finding 2** (`AUDIT-0007`) — `adr/000-coding-standards.md` §3 →
+  `init --> entity_glue` (falsely implied a Python import) replaced with
+  the real `init --> coordinator` edge (confirmed `__init__.py` imports
+  only `.const`/`.coordinator`); `init --> entity_glue` kept as a
+  dashed, explicitly-labeled edge for HA's actual name-based platform
+  forwarding, matching the diagram's existing dashed-edge convention.
+- **Finding 3** (`AUDIT-0005` finding B / `AUDIT-0006`) —
+  `adr/002-coordinator-update-strategy.md` §5's `coordinator.py` bullet
+  and the Consequences section's push/recompute bullet (flipped from
+  **Con** to **Pro**, since the corrected fact removes the described
+  downside) both rewritten to describe the actual single merged
+  listener — one `async_track_state_change_event` registration per
+  baseline entity, whose one handler does both the push and the
+  conditional recompute dispatch — citing
+  `TestGenericProviderPushLoop.test_one_listener_per_forward_overriding_provider`
+  as the confirming test.
+- **Finding 4** (`AUDIT-0006`) — `adr/014-string-computation-module.md`
+  §4's Decision text now explicitly carves out `_predict_day_basis`/
+  `_clamp_basis` from the "delegate everything else" claim, wording
+  adapted from `TASK-0017`'s own already-reviewed Acceptance Criteria
+  (register-adapted, not freshly drafted — per this task's own "Open
+  Questions" guidance). No sign-off flag raised: the wording is a direct
+  register adaptation of already-accepted text, not a new judgment call.
+- **Finding 5** (`AUDIT-0006`) — `custom_components/shady/
+  string_computation.py` → module docstring's "What's new" paragraph and
+  `predict_string_forecast`'s function docstring both corrected: neither
+  now claims `coordinator.py`'s "no intraday correction" path calls
+  `predict_string_forecast`. Corrected to state its only real caller is
+  `diagnostics/compare_regressions.py`, and that `coordinator.py` calls
+  `forecast_adjust.reverse_transformed_forecast`/`clamp_output` directly
+  for *both* its intraday-on and intraday-off paths (confirmed via
+  `grep` — `coordinator.py` never references `predict_string_forecast`
+  as a call, only in one docstring correctly attributing it to
+  `CompareRegressionsMode`). Docstring-only change — no logic, no
+  test-visible behavior change.
+- **Finding 6** (`AUDIT-0011`/`AUDIT-0012`) — `adr/000-coding-standards.md`
+  §1's table now names `code_checker.yml` (confirmed the actual, only
+  workflow file; `ci.yml` never existed) and its Invocation column
+  reflects that `ruff format`/`ruff check`/`mypy` run through
+  `.pre-commit-config.yaml`'s hooks (verified against the real file —
+  `ruff`/`ruff-format` from `astral-sh/ruff-pre-commit`, a local `mypy`
+  hook running `uv run mypy custom_components/shady tests` with no
+  explicit `--config-file` flag) while `pytest` runs as a separate,
+  non-`pre-commit` CI step.
+- Dated header amendment notes added to `adr/000-coding-standards.md`,
+  `adr/002-coordinator-update-strategy.md`, `adr/005-aggregate-sum-and-
+  integral-sensors.md` (its first `Amended:` line — none existed
+  before), and `adr/014-string-computation-module.md`, each summarizing
+  its description-only correction and linking back to `TASK-0027`/the
+  originating `AUDIT-*` finding, per this project's established
+  amendment-header convention.
+- `tasks/adr-summary.md` → checked against all six corrections; one
+  further drift found and fixed in the same pass (not one of the six
+  numbered findings, but squarely inside this task's own Definition of
+  Done: "update if any of the six corrections changes something
+  `adr-summary.md` itself states") — its CI-gate bullet repeated the
+  same stale `--config-file mypy.ini` invocation detail Finding 6
+  corrects in `ADR-000` §1 itself; now matches the corrected text
+  (filename, pre-commit-hook-mediated invocation, `pytest` as a separate
+  step). Its `predict_string_forecast` mention (a general
+  slot-count-agnostic-design statement, not a specific call-graph claim)
+  was checked against Finding 5 and left unchanged — it does not repeat
+  the false "no intraday correction path" claim.
+- No new external dependency — `tasks/DEPENDENCIES.md` unchanged.
+- Verification: full suite 445/445 passed, unchanged from the TASK-0026
+  baseline (findings 1–4 and 6 touch no `.py`/test file; finding 5 is
+  docstring-only — `tests/test_string_computation.py`'s 14 tests verified
+  individually, unmodified, still passing). `mypy --config-file mypy.ini
+  custom_components/ tests/` clean on 53 source files; `ruff check .`
+  clean repo-wide; `ruff format --check .` shows only the same one
+  pre-existing, unrelated, already-documented drift file as every prior
+  entry in this project's refinement log, untouched.
+- Reviewer pass (Phase 4b, inline): all seven Acceptance Criteria
+  (six findings + the `adr-summary.md` accuracy check) verified against
+  the delivered diff — **PASS**.

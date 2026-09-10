@@ -50,6 +50,19 @@ rationale.
 read-only property (getter, no setter) rather than a plain instance
 attribute. See the Amendment block below for the AUDIT-0009 finding
 this responds to.
+**2026-09-10** — Description-only corrections, no behavior/decision
+change (`AUDIT-0005`/`AUDIT-0007`/`AUDIT-0011`/`AUDIT-0012`, batched by
+`TASK-0027`): §1's table now names the real CI workflow file,
+`code_checker.yml` (not `ci.yml`, which never existed), and its
+Invocation column reflects that `ruff format`/`ruff check`/`mypy` run
+through `.pre-commit-config.yaml`'s hook definitions while `pytest` runs
+as a separate, non-`pre-commit` step. §3's diagram no longer shows the
+nonexistent `aggregation --> forecast_adjust` edge (`aggregation.py` has
+zero non-stdlib imports) and now shows the real `init --> coordinator`
+import edge; `init --> entity_glue` is kept only as a dashed,
+explicitly-labeled edge (platform forwarding is HA's own name-based
+mechanism, not a Python import), matching the diagram's existing
+dashed-edge convention for non-import relationships.
 
 ## Amendment — 2026-08-22
 
@@ -136,14 +149,17 @@ share a consistent engineering baseline. Sections specific to Effy's domain
 
 ### 1 — Tooling: ruff, mypy strict, pytest
 
-Three tools gate every change, run via `.github/workflows/ci.yml`:
+Three tools gate every change, run via `.github/workflows/code_checker.yml`
+(not a separate hand-written `ci.yml` — the workflow installs dependencies,
+then runs `pre-commit run --all-files` followed by a standalone `pytest`
+step):
 
 | Tool | Purpose | Invocation |
 |---|---|---|
-| `ruff format` | Code formatting (replaces black) | `ruff format custom_components/` |
-| `ruff check` | Linting (replaces flake8/isort/pyupgrade) | `ruff check custom_components/` |
-| `mypy --strict` | Static type checking | `mypy custom_components/shady tests --config-file mypy.ini` |
-| `pytest` | Unit tests | `pytest tests/` |
+| `ruff format` | Code formatting (replaces black) | `.pre-commit-config.yaml`'s `ruff-format` hook (`astral-sh/ruff-pre-commit`) |
+| `ruff check` | Linting (replaces flake8/isort/pyupgrade) | `.pre-commit-config.yaml`'s `ruff` hook, `args: [--fix, --exit-non-zero-on-fix]` |
+| `mypy --strict` | Static type checking | `.pre-commit-config.yaml`'s local `mypy` hook: `uv run mypy custom_components/shady tests` (config read from `mypy.ini`, not passed as an explicit `--config-file` flag) |
+| `pytest` | Unit tests | `uv run pytest`, a separate `code_checker.yml` step — not run through `pre-commit` |
 
 All four must pass with zero errors before a change is considered complete.
 `mypy --strict` is non-negotiable: every function signature carries full
@@ -207,7 +223,6 @@ flowchart BT
     string_computation --> regression
     string_computation --> forecast_adjust
     string_computation --> yield_correction
-    aggregation --> forecast_adjust
     diagnostics --> aggregation
     diagnostics --> string_computation
     cache --> aggregation
@@ -215,9 +230,10 @@ flowchart BT
     coordinator --> string_computation
     coordinator --> diagnostics
     entity_glue --> coordinator
-    init --> entity_glue
+    init --> coordinator
     forecast_adjust -.->|"reverse transform, ADR-003b §1b/§2"| yield_correction
     diagnostics -.->|"construction-time coordinator ref, TYPE_CHECKING-only (ADR-004 §5, 2026-09-01)"| coordinator
+    init -.->|"platform forwarding, HA's own name-based mechanism — not a Python import"| entity_glue
 ```
 
 - **`providers/`** (`discovery.py`, `normalize.py`, `base.py`,

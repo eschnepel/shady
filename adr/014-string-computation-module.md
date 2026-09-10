@@ -2,6 +2,14 @@
 
 **Date:** 2026-08-31
 **Status:** Accepted
+**Amended:** 2026-09-10 — §4's Decision text corrected: it previously
+claimed all four relocated `coordinator.py` methods "delegate everything
+else to `string_computation.py`," which was never true of
+`_predict_day_basis`/`_clamp_basis` (they call `forecast_adjust.py`
+directly, unchanged, per `TASK-0017`'s own Acceptance Criteria). §4 now
+carves this out explicitly, wording adapted from that already-reviewed
+Acceptance Criteria text rather than drafted fresh. Description-only,
+no behavior change (`TASK-0027`, `AUDIT-0006`).
 
 ---
 
@@ -154,14 +162,28 @@ scalars/dicts) — no assumption about which caller is invoking them, no
 `_fit_string`, `_fit_temperature_string`, `_predict_day_basis`, and
 `_clamp_basis` all keep their existing signatures and existing callers
 unchanged — no other task's Consumed Interfaces reference any of them,
-so nothing downstream needs to change. Their *bodies* shrink to: gather
-the raw arrays from `cache.py`/`providers/` (the genuinely impure half —
+so nothing downstream needs to change. `_fit_string`/
+`_fit_temperature_string`'s *bodies* shrink to: gather the raw arrays
+from `cache.py`/`providers/` (the genuinely impure half —
 `get_regression_pools`, `provider.fetch()`), then delegate everything
 else to `string_computation.py`. `_apply_training_corrections` as a
 `coordinator.py` method is removed outright — every call site now calls
 `string_computation.apply_training_corrections(...)` directly, passing
 the string's own config fields as explicit arguments instead of
 implicitly reading `self`/`string`.
+
+`_predict_day_basis`/`_clamp_basis` are the two exceptions: they are
+**not** required to change call shape, and don't — they already call
+`forecast_adjust.py` directly, with no duplication to remove, because
+exactly one caller needs their particular split-then-multi-day-clamp
+shape, since intraday correction (ADR-006 §1b) must sit between the two
+steps. `string_computation.predict_string_forecast`'s combined
+fit-and-clamp shape exists for `diagnostics/`'s benefit (§4/§5), which
+always wants one already-clamped, single-slot value with no correction
+step to insert in between — a shape `_predict_day_basis`/`_clamp_basis`'s
+own caller cannot use, intraday-ON or intraday-OFF alike, since
+`coordinator.py` keeps one unconditional split-then-clamp code path for
+both rather than two separately-shaped ones.
 
 `coordinator.py`'s remaining responsibility, after this split, matches
 its own module docstring's original claim for the first time: registers

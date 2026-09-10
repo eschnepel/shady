@@ -34,10 +34,13 @@ work remains anywhere in the project.
   the outset.
 - **Config-flow validation:** `voluptuous` (dev dependency; standard HA
   pattern).
-- **Gate (CI, `ADR-000 §1`):** `ruff format`, `ruff check`, `mypy --strict`
-  (`mypy.ini`, `--config-file mypy.ini`), `pytest` — all four must pass
-  with zero errors. `mypy --strict`: every function/method fully
-  annotated, including private helpers and `-> None`.
+- **Gate (CI, `ADR-000 §1`, `.github/workflows/code_checker.yml`):**
+  `ruff format`, `ruff check`, `mypy --strict` (config from `mypy.ini`,
+  read automatically — not passed as an explicit `--config-file` flag),
+  `pytest` — the first three run via `.pre-commit-config.yaml`'s hooks
+  (`pre-commit run --all-files`), `pytest` as a separate step; all four
+  must pass with zero errors. `mypy --strict`: every function/method
+  fully annotated, including private helpers and `-> None`.
 - **HA-stub gap handling (`ADR-000 §2`):** untyped HA base classes cause
   `misc`/`untyped-decorator` mypy noise. Suppressed **per-file** via
   `mypy.ini` (`warn_unused_ignores = False` on exactly the HA-facing

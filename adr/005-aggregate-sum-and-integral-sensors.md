@@ -2,6 +2,12 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted
+**Amended:** 2026-09-10 — module diagram's nonexistent `aggregation -->
+forecast_adjust` edge removed (`aggregation.py` has zero non-stdlib
+imports; `coordinator.py` applies `forecast_adjust.py`'s correction
+before values reach `aggregation.py`'s sum functions) and the
+`forecast_adjust.py` bullet updated to state this explicitly.
+Description-only, no behavior change (`TASK-0027`, `AUDIT-0005`).
 
 ---
 
@@ -166,13 +172,16 @@ flowchart BT
     coordinator["coordinator.py"]
     sensor["sensor.py"]
 
-    aggregation --> forecast_adjust
     cache --> aggregation
     coordinator --> cache
     sensor --> coordinator
 ```
 
-- **`forecast_adjust.py`** — per-string corrected forecast, unchanged.
+- **`forecast_adjust.py`** — per-string corrected forecast, unchanged;
+  `aggregation.py` never imports it — `coordinator.py` applies
+  `forecast_adjust.py`'s correction to each string first and only passes
+  the already-corrected, plain-number results into `aggregation.py`'s
+  sum functions (`aggregation.py` has zero non-stdlib imports).
 - **`aggregation.py`** — pure logic: cross-string sums for §1/§2/§3/§4;
   trapezoidal energy-increment calculation for §5/§6; no HA imports, no
   per-string knowledge of *which* string a value came from — only lists

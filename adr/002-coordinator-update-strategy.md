@@ -27,6 +27,17 @@ haven't loaded yet — a real Home Assistant boot-ordering race with no
 prior ADR coverage anywhere in the project. Human-directed amendment,
 discovered by the Lead Agent while gathering TASK-0010's Consumed
 Interfaces (Phase 3, before any coordinator.py code existed).
+**2026-09-10** — Description-only corrections, no behavior change:
+§1a's platform list corrected from "`sensor`/`switch`/`button`" to
+"`sensor`/`select`/`button`" (`TASK-0026`, finishing the 2026-08-30
+switch→select rename `TASK-0018` started). §5's `coordinator.py` bullet
+and the Consequences section's push-vs-recompute-listener bullet
+corrected from "two independent registrations" to the actual single
+merged listener — one `async_track_state_change_event` registration per
+baseline entity, whose one handler does both the push (§4) and the
+conditional recompute dispatch (§2), confirmed by
+`TestGenericProviderPushLoop.test_one_listener_per_forward_overriding_
+provider` (`TASK-0027`, `AUDIT-0005`/`AUDIT-0006`).
 
 ---
 
@@ -272,15 +283,24 @@ from.
 ### 5 — Resulting module responsibilities
 
 - `coordinator.py` owns: the daily recalibration schedule and
-  up-to-yesterday cutoff (§1); listeners on every configured baseline
-  entity, driving recompute (§2); pushing recomputed results to each
-  string's `ShadyForecastSensor` (§3). Raw baseline `FC` (§4) is *not* a
-  separate `coordinator.py`-owned responsibility in its own right — it
-  falls out of ADR-012 §4's one generic provider-push loop, which
-  `coordinator.py` also runs, independently of the recompute listener
-  above. The per-string, per-slot fitted-model cache itself lives in
-  `cache.py` (ADR-007) — `coordinator.py` reads/writes it but does not
-  own its storage. `coordinator.py` exposes the refit routine as a
+  up-to-yesterday cutoff (§1); one listener per configured baseline
+  entity (`_register_provider_listeners`, one `async_track_state_change_
+  event` registration per entity), whose single handler both pushes that
+  provider's raw baseline series (§4) and, when the entity also drives a
+  string's forecast, dispatches the recompute (§2) — one callback doing
+  both, not two independent registrations on the same entity (confirmed
+  by `tests/test_coordinator.py`'s `TestGenericProviderPushLoop.
+  test_one_listener_per_forward_overriding_provider`, which asserts
+  exactly one registered listener per baseline entity); pushing
+  recomputed results to each string's `ShadyForecastSensor` (§3). Raw
+  baseline `FC` (§4) is *not* a separate `coordinator.py`-owned
+  responsibility in its own right — it and the recompute dispatch (§2)
+  are both driven from that same single generic listener, per entity,
+  falling out of ADR-012 §4's one generic provider-push loop rather than
+  a second, independent registration. The per-string, per-slot
+  fitted-model cache itself lives in `cache.py` (ADR-007) —
+  `coordinator.py` reads/writes it but does not own its storage.
+  `coordinator.py` exposes the refit routine as a
   single public method so both the midnight schedule and the button (§1)
   call the exact same code path.
 - `button.py` adds one diagnostic `ShadyRecalculateButton` per config
@@ -328,12 +348,14 @@ from.
   attribute itself cannot support (§4) — since the value was captured
   and frozen the moment it was known, the same way the corrected
   forecast already is.
-- **Con:** §4's push, via ADR-012 §4's generic loop, is a second,
-  independent listener on the same baseline entity §2 already listens
-  to for recompute — two registrations on one entity rather than one
-  callback doing both, so a reader has to know these are deliberately
-  separate concerns (ADR-012 §4) rather than assume one listener implies
-  one effect.
+- **Pro:** §4's push and §2's recompute dispatch share a single
+  registration per baseline entity (`_register_provider_listeners`'s one
+  `async_track_state_change_event` call per entity) — one callback does
+  both, not two independent registrations on the same entity, confirmed
+  by `tests/test_coordinator.py`'s `TestGenericProviderPushLoop.
+  test_one_listener_per_forward_overriding_provider`, so there is no risk
+  of the two effects firing out of order or one being unregistered
+  without the other.
 - **Neutral:** Because recalibration and forecast recompute are decoupled,
   there is a window (up to 24h, between refits) where the forecast output
   is being produced by a model that is up to a day "older" than the

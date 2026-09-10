@@ -32,14 +32,14 @@ now needed a third time, by `diagnostics/compare_regressions.py`
 than inlining it a third time too. `predict_string_forecast` is a thin
 wrapper over `forecast_adjust.adjust_forecast` (already exactly this
 combined reverse-transform-then-clamp sequence) that drops the
-confidence return value, since neither `coordinator.py`'s own "no
-intraday correction" path nor a diagnostic single-slot caller needs it
-kept alongside the adjusted value; `coordinator.py`'s intraday-ON path
-still calls `forecast_adjust.reverse_transformed_forecast`/
-`clamp_output` directly with its own correction step spliced in between
-(ADR-006 §1b's canonical ordering) — that split-then-multi-day-clamp
-shape has exactly one caller and duplicates nothing, so it is left as
-`coordinator.py`'s own concern, not relocated here.
+confidence return value, since a diagnostic single-slot caller doesn't
+need it kept alongside the adjusted value. `predict_string_forecast`'s
+only real caller today is `diagnostics/compare_regressions.py` —
+`coordinator.py` calls `forecast_adjust.reverse_transformed_forecast`/
+`clamp_output` directly instead, for *both* its intraday-ON and
+intraday-OFF paths (`_predict_day_basis`/`_clamp_basis`, ADR-014 §4's
+carve-out), since it keeps one unconditional split-then-clamp code path
+for both rather than two separately-shaped ones.
 """
 
 from __future__ import annotations
@@ -188,12 +188,17 @@ def predict_string_forecast(
     sequence (ADR-006 §1b's canonical ordering), returning only the
     adjusted forecast — a thin wrapper, not a reimplementation, so this
     stays exactly in sync with `forecast_adjust.py`'s own already-tested
-    behavior. Used by `coordinator.py`'s no-intraday-correction path and
-    by `diagnostics/compare_regressions.py` (ADR-004 §4) alike: both
-    want one already-clamped value with no correction step to insert in
-    between. `coordinator.py`'s intraday-ON path does **not** use this
-    — it needs Ramping/Blending's correction spliced in between the
-    reverse-transform and the clamp (ADR-006 §1b), so it calls
+    behavior. Its only real caller today is
+    `diagnostics/compare_regressions.py` (ADR-004 §4), which wants one
+    already-clamped, single-slot value with no correction step to insert
+    in between. `coordinator.py` does **not** use this, for either of
+    its two paths (intraday on or off) — it needs the reverse-transform
+    and clamp steps kept separate so `_compute_intraday_output` can
+    splice Ramping/Blending's correction in between when intraday
+    correction is on (ADR-006 §1b), and keeps that same
+    split-then-multi-day-clamp shape (`_predict_day_basis`/
+    `_clamp_basis`) unconditionally rather than switching shape when
+    intraday correction is off (ADR-014 §4's carve-out) — so it calls
     `forecast_adjust.reverse_transformed_forecast`/`clamp_output`
     directly instead, unchanged by this module's existence.
     """
