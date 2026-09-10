@@ -1,6 +1,6 @@
 # Task: ADR-010 Field Documentation Catch-Up
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-010]
 - **Dependencies:** [TASK-0009-patch-1-manual-baseline-shape]
 
@@ -70,3 +70,34 @@ no code defect.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `adr/010-config-flow-shape.md` → new header amendment entry, dated
+  `2026-09-10`, documenting `baseline_manual_shape` (global, default
+  `"sensor_dict"`, one of `"sensor_dict"`/`"sensor_list"`/
+  `"weather_sunshine"`/`"weather_cloud"`, "settings" step) as a
+  `TASK-0009-patch-1-manual-baseline-shape`-introduced field — format
+  mirrors the existing `2026-08-25` `recency_decay_max` entry exactly
+  (field name, step, purpose, one-line cross-reference to the patch
+  task). Field's exact shape/default confirmed against
+  `custom_components/shady/config_flow.py`'s own `_settings_schema`/
+  `_BASELINE_SHAPES`/`_DEFAULT_MANUAL_SHAPE` — no code change, citation
+  only.
+- **Open Question resolved:** dated the entry at this task's own
+  completion (2026-09-10), per the task's own stated default ("if the
+  human has no preference") — no preference was given, so the default
+  applied. Not escalated, since the task itself already resolved this
+  as a low-stakes default rather than a blocking decision.
+- `tasks/adr-summary.md` checked (Acceptance Criteria requirement) — no
+  existing reference to `baseline_manual_shape` found either way (§7
+  defers to ADR-010 as "the single source of truth" for the full field
+  list), so no edit made, matching this task's own stated expectation.
+- `git status --short` confirms exactly `adr/010-config-flow-shape.md`
+  changed — no `.py` file touched.
+- No new external dependency — `tasks/DEPENDENCIES.md` unchanged.
+- Verification: full suite 445/445 passed, unchanged (docs-only
+  change); `mypy --config-file mypy.ini custom_components/ tests/`
+  clean on 53 source files; `ruff check .` clean repo-wide; `ruff
+  format --check .` shows only the same one pre-existing, unrelated,
+  already-documented drift file every prior remediation task in this
+  batch has also seen, untouched.
+- Reviewer pass (Phase 4b, inline): all three Acceptance Criteria
+  verified against the delivered diff — **PASS**.

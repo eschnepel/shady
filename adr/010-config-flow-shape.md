@@ -19,6 +19,19 @@ matching field here, and the second had no config-flow source at all.
 **2026-08-25** — added `recency_decay_max` (global, default 50%) to
 "settings", introduced by ADR-001 §4a's new day-recency sample
 weighting.
+**2026-09-10** — added `baseline_manual_shape` (global, default
+`"sensor_dict"`, one of `"sensor_dict"`/`"sensor_list"`/
+`"weather_sunshine"`/`"weather_cloud"`) to "settings" — the shape
+choice ADR-009 §3's manual-entry baseline fallback needs, introduced by
+`TASK-0009-patch-1-manual-baseline-shape`. A documentation-only
+catch-up: the field was correctly implemented, tested, and translated
+at the time it shipped, but never added to this document's field list
+or amendment history, contradicting this document's own Consequences
+section (`AUDIT-0010`). Dated at this catch-up's own completion, not
+the field's original shipping date — the more honest reading of "when
+did this document's text change," and consistent with how this
+project's other post-hoc documentation fixes (e.g. `TASK-0018`) are
+dated.
 
 ---
 
