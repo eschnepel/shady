@@ -2,42 +2,17 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
-**Amended:** 2026-07-05 — §3 and §4 updated to reflect the introduction
-of `cache.py` (ADR-007) and to cross-reference ADR-005's whole-day
-aggregate sensor.
-**2026-08-19** — new §4: raw baseline `FC` is now also pushed into
-`cache.py` on every baseline update, alongside the corrected forecast;
-former §4 ("Resulting module responsibilities") renumbered to §5 and its
-`coordinator.py` bullet updated accordingly. See ADR-007a §2/§3 for the
-cache-side mechanics and ADR-001 §2 for the updated "Training-time `FC`"
-definition this enables. Later the same day, §4's rationale was
-generalized into ADR-012 §4 as a policy for any forecast-shaped
-provider (temperature included, ADR-003c §7); §4 here was trimmed to
-this document's own instantiation of that policy, no behavioral change.
-Later still, §4 was trimmed further once ADR-012 §1 gained a `forward()`
-provider method and §4's `coordinator.py` loop became fully generic —
-this document no longer describes its own listener or push call, only
-that baseline's `forward()` reuses ADR-009 §2's canonical-series mapping;
-§5's `coordinator.py` bullet updated to match.
-**2026-08-23** — new §1a: the original "startup safety net" (§1) only
-ever addressed *staleness* (no model fitted yet / last fit >24h old); it
-said nothing about a config entry's referenced entities not existing yet
-at `async_setup_entry` time because the integration(s) that provide them
-haven't loaded yet — a real Home Assistant boot-ordering race with no
-prior ADR coverage anywhere in the project. Human-directed amendment,
-discovered by the Lead Agent while gathering TASK-0010's Consumed
-Interfaces (Phase 3, before any coordinator.py code existed).
-**2026-09-10** — Description-only corrections, no behavior change:
-§1a's platform list corrected from "`sensor`/`switch`/`button`" to
-"`sensor`/`select`/`button`" (`TASK-0026`, finishing the 2026-08-30
-switch→select rename `TASK-0018` started). §5's `coordinator.py` bullet
-and the Consequences section's push-vs-recompute-listener bullet
-corrected from "two independent registrations" to the actual single
-merged listener — one `async_track_state_change_event` registration per
-baseline entity, whose one handler does both the push (§4) and the
-conditional recompute dispatch (§2), confirmed by
-`TestGenericProviderPushLoop.test_one_listener_per_forward_overriding_
-provider` (`TASK-0027`, `AUDIT-0005`/`AUDIT-0006`).
+**Last updated:** 2026-09-10
+
+This ADR is kept current in place: each section reflects the project's
+present coordinator update strategy directly. Notable revisions folded
+into the sections below include §1a's startup-ordering safety net for
+a config entry's not-yet-loaded entities, §4's raw-baseline-`FC` push
+(generalized into ADR-012 §4's provider-wide policy, of which this
+section is Shady's own instantiation), and §5's single merged
+listener per baseline entity (one `async_track_state_change_event`
+registration driving both the push and the recompute dispatch, not two
+independent registrations).
 
 ---
 
