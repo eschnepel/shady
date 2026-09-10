@@ -1,6 +1,6 @@
 # Task: Finish switch→select Rename, Round 3
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-004, ADR-002, ADR-007]
 - **Dependencies:** [TASK-0018-hacs-select-rename-cleanup]
 
@@ -93,3 +93,35 @@ established pattern exactly.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- `docs/architecture.mmd` → `Diag` subgraph label changed from
+  `"Diagnostics (optional, via switch)"` to
+  `"Diagnostics (optional, via select)"`; `SWITCH` node renamed `SELECT`
+  (`SELECT([Select: diagnostic mode<br/>default off])`, mirroring the
+  existing `([...])` sensor-node shape/labeling style used by
+  `PVSensor`/`SCATTER`); both edges referencing the node (`SELECT -->
+  SCATTER`, `INTRADAY ~~~~~~ SELECT`) updated to the new node id.
+- `adr/002-coordinator-update-strategy.md` §1a → platform list corrected
+  from "`sensor`/`switch`/`button`" to "`sensor`/`select`/`button`".
+- `adr/007-coordinator-cache-split.md` → module diagram's `entity_glue`
+  node label and its matching prose bullet both corrected from
+  `switch.py` to `select.py`.
+- No `.py` file touched — `git status --short` confirms exactly the
+  three files above changed, matching the Estimated Footprint exactly.
+- Verification: repo-wide case-insensitive grep for "switch" outside
+  `tasks/`/`adr/` finds only unrelated English-verb usage (`coordinator.py`
+  comments "mode just switched on" etc., `select.py`'s own docstring
+  correctly stating "not a switch... no `switch.py` anywhere", test
+  names like `test_forwards_a_switch_back_to_off`) — no fourth location
+  found, confirming the task's own "no fourth location expected" note.
+  `docs/architecture.mmd`/`adr/002-...md`/`adr/007-...md` themselves now
+  grep-clean for "switch" (case-insensitive) with zero hits.
+- Full suite: 445/445 passed, unchanged from the pre-task baseline (a
+  docs-only task touching no `.py`/test file). `mypy --config-file
+  mypy.ini custom_components/ tests/` clean on 53 source files; `ruff
+  check .` clean repo-wide; `ruff format --check .` shows only the one
+  pre-existing, unrelated, already-documented drift file
+  (`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code
+  block), untouched by this task.
+- No new external dependency — `tasks/DEPENDENCIES.md` unchanged.
+- Reviewer pass (Phase 4b, inline): all four Acceptance Criteria checked
+  against the delivered diff — **PASS**.

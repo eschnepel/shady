@@ -131,7 +131,7 @@ or `__init__.py` had any code; recorded here rather than guessed at.
    entities to not exist yet, so do **not** raise `ConfigEntryNotReady`
    here (that would just be noisy, guaranteed-to-fail churn during
    every boot). Instead: build `hass.data` and forward this config
-   entry's platforms (`sensor`/`switch`/`button`) exactly as usual —
+   entry's platforms (`sensor`/`select`/`button`) exactly as usual —
    Shady's own entities register on the normal schedule regardless of
    whether its *referenced* entities exist yet — but defer the
    coordinator's startup-safety-net fit (§1 above) via

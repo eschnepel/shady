@@ -27,8 +27,8 @@ flowchart TB
 
   end
 
-  subgraph Diag["Diagnostics (optional, via switch)"]
-    SWITCH([Switch: diagnostics<br/>default off])
+  subgraph Diag["Diagnostics (optional, via select)"]
+    SELECT([Select: diagnostic mode<br/>default off])
     SCATTER([Sensor: scatter chart<br/>per string, all 4 methods + today's actual value])
   end
 
@@ -38,7 +38,7 @@ flowchart TB
   TEMPFLAG -. controls .-> TEMP
     CLIP --> TEMP
     TEMP --> FIT
-    SWITCH --> SCATTER
+    SELECT --> SCATTER
   FIT --> SCATTER
     FC --> FIT
     FIT --> PRED
@@ -47,7 +47,7 @@ flowchart TB
     PVSensor --> INTRADAY
     INTRADAY --> CLAMP --> FCSensor
 
-    INTRADAY ~~~~~~ SWITCH
+    INTRADAY ~~~~~~ SELECT
   FCSensor --> DAYSUM
     DAYSUM --> REST
     SUMPV --> INTPV

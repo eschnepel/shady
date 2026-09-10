@@ -131,7 +131,7 @@ flowchart BT
     aggregation["aggregation.py"]
     cache["cache.py"]
     coordinator["coordinator.py"]
-    entity_glue["sensor.py / config_flow.py / switch.py"]
+    entity_glue["sensor.py / config_flow.py / select.py"]
     init["__init__.py"]
 
     aggregation --> forecast_adjust
@@ -154,7 +154,7 @@ flowchart BT
   the pure layer including `cache.py`, decides which cache instances get
   restart-persisted, pushes results to sensors — the only module that
   imports `cache.py`.
-- **`sensor.py` / `config_flow.py` / `switch.py`** — HA entity glue.
+- **`sensor.py` / `config_flow.py` / `select.py`** — HA entity glue.
   (`button.py` is omitted from this node's label — unchanged by this
   ADR, not removed; see ADR-000 §3 or ADR-002 §1 for it.)
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
