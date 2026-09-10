@@ -10,21 +10,12 @@ module that shape in the first place. Originally combined with inverter
 clipping exclusion in one document; separated because the two
 corrections are independently optional, independently configured, and
 share no decision-relevant logic beyond both living in
-`yield_correction.py`. No behavior changed by this split — see ADR-003's
-Revision note.
-**Amended:** 2026-08-18 — §1a/§1b updated: the cell/ambient-tier
-prediction-time fallback is no longer naive persistence, but a learned
-per-slot forecast (ADR-003c), with the forward+reverse correction now
-skipped together, not just the reverse half, when no forecast-capable
-predictor is available. See ADR-003c for the full mechanism.
-**2026-08-19** — §2's `forecast_adjust.py` bullet trimmed to point at
-ADR-006 §1b for the clamp-ordering rationale instead of restating the
-Ramping/Blending mechanics inline; no behavior changed.
-**2026-08-20** — §1a: new paragraph states where `max_uplift_c` and
-`baseline_rated_capacity` actually come from (ADR-010 config-flow
-fields, one global and one per-string) and what happens when the
-per-string one is left unset — previously used in the uplift formula
-without either being specified anywhere.
+`yield_correction.py`. No behavior changed by this split.
+**Last updated:** 2026-08-20 — §1a/§1b's cell/ambient-tier
+prediction-time fallback now points at ADR-003c's learned per-slot
+forecast rather than naive persistence, and §1a documents where
+`max_uplift_c`/`baseline_rated_capacity` come from (ADR-010 config-flow
+fields).
 
 ---
 

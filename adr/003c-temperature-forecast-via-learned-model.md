@@ -3,18 +3,14 @@
 **Date:** 2026-08-18
 **Status:** Accepted
 **Amends:** ADR-003b §1a/§1b (temperature source hierarchy and the
-prediction-time reverse transform), ADR-012 §3 (the naive-persistence
-fallback it specified is superseded here — see ADR-012's own amendment
-note), and ADR-010 (adds the "weather forecast entity for temperature
-prediction" field to the config flow's "settings" step — see §3 below).
-**Amended:** 2026-08-19 — new §7: this predictor's historical samples
-are now also captured via push, on its own listener, per ADR-012 §4's
-generic policy — no behavior change to §4's prediction-time read or to
-ADR-002's recompute triggers. Later the same day, §7 trimmed further:
-once ADR-012 §1 gained a `forward()` provider method, §7 no longer
-describes its own listener or push call, only that this predictor's
-`forward()` maps the live `forecast` attribute onto ADR-009 §2's
-canonical series shape.
+prediction-time reverse transform), ADR-012 §3 (supersedes the
+naive-persistence fallback specified there for the cell/ambient tiers),
+and ADR-010 (adds the "weather forecast entity for temperature
+prediction" field to the config flow's "settings" step — see §3
+below).
+**Last updated:** 2026-08-19 — §7 added: this predictor's historical
+samples are captured via push (ADR-012 §4's generic policy), with no
+change to §4's prediction-time read or to ADR-002's recompute triggers.
 
 ---
 
