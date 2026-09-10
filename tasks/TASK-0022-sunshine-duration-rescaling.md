@@ -1,6 +1,6 @@
 # Task: Sunshine-Duration Rescaling — Decision & Fix
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-009]
 - **Dependencies:** [TASK-0003-baseline-forecast-discovery]
 
@@ -102,3 +102,35 @@ Proceed with Option A.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- **Option chosen:** Option A, amend — per the human's recorded
+  `## Decision` ("Proceed with Option A"). No `.py` file changed.
+- `adr/009-baseline-forecast-sourcing.md` → §1's sunshine-duration
+  bullet rewritten from "used directly, only rescaled to the baseline's
+  expected numeric range" to "used directly, unscaled", with a forward
+  pointer to the amendment. New `## Amendment — 2026-09-08` block
+  appended after Consequences, recording the audit finding, the
+  decision, and the rationale (a linear/wls2/wls3/kernel regression
+  absorbs an arbitrary linear scale of its input automatically, so an
+  explicit rescale step would change only the learned coefficients, not
+  the fit's quality — and explicitly noting the neighboring
+  cloud-coverage branch's sign-inversion step is unaffected by this
+  amendment and remains necessary, since a scale change alone cannot
+  flip a series' sign the way `invert_cloud_coverage` does). Top-of-file
+  `**Amended:**` pointer line added alongside the existing metadata
+  block.
+- `tasks/adr-summary.md` → providers/ section expanded with a short,
+  accurate description of both `weather.*` proxy-baseline shapes
+  (sunshine-duration: unscaled; cloud-coverage: sign-inverted) so the
+  summary itself no longer risks a future reader assuming symmetric
+  handling between the two branches. No prior false claim existed here
+  to retire — the summary was already generic enough not to repeat
+  ADR-009 §1's original wording — this is a clarifying addition, not a
+  correction.
+- External dependencies added: none — `tasks/DEPENDENCIES.md` unchanged.
+- `git status --short` confirms exactly the two `.md` files above
+  changed, no `.py` file touched. Full test suite re-run post-change:
+  443/443 passed — identical count to the post-TASK-0021 baseline, as
+  required for an Option-A (docs-only) change. `ruff format --check .`
+  shows the same single pre-existing, unrelated drift file as baseline
+  (unchanged). `mypy --config-file mypy.ini custom_components/ tests/`
+  clean on 53 source files.

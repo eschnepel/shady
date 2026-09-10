@@ -69,7 +69,11 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 ```
 
 - **`providers/`** — `discovery.py`+`normalize.py`: baseline (unshaded FC)
-  discovery/scoring/normalization (ADR-009). `base.py`: shared provider
+  discovery/scoring/normalization (ADR-009). Two `weather.*` proxy-baseline
+  shapes: sunshine-duration (used directly, unscaled — a linear regression
+  absorbs an arbitrary scale on its own, ADR-009 §1-Amendment) and
+  cloud-coverage (sign-inverted via `invert_cloud_coverage`, since a scale
+  change alone cannot flip a series' sign). `base.py`: shared provider
   base class + two HA-agnostic helpers (ADR-012 §1/§1a). `temperature.py`:
   temperature-source resolution (ADR-003b §1a, ADR-012). Pure-ish tier;
   zero-mocking tested except `discovery.py`/`temperature.py` (real `hass`
