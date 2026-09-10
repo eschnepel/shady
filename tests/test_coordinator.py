@@ -22,6 +22,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+import pytest
+
 _SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
 
 
@@ -392,6 +394,27 @@ def _set_state(
         await hass.drain()
 
     _run(_drive())
+
+
+class TestCacheAttributeIsReadOnly:
+    """Given `ShadyCoordinator.cache` (ADR-000 §3-Amendment, TASK-0023),
+    when code attempts `coordinator.cache = ...`, then it raises
+    `AttributeError` — a getter with no matching setter, so a wrong
+    implementation anywhere that reaches a coordinator instance cannot
+    silently replace the cache it holds. Reading through the property
+    and calling methods on the returned object are both unaffected."""
+
+    def test_assignment_raises_attribute_error(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        with pytest.raises(AttributeError):
+            coordinator.cache = object()
+
+    def test_reading_and_calling_methods_on_it_still_works(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        # a plain read (property getter) and a real method call on the
+        # object it returns, proving the property only blocks
+        # *reassignment*, not read access or the cache's own API.
+        assert coordinator.cache.get_model("shading", 0) is None
 
 
 class TestRecencyDecayMaxWiring:

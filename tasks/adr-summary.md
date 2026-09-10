@@ -127,10 +127,19 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   confirms the cadence-getter/coordinator-access change doesn't affect
   that conclusion).
 - **`cache.py`** — pure, no `hass` import, injected `fetch_fn`. Index-
-  addressable time-series store (generic over `sensor_id`) + simple
-  dict stores (model cache, ramp state) + 2 restart-persisted integral
-  totals. See §5 below.
+  addressable time-series store (generic over `sensor_id`) + fitted-model
+  cache (`get_model`/`set_model`/`invalidate_models`, explicit validity
+  tracking, TASK-0021) + simple dict store (ramp state) + 2
+  restart-persisted integral totals. See §5 below.
 - **`coordinator.py`** — the only module that imports `cache.py`.
+  Exposes its `Cache` instance via a read-only `cache` property (getter,
+  no setter, TASK-0023) — reassignment raises `AttributeError`, method
+  calls on the returned object are unrestricted. Six of `sensor.py`'s
+  nine entity classes reach it via `coordinator.py` wrapper methods
+  (`pv_sum()`, `fc_sum()`, etc.); three (`ShadyForecastSensor`,
+  `ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`) are a
+  reviewed exception calling `coordinator.cache.<method>(...)` directly
+  (TASK-0011, confirmed by `AUDIT-0009`/ADR-000 §3-Amendment).
   Registers all scheduling triggers + one generic push listener per
   `forward()`-implementing provider; reads raw data from `cache.py`/
   `providers/` and hands off to `string_computation.py` (ADR-014) for

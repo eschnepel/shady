@@ -46,6 +46,10 @@ itself already uses (TASK-0009's convention), not the lighter
 `providers/discovery.py`/`providers/temperature.py` "reads `hass.states`
 only" exception. See ADR-004 §5's second Amendment for the full
 rationale.
+**2026-09-08** — §3's `coordinator.py` bullet updated: `cache` is now a
+read-only property (getter, no setter) rather than a plain instance
+attribute. See the Amendment block below for the AUDIT-0009 finding
+this responds to.
 
 ## Amendment — 2026-08-22
 
@@ -64,6 +68,50 @@ bundled Python predates the interpreter this codebase now targets.
 to `"3.14"`; `hacs.json`'s `homeassistant` minimum is raised to
 `"2026.3"`. `tasks/adr-summary.md` §1 is updated to match.
 **Decided by:** human (confirmed by Lead Agent).
+
+## Amendment — 2026-09-08
+
+**Reason:** `AUDIT-0009-entity-layer` found a PARTIAL: three of
+`sensor.py`'s nine entity classes (`ShadyForecastSensor`,
+`ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`) call
+`self._coordinator.cache.<method>(...)` directly, reaching past
+`coordinator.py`'s own wrapper methods into `cache.py`'s public API —
+while the other six sensor classes go through a dedicated
+`coordinator.py` wrapper (`pv_sum()`, `fc_sum()`, etc.). This was an
+explicit, task-time-reviewed decision (`TASK-0011`'s own `Consumed
+Interfaces` block authorizes `self.cache: Cache — exposed directly`),
+not unreviewed drift, but §3's module diagram/text did not record it as
+a reviewed exception. `TASK-0023-entity-layer-cache-access-boundary`
+was created to get a human decision between documenting the exception
+as-is (Option A) or removing it by adding coordinator wrapper methods
+for the remaining two direct calls (Option B).
+
+**Decision:** Neither A nor B as originally drafted. The three sensor
+classes keep calling `coordinator.cache.<method>(...)` directly — this
+amendment does not change that, and the module diagram above is
+unchanged (`entity_glue --> coordinator` only; `sensor.py` still never
+*imports* `cache.py`, so that specific diagram claim was never actually
+false). Instead, `coordinator.py`'s `cache` attribute became a
+**read-only property**: a getter with no matching setter, so
+`coordinator.cache = anything` now raises `AttributeError` regardless
+of which call path attempts it. Per the human's own framing: "the local
+cache variable in coordinator should be readonly, like a getter without
+a setter" — protecting against one specific failure mode (a wrong
+sensor implementation silently replacing the shared `Cache` instance
+some other entity or `coordinator.py` itself is still relying on) without
+restricting which methods remain callable on the `Cache` object itself —
+`cache.push(...)` and every other write method are still fully
+reachable through the property, by design: this narrows the "what could
+go wrong" surface for direct cache access without re-litigating whether
+direct access should exist at all, which `TASK-0011`'s original review
+already settled in the affirmative for these three classes specifically.
+
+**Decided by:** human (Enrico) — via direct clarification after the
+Lead Agent found this task's own recorded decision text ambiguous
+between several possible enforcement mechanisms (a runtime-restricted
+read-only wrapper object, a type-checker-only `Protocol`, or attribute-
+level read-only) and asked; the human's own words above resolved it to
+the last of those three.
 
 ---
 
@@ -238,7 +286,12 @@ flowchart BT
   `providers/` and hands it to `string_computation.py` (ADR-014) for the
   actual fit/predict computation, decides which cache instances get
   restart-persisted, pushes results to sensors — the only module that
-  imports `cache.py`. As of ADR-014, `coordinator.py` no longer performs
+  imports `cache.py`. Exposes its `Cache` instance via a `cache`
+  property — a getter with no matching setter (ADR-000 §3-Amendment,
+  TASK-0023), so no caller holding a coordinator reference can
+  accidentally reassign it; the property does not restrict which
+  methods are callable on the returned `Cache`, only reassignment of
+  the reference itself. As of ADR-014, `coordinator.py` no longer performs
   the fit/correction/predict computation itself (previously
   `_apply_training_corrections` and inlined build-pool/fit/
   reverse-transform sequences) — that moved to `string_computation.py`,
@@ -257,7 +310,16 @@ flowchart BT
   entity glue. `config_flow.py` implements the flow shape in ADR-010;
   `select.py` is `ShadyDiagnosticModeSelect` (ADR-004 §1, replacing
   `switch.py` as of the 2026-08-30 amendment); `button.py` is
-  `ShadyRecalculateButton` (ADR-002 §5).
+  `ShadyRecalculateButton` (ADR-002 §5). Six of `sensor.py`'s nine
+  entity classes read `coordinator.py` wrapper methods (`pv_sum()`,
+  `fc_sum()`, etc.); `ShadyForecastSensor`, `ShadyPvEnergyIntegralSensor`,
+  and `ShadyFcEnergyIntegralSensor` are a reviewed exception that instead
+  call `coordinator.cache.<method>(...)` directly (`TASK-0011`'s own
+  `Consumed Interfaces` block, confirmed by `AUDIT-0009-entity-layer`
+  and this section's 2026-09-08 Amendment) — not module-level drift, and
+  not a case this diagram's `entity_glue --> coordinator` edge needs a
+  second edge for, since `sensor.py` still never *imports* `cache.py`
+  itself.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 Dependencies point upward only. The pure-tier modules (§6's canonical

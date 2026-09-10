@@ -449,7 +449,7 @@ class ShadyCoordinator:
                 )
                 self._ensure_temperature_provider(resolution.entity_id, provider_tier)
 
-        self.cache = Cache(self._window_days, self._fetch_fn)
+        self._cache = Cache(self._window_days, self._fetch_fn)
         # ADR-005 §5/§6, ADR-007 §1 — the one restart-persisted cache in
         # this design. Constructing `Store` is synchronous and cheap;
         # actually loading from disk only happens in
@@ -640,6 +640,32 @@ class ShadyCoordinator:
             return float(state.state)
         except (TypeError, ValueError):
             return None
+
+    # -- cache access (ADR-000 §3-Amendment, TASK-0023) ------------------
+
+    @property
+    def cache(self) -> Cache:
+        """The single `Cache` instance this coordinator owns
+        (constructed once in `__init__`, never rebuilt or swapped for
+        the coordinator's lifetime) — a getter with no matching setter,
+        deliberately: a plain `self.cache = ...` instance attribute
+        could be reassigned by any caller with a reference to this
+        coordinator (a bug in `sensor.py`'s nine entity classes,
+        which all reach this attribute one way or another — `pv_sum()`/
+        `fc_sum()`-style wrapper methods for six of them,
+        `self._coordinator.cache.<method>(...)` directly for
+        `ShadyForecastSensor`/`ShadyPvEnergyIntegralSensor`/
+        `ShadyFcEnergyIntegralSensor` — see ADR-000 §3-Amendment for
+        why those three are a reviewed exception, not drift). A
+        property with only a getter raises `AttributeError` on
+        `coordinator.cache = anything`, structurally ruling out that
+        one failure mode regardless of which call path a future bug
+        lives in. This does **not** restrict which methods may be
+        called *on* the returned `Cache` — `cache.push(...)` and every
+        other write method remain fully callable, by `coordinator.py`'s
+        own internal code and by any external caller alike; only
+        reassigning the reference itself is blocked."""
+        return self._cache
 
     # -- startup ordering (ADR-002 §1a, consumed by TASK-0016) ----------
 

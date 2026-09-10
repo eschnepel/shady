@@ -1,6 +1,6 @@
 # Task: Entity-Layer Cache-Access Boundary — Decision & Fix
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-000, ADR-002]
 - **Dependencies:** [TASK-0011-forecast-sensor-and-recalculate-button, TASK-0012-aggregate-sensors]
 
@@ -107,3 +107,78 @@ coordinator.cache should be a readonly accessor. So also a wrong implementation 
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- **Option chosen:** Neither A nor B as originally drafted. The human's
+  recorded `## Decision` ("coordinator.cache should be a readonly
+  accessor... a wrong implementation within a sensor should not harm
+  the cache variable") describes a third path this task's own
+  Acceptance Criteria weren't written for. The Lead Agent found the
+  enforcement-strictness question itself ambiguous (a runtime-
+  restricted wrapper object exposing only read methods? a type-checker-
+  only `Protocol`? attribute-level read-only?) and asked; the human
+  clarified directly: "the local cache variable in coordinator should
+  be readonly. like a getter without a setter" — resolving it to
+  attribute-level read-only, the narrowest and lowest-risk of the three
+  candidates. The three sensor classes `AUDIT-0009` flagged
+  (`ShadyForecastSensor`, `ShadyPvEnergyIntegralSensor`,
+  `ShadyFcEnergyIntegralSensor`) are **unaffected** by this decision —
+  they still call `coordinator.cache.<method>(...)` directly, exactly
+  as `TASK-0011` originally reviewed and authorized; this task does not
+  reopen that call. Verified before implementing: repo-wide
+  `grep -rn ".cache\s*=\s*[^=]"` across `custom_components/shady/*.py`
+  and `tests/*.py` found exactly one assignment to `coordinator.cache`
+  anywhere in the codebase — the one in `__init__` itself — so
+  converting it to a getter-only property was safe with zero call-site
+  breakage anywhere else.
+- `custom_components/shady/coordinator.py` → `__init__` now sets
+  `self._cache = Cache(...)` (private backing field) instead of
+  `self.cache = Cache(...)`. New `cache` property (getter only, no
+  setter) added immediately after `__init__` returns `self._cache`.
+  `coordinator.cache = anything` now raises `AttributeError` from any
+  call site, anywhere; `coordinator.cache.<any method>(...)` — reads
+  and writes alike — is completely unaffected, since the property
+  returns the same real `Cache` instance every time, not a restricted
+  wrapper. Every one of `coordinator.py`'s own internal `self.cache.
+  <method>(...)` call sites (read and write) continues to work
+  unchanged, since `self.cache` still resolves through the new property
+  to the same object as before.
+- `adr/000-coding-standards.md` → new top-of-file `**2026-09-08**`
+  pointer bullet; new `## Amendment — 2026-09-08` block (placed after
+  the existing 2026-08-22 Amendment block, before `## Context`,
+  matching this file's own established amendment-placement convention
+  — not the end-of-file placement used for ADR-007/007a/009, which
+  don't have a pre-established convention of their own) recording the
+  `AUDIT-0009` finding, the decision, and the exact clarification
+  exchange. §3's `coordinator.py` bullet updated to mention the
+  read-only property; §3's `entity_glue` bullet updated to name the
+  three reviewed-exception sensor classes explicitly (the "Option A"-
+  style documentation half of closing this gap, folded into the same
+  edit) and note that the module diagram's `entity_glue --> coordinator`
+  edge needed no change, since `sensor.py` still never *imports*
+  `cache.py` — only reaches a `Cache` instance through an already-
+  in-scope `coordinator` reference, at the attribute/method level, not
+  the module level.
+- `tasks/adr-summary.md` → §2's `cache.py`/`coordinator.py` bullets
+  updated to match: the `coordinator.py` bullet now mentions the
+  read-only `cache` property and names the three reviewed-exception
+  sensor classes. Also caught and fixed a **separate, pre-existing
+  stale claim** in the same `cache.py` bullet — "simple dict stores
+  (model cache, ramp state)" — left over from `TASK-0021`'s relocation
+  work (that task's own edit to this file only touched §5's dedicated
+  `cache.py`-design section, missing this earlier, shorter mention in
+  §2's module-boundaries overview); corrected to describe the actual
+  `get_model`/`set_model`/`invalidate_models` shape.
+- `tests/test_coordinator.py` → new `import pytest` (not previously
+  imported in this file); new `TestCacheAttributeIsReadOnly` class, two
+  tests: `test_assignment_raises_attribute_error` (`coordinator.cache =
+  object()` raises `AttributeError` via `pytest.raises`) and
+  `test_reading_and_calling_methods_on_it_still_works` (a plain read
+  plus a real `get_model` call on the returned object, proving the
+  property blocks only reassignment, not read access or the cache's own
+  API).
+- External dependencies added: none — `tasks/DEPENDENCIES.md` unchanged.
+- `git status --short` confirms exactly the four files above changed.
+  Full test suite: 443 → 445/445 passed (2 new, zero deleted). `mypy
+  --config-file mypy.ini custom_components/ tests/` clean on 53 source
+  files. `ruff check .` clean repo-wide. `ruff format --check .` shows
+  only the one pre-existing, unrelated, already-documented drift file,
+  untouched — identical to every prior task's baseline in this batch.
