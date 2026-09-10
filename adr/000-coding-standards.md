@@ -2,129 +2,19 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
-**Amended:** 2026-07-05 — §3 (module diagram/prose) and §5 updated to
-reflect `cache.py` (ADR-007) and `aggregation.py` (ADR-005) once
-accepted, and to cross-reference the diagnostics-gating entity (ADR-004
-§1) — originally `ShadyDiagnosticsSwitch`, since 2026-08-30
-`ShadyDiagnosticModeSelect`, see below.
-**2026-08-14** — §3 (`providers/`, `config_flow.py` pointers) updated
-for ADR-001's split into ADR-009/ADR-010.
-**2026-08-19** — §7 amended to require `adr/INDEX.md` be kept in sync
-with any structural change to the ADR set; §3's `cache.py` bullet
-updated for ADR-007's split into ADR-007/ADR-007a; §3's dependency-
-direction paragraph now points to §6's module list instead of
-re-enumerating it, matching §2's existing single-source-of-truth note.
-**2026-08-20** — §6's zero-mocking module list updated: `providers/base.py`
-added (holds ADR-012 §1a's two shared helpers as of the same date), and
-`providers/temperature.py` added as a second `hass`-fixture exception
-alongside `providers/discovery.py`, matching what ADR-012 §5 already
-assumed this section said. §2's typing-tier scope is unchanged in
-wording but now resolves correctly for both modules, since §2 already
-points here rather than re-enumerating. §3's `coordinator.py` bullet
-updated to note the provider-push listeners ADR-012 §4 added, alongside
-its existing scheduling triggers.
-**2026-08-30** — §2's mypy-suppression module list and §3's diagram/prose
-updated for ADR-004's amendment: `switch.py` is removed (nothing else in
-the project used the `switch` platform); `select.py` (`ShadyDiagnosticModeSelect`)
-takes its place in the HA-facing entity-glue tier. §6's zero-mocking list
-gains the new pure package `diagnostics/` (`base.py` and
-`compare_regressions.py`), mirroring how `providers/base.py` was added on
-2026-08-20 for the same reason (ADR-012 §1).
-**2026-08-31** — §3's diagram/prose and §6's zero-mocking list updated for
-ADR-014: new pure module `string_computation.py`, extracted from
-`coordinator.py`'s own private methods (see ADR-014 for the full
-rationale — discovered while scoping `TASK-0015b`'s diagnostics work).
-The `diagnostics --> regression` edge is replaced by
-`diagnostics --> string_computation`; `coordinator.py`'s bullet is
-updated to reflect its narrower, orchestration-only role.
-**2026-09-01** — §3's diagram/prose updated for ADR-004's second
-amendment: `diagnostics/` gains a `TYPE_CHECKING`-only, construction-time
-reference back to `coordinator.py` (new dashed edge). §6's zero-mocking
-list **loses** `diagnostics/` (`base.py`, `compare_regressions.py`) —
-it moves to the same hand-written-`hass`-stub test tier `coordinator.py`
-itself already uses (TASK-0009's convention), not the lighter
-`providers/discovery.py`/`providers/temperature.py` "reads `hass.states`
-only" exception. See ADR-004 §5's second Amendment for the full
-rationale.
-**2026-09-08** — §3's `coordinator.py` bullet updated: `cache` is now a
-read-only property (getter, no setter) rather than a plain instance
-attribute. See the Amendment block below for the AUDIT-0009 finding
-this responds to.
-**2026-09-10** — Description-only corrections, no behavior/decision
-change (`AUDIT-0005`/`AUDIT-0007`/`AUDIT-0011`/`AUDIT-0012`, batched by
-`TASK-0027`): §1's table now names the real CI workflow file,
-`code_checker.yml` (not `ci.yml`, which never existed), and its
-Invocation column reflects that `ruff format`/`ruff check`/`mypy` run
-through `.pre-commit-config.yaml`'s hook definitions while `pytest` runs
-as a separate, non-`pre-commit` step. §3's diagram no longer shows the
-nonexistent `aggregation --> forecast_adjust` edge (`aggregation.py` has
-zero non-stdlib imports) and now shows the real `init --> coordinator`
-import edge; `init --> entity_glue` is kept only as a dashed,
-explicitly-labeled edge (platform forwarding is HA's own name-based
-mechanism, not a Python import), matching the diagram's existing
-dashed-edge convention for non-import relationships.
+**Last updated:** 2026-09-10
 
-## Amendment — 2026-08-22
-
-**Reason:** Home Assistant 2026.3 (the current HA release is 2026.8.2) raised HA's
-own minimum supported Python version to 3.14. §4's rationale for
-`from __future__ import annotations` ("without requiring Python 3.10+ at
-runtime — HA's actual minimum is lower") is now stale: HA's actual
-minimum is no longer lower, it is 3.14. As a direct consequence,
-`pyproject.toml` (`requires-python`, `[tool.mypy] python_version`) and
-`hacs.json` (`homeassistant` minimum) are amended to match, so a HACS
-install can no longer advertise compatibility with an HA release whose
-bundled Python predates the interpreter this codebase now targets.
-**Decision:** Python ≥3.14 is the project's minimum supported runtime.
-§4's first bullet is updated accordingly (see below). `pyproject.toml`'s
-`requires-python` is raised to `>=3.14` and `[tool.mypy] python_version`
-to `"3.14"`; `hacs.json`'s `homeassistant` minimum is raised to
-`"2026.3"`. `tasks/adr-summary.md` §1 is updated to match.
-**Decided by:** human (confirmed by Lead Agent).
-
-## Amendment — 2026-09-08
-
-**Reason:** `AUDIT-0009-entity-layer` found a PARTIAL: three of
-`sensor.py`'s nine entity classes (`ShadyForecastSensor`,
-`ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`) call
-`self._coordinator.cache.<method>(...)` directly, reaching past
-`coordinator.py`'s own wrapper methods into `cache.py`'s public API —
-while the other six sensor classes go through a dedicated
-`coordinator.py` wrapper (`pv_sum()`, `fc_sum()`, etc.). This was an
-explicit, task-time-reviewed decision (`TASK-0011`'s own `Consumed
-Interfaces` block authorizes `self.cache: Cache — exposed directly`),
-not unreviewed drift, but §3's module diagram/text did not record it as
-a reviewed exception. `TASK-0023-entity-layer-cache-access-boundary`
-was created to get a human decision between documenting the exception
-as-is (Option A) or removing it by adding coordinator wrapper methods
-for the remaining two direct calls (Option B).
-
-**Decision:** Neither A nor B as originally drafted. The three sensor
-classes keep calling `coordinator.cache.<method>(...)` directly — this
-amendment does not change that, and the module diagram above is
-unchanged (`entity_glue --> coordinator` only; `sensor.py` still never
-*imports* `cache.py`, so that specific diagram claim was never actually
-false). Instead, `coordinator.py`'s `cache` attribute became a
-**read-only property**: a getter with no matching setter, so
-`coordinator.cache = anything` now raises `AttributeError` regardless
-of which call path attempts it. Per the human's own framing: "the local
-cache variable in coordinator should be readonly, like a getter without
-a setter" — protecting against one specific failure mode (a wrong
-sensor implementation silently replacing the shared `Cache` instance
-some other entity or `coordinator.py` itself is still relying on) without
-restricting which methods remain callable on the `Cache` object itself —
-`cache.push(...)` and every other write method are still fully
-reachable through the property, by design: this narrows the "what could
-go wrong" surface for direct cache access without re-litigating whether
-direct access should exist at all, which `TASK-0011`'s original review
-already settled in the affirmative for these three classes specifically.
-
-**Decided by:** human (Enrico) — via direct clarification after the
-Lead Agent found this task's own recorded decision text ambiguous
-between several possible enforcement mechanisms (a runtime-restricted
-read-only wrapper object, a type-checker-only `Protocol`, or attribute-
-level read-only) and asked; the human's own words above resolved it to
-the last of those three.
+This ADR is kept current in place: each section below reflects the
+project's present conventions directly, rather than a separate change
+log. Notable revisions folded into the sections below include the
+ADR-007/ADR-009/ADR-010/ADR-012/ADR-014 module additions and splits
+(§3, §6), the `switch.py` → `select.py` (`ShadyDiagnosticModeSelect`)
+replacement and `diagnostics/`'s later coordinator dependency (§2, §3,
+§6, per ADR-004), the Python ≥3.14 minimum-runtime raise (§4), the
+`numpy.typing.NDArray[np.float64]` typing convention (§4), the
+`coordinator.cache` read-only property (§3, per `AUDIT-0009-entity-layer`
+/ `TASK-0023`), and description-only accuracy fixes to §1's CI table and
+§3's dependency diagram (per `TASK-0027`).
 
 ---
 
@@ -273,7 +163,7 @@ flowchart BT
 - **`diagnostics/`** (`base.py`, `compare_regressions.py`) — shared
   `DiagnosticMode` base class (mirrors `providers/base.py`'s `Provider`
   ABC, ADR-012 §1) plus one concrete mode today, `CompareRegressionsMode`;
-  see ADR-004 §1/§5 (Amendments, 2026-08-30 and 2026-09-01) for the
+  see ADR-004 §1/§5 for the
   source of truth. Calls `string_computation.py` for its own extra
   per-slot fitting (ADR-014) and `aggregation.py` for the accuracy
   calculation. **As of the 2026-09-01 amendment, no longer pure:** every
@@ -303,8 +193,8 @@ flowchart BT
   actual fit/predict computation, decides which cache instances get
   restart-persisted, pushes results to sensors — the only module that
   imports `cache.py`. Exposes its `Cache` instance via a `cache`
-  property — a getter with no matching setter (ADR-000 §3-Amendment,
-  TASK-0023), so no caller holding a coordinator reference can
+  property — a getter with no matching setter (§3 above, TASK-0023,
+  per `AUDIT-0009-entity-layer`), so no caller holding a coordinator reference can
   accidentally reassign it; the property does not restrict which
   methods are callable on the returned `Cache`, only reassignment of
   the reference itself. As of ADR-014, `coordinator.py` no longer performs
@@ -331,8 +221,8 @@ flowchart BT
   `fc_sum()`, etc.); `ShadyForecastSensor`, `ShadyPvEnergyIntegralSensor`,
   and `ShadyFcEnergyIntegralSensor` are a reviewed exception that instead
   call `coordinator.cache.<method>(...)` directly (`TASK-0011`'s own
-  `Consumed Interfaces` block, confirmed by `AUDIT-0009-entity-layer`
-  and this section's 2026-09-08 Amendment) — not module-level drift, and
+  `Consumed Interfaces` block, confirmed by `AUDIT-0009-entity-layer`)
+  — not module-level drift, and
   not a case this diagram's `entity_glue --> coordinator` edge needs a
   second edge for, since `sensor.py` still never *imports* `cache.py`
   itself.
@@ -354,8 +244,8 @@ baseline.
 
 - `from __future__ import annotations` at the top of every module — allows
   modern `list[str] | None` syntax without runtime evaluation cost.
-  The project's minimum supported runtime is Python 3.14 (Amendment,
-  2026-08-22 — matching HA 2026.3's minimum), which already
+  The project's minimum supported runtime is Python 3.14 (raised
+  2026-08-22 to match HA 2026.3's own minimum), which already
   supports this syntax natively; the import is kept for the deferred-
   evaluation cost benefit and as defense-in-depth should the minimum
   ever need to be lowered again, not because a lower minimum requires it.
@@ -381,23 +271,6 @@ baseline.
   --strict` does not itself force this (a bare `np.ndarray` type-checks
   cleanly), so it is a project convention, applied uniformly, rather than
   a gate the tooling already enforces on its own.
-
-## Amendment — 2026-08-22
-
-**Reason:** §4's type-hinting conventions never specified how `numpy`
-arrays should be typed. TASK-0005 (`regression/`) and TASK-0007
-(`yield_correction.py`) — both already `done` — used bare `np.ndarray`
-throughout, which `mypy --strict` accepts but which is genuinely less
-precise than the rest of §4's own standard (every other convention in
-this section exists specifically to keep a signature's *exact* type
-information visible, not just present).
-**Decision:** Every `numpy.ndarray`-valued type — parameter, return
-type, `@dataclass` attribute — is written `numpy.typing.NDArray[np.float64]`,
-never a bare `np.ndarray`. Retrofitted onto TASK-0005/TASK-0007's already-
-delivered files via patch tasks (Scenario C: `TASK-0005-patch-1`,
-`TASK-0007-patch-1`) rather than reopening either `done` task; every task
-from TASK-0006 onward uses the convention from the outset.
-**Decided by:** human (explicit instruction), confirmed by Lead Agent.
 
 ### 5 — Naming and structure
 
@@ -432,10 +305,10 @@ from TASK-0006 onward uses the convention from the outset.
   §4, ADR-012 §5): `providers/discovery.py` and `providers/temperature.py`.
   Both are tested against a real `hass` fixture instead.
 - **`diagnostics/` (`base.py`, `compare_regressions.py`) is *not* in the
-  zero-mocking tier above.** It joined it on 2026-08-30 (ADR-004 §1/§5
-  Amendment) and left it again on 2026-09-01, once `DiagnosticMode`
+  zero-mocking tier above.** It joined it on 2026-08-30 (ADR-004 §1/§5)
+  and left it again on 2026-09-01, once `DiagnosticMode`
   gained a required, construction-time `ShadyCoordinator` reference
-  (ADR-004 §5, second Amendment) — an HA-facing dependency, not a pure
+  (ADR-004 §5) — an HA-facing dependency, not a pure
   one. `diagnostics/` is instead tested the same way `coordinator.py`
   itself is: against the hand-written, real (non-`Mock`) `homeassistant`
   stub convention TASK-0009 established (registered into `sys.modules`
