@@ -1,111 +1,150 @@
 # Shady – Shading-Adjusted PV Forecast
 
-**Status:** Brainstorming / Concept phase
+**Status:** Implementation complete (20/20 core tasks); post-implementation
+ADR-conformance audit and remediation in progress (9/13 remediation tasks
+done).
 
-Shady is a Home Assistant integration that adjusts an existing PV yield
-forecast (e.g. from Forecast.Solar or Solcast) for local shading — caused
-by a tree, a neighboring building, or other horizon obstructions that
-generic forecast services don't know about.
+Shady is a Home Assistant integration that corrects an existing solar
+(PV) yield forecast — from Forecast.Solar, Solcast, or a weather
+integration — for **your specific roof's shading**: a tree, a chimney, a
+neighboring building, anything a generic forecast service has no way to
+know about.
 
-The project adopts the engineering conventions of
-[Effy](https://github.com/eschnepel/effy) (see [`adr/000-coding-standards.md`](adr/000-coding-standards.md))
-as a shared foundation for both integrations.
+## Why this exists
 
-## Core idea (see ADR-001 for details)
+Every PV forecast integration predicts what a panel *would* produce under
+open sky. If part of your array is shaded at certain times of day, the
+forecast is systematically wrong for that string — too high, at
+predictable times — and nothing in the forecast service itself can fix
+that, because it has no idea your shading exists.
 
-No manually maintained horizon profile, no sun-position calculation.
-**Validated by an earlier proof-of-concept:** Shady learns shading purely
-empirically from the relationship between the raw PV forecast value and
-the real historical yield — per slot, directly against the forecast
-value, not against time or sun position:
+The usual fix is a manually maintained horizon profile: you measure or
+estimate the angles of whatever blocks the sun, enter them by hand, and
+hope you got it right (and remember to update it when the tree grows).
+Shady takes a different approach.
 
-1. First, a **default baseline** (unshaded forecast) is automatically
-   detected globally — either from a PV-forecast integration (e.g.
-   Forecast.Solar, Solcast) or, if none is available, from the sunshine-
-   duration or cloud-coverage forecast of a weather integration (the
-   latter is inverted, since more cloud cover means lower yield, not
-   higher) — before any string is even set up. Any string can optionally
-   override this baseline with its own (e.g. one Solcast site per roof
-   orientation); such an override automatically counts as
-   "temperature-aware" (see point 4), with no separate question asked.
-   Some providers only publish hourly or half-hourly values — Shady
-   distributes these across the finer 5-minute slots.
-2. Per string **and** per 5-minute slot of the day (`00:00`, `00:05`, …,
-   `23:55` — the same grid as HA's recorder statistics), a dedicated
-   regression model is trained: `PV ≈ f(FC)` — actual yield as a function
-   of the raw forecast value, over the last 28 days of that same slot.
-   The default method is `wls2` (captures the physically plausible
-   curvature caused by the diffuse/direct-light split under shading,
-   without `wls3`'s extrapolation risk); `linear` (validated in the PoC),
-   `kernel`, and `wls3` are available as options.
-3. A global smoothing radius (default: 1 neighboring slot) prevents hard
-   jumps between adjacent slots — except at a shading boundary: if a
-   neighbor series' median deviates by more than 25% (configurable) from
-   the center slot's median, the entire neighbor series is excluded from
-   that slot's training instead of pulling the prediction in the wrong
-   direction. Alternatively (cutoff value `-1%`), the neighbor series is
-   rescaled to the center slot's median instead of being excluded, and
-   stays usable — weather- and time-distance weighting continue to apply
-   unchanged.
-4. A rolling 28-day window (configurable) keeps the model close to the
-   current situation (e.g. a tree losing its leaves). Optional, per
-   string: inverter/converter clipping samples are excluded from
-   training *and* the corrected output is additionally capped at the
-   limit; temperature derating is removed before the regression and
-   added back at prediction time — both are disabled by default until
-   explicitly configured. An additional global flag (one FC data
-   provider per config entry) determines whether that provider (e.g.
-   Solcast) already accounts for the temperature coefficient itself — if
-   so, Shady's own temperature correction is skipped for every string, to
-   avoid double-counting. A string with its own baseline override (point
-   1) is always automatically treated as temperature-aware, regardless of
-   the global flag.
-5. Result: an adjusted forecast sensor per string (today + tomorrow),
-   with a confidence aggregated to a daily total (`FC`-weighted across all
-   of the day's slots — a single slot's confidence is not very meaningful
-   on its own).
-6. Optional (a diagnostic-mode select entity, default off): a scatter-chart sensor per
-   string comparing all four regression methods directly on the string's
-   own historical data, pre-shaped for ApexCharts — including a hit rate
-   per method (as a number in the `accuracy` attribute and directly in
-   the series name, e.g. "wls2 (96%)"). By default the last complete slot
-   is always shown; the `shady.select_diagnostic_slot` service (timestamp
-   parameter) can instead select a specific, already-elapsed slot, e.g.
-   to investigate a concrete event. The historical slot data is cached
-   (updated only on recalibration or system start), so neither the
-   5-minute update nor manual slot selection triggers repeated recorder
-   queries.
-7. Additionally, summed across all strings: actual yield now, corrected
-   forecast now, corrected forecast for the whole day (a 288-value
-   array), remaining-day forecast, and two integral sensors (actual
-   energy and corrected-forecast energy, both resetting at midnight) for
-   a direct actual-vs-forecast comparison in kWh over the course of the
-   day.
-8. Optional, **per string**, three-state (`off` / `ramping` / `blending`,
-   default `off`): the remaining-day forecast can react to the
-   actual-vs-forecast deviation observed over a rolling window (default
-   24 slots = 2h, read from recorder history), bounded by a configurable
-   cutoff (default 10%). Per string, because e.g. snow under a shaded
-   string melts later than under an unshaded one — an aggregated value
-   would blend the two. **Ramping** smoothly phases the correction factor
-   in over a configurable duration (default 12 slots = 1h) after any
-   reset point, including a string's first activation of the day.
-   **Blending** instead crossfades between the old and new prediction
-   over that same duration after a provider forecast update, so
-   weather-model updates don't appear as a jump on the dashboard.
+## How it works, in plain terms
 
-## Open questions for further brainstorming
+Shady doesn't model your horizon at all. Instead, it watches what
+actually happens: for each of your strings, it compares the forecast
+against the real recorded yield, slot by slot through the day, over a
+rolling recent window (a few weeks by default). Wherever your shading
+consistently pulls actual yield below (or above) the raw forecast at a
+given time of day, Shady learns that pattern automatically — no
+measurement, no sun-position math, no manual profile to maintain or
+update as trees grow or seasons change.
 
-- Validate the smoothing-radius default (ADR-011 §1) against real data.
+Concretely:
 
-## Structure
+- **A baseline forecast** is auto-detected — normally your existing
+  PV-forecast integration, or, if you don't have one, sunshine-duration
+  or cloud-coverage data from your weather integration, used as a
+  stand-in.
+- **One model per string, per time-of-day slot** learns the relationship
+  between that baseline and your real, historical yield — refit daily, so
+  it stays current as shading and seasons change.
+- **Neighboring time slots smooth each other out**, except right at a
+  shading edge (e.g. the moment a tree's shadow moves off a panel), which
+  Shady detects and treats separately rather than blurring into a soft
+  transition that isn't really there.
+- **Optional corrections** for two other things that look like shading in
+  the data but aren't: inverter/converter clipping (the inverter simply
+  can't output more, regardless of sunlight) and temperature derating
+  (panels lose efficiency as they heat up). Both are off by default and
+  only apply if you configure the relevant details for a string.
+- **Optional intraday adjustment**: if actual yield is currently running
+  above or below what today's forecast predicted, the *remaining* part of
+  today's forecast can smoothly react to that — useful for things like
+  snow melting off a shaded panel later than an unshaded one.
 
-See [`docs/architecture.mmd`](docs/architecture.mmd) for a Mermaid
-dependency diagram of the processing steps (string and aggregate level
-combined).
+The result is a per-string forecast sensor (today + tomorrow) that gets
+more accurate the longer Shady has been watching your specific
+installation — plus whole-property aggregate sensors, and an optional
+diagnostic view for anyone who wants to see the model's own accuracy for
+themselves.
 
-See [`adr/000-coding-standards.md`](adr/000-coding-standards.md) for the
-module boundaries.
+## Relationship to [Effy](https://github.com/eschnepel/effy)
 
-See [`adr/INDEX.md`](adr/INDEX.md) for the full list of ADRs, their
-status, and how they relate to one another.
+Shady is a sibling project to Effy, by the same author. Effy isn't
+required, but the two are designed to complement each other, each
+handling its own part of the picture.
+
+They solve different problems, though. Effy takes an *already-known*
+efficiency loss — the gap between a battery management system's output
+(to the house grid) and its input (raw PV strings) — and distributes it
+across the BMS's input sensors: an accounting problem. Shady's job is the
+comparison Effy doesn't do at all: PV forecast vs. real yield, learning a
+correction from the gap. If you run Effy, its per-string output sensors
+are a valid, ready-made "actual yield" input for Shady — just as valid as
+pointing Shady at your raw PV sensors directly.
+
+## Requirements
+
+- A Home Assistant instance with recorder history enabled for your
+  actual-yield sensor(s) — either raw PV sensors or, if you run it,
+  Effy's output sensors. Shady trains against recorder short-term
+  statistics (the 5-minute resolution data), so it needs some history to
+  learn from; accuracy improves over the first few weeks as that history
+  builds up.
+- Home Assistant purges short-term statistics after 10 days by default —
+  a fixed Home Assistant behavior, separate from the general
+  `purge_keep_days` history setting, and not something Home Assistant
+  currently exposes a dedicated toggle for. If Shady's training window
+  (28 days by default, configurable) is longer than what your recorder
+  actually retains at 5-minute resolution, training data will always be
+  incomplete. Worth checking your recorder setup against Shady's
+  configured window if you want the full benefit.
+- An existing PV-forecast integration (Forecast.Solar, Solcast, or
+  similar) **or** a weather integration that publishes sunshine-duration
+  or cloud-coverage forecasts, to serve as the baseline Shady corrects.
+
+## Installation (HACS)
+
+1. In HACS, add this repository as a custom repository (category:
+   Integration).
+2. Install "Shady" and restart Home Assistant.
+3. Go to **Settings → Devices & Services → Add Integration**, search for
+   "Shady", and follow the setup flow.
+
+## Configuration
+
+Setup is entirely through the Home Assistant UI — no YAML:
+
+1. **Global settings** — baseline forecast source, training window,
+   regression method, and other defaults that apply to every string (all
+   changeable later from the integration's Options).
+2. **Add a string** — one PV string per step: its actual-yield sensor,
+   an optional per-string baseline override, and optional advanced
+   corrections (clipping, temperature derating) if you want them for that
+   string.
+3. Repeat step 2 for each string, then finish setup.
+
+Every setting has a sensible default; you can start with just your
+strings' actual-yield sensors and refine from there.
+
+## Entities created
+
+- **A forecast sensor per string** — corrected forecast for today and
+  tomorrow, with a confidence attribute.
+- **Six whole-property aggregate sensors** — current actual yield,
+  current corrected forecast, today's full corrected-forecast profile,
+  remaining-day forecast, and two energy-integral sensors (actual vs.
+  forecast, in kWh, resetting daily) for a direct day-level comparison.
+- **An optional diagnostic mode** (a select entity, off by default) that
+  adds a per-string chart sensor comparing regression methods against
+  your own historical data, including each method's own hit rate — for
+  anyone curious how well the model is actually doing.
+- **A recalculate button**, for triggering an immediate refit outside the
+  normal daily schedule.
+
+## For contributors
+
+Shady's design decisions are recorded as Architecture Decision Records,
+not in this README:
+
+- [`adr/INDEX.md`](adr/INDEX.md) — the full ADR list, status, and how
+  they relate to one another.
+- [`adr/000-coding-standards.md`](adr/000-coding-standards.md) — coding
+  standards and module boundaries (shared with Effy).
+- [`docs/architecture.mmd`](docs/architecture.mmd) — a Mermaid dependency
+  diagram of the processing pipeline.

@@ -1,6 +1,6 @@
 # Task: README Accuracy Refresh
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** [ADR-000]
 - **Dependencies:** [TASK-0016-integration-setup-entry, TASK-0018-hacs-select-rename-cleanup]
 
@@ -96,3 +96,90 @@ would reasonably conclude the project has no working code yet.
 
 ## Delivered Artifacts
 <!-- Filled by the Worker AFTER implementation. -->
+- **Scope deviation from this task's own Acceptance Criteria — recorded
+  explicitly, not silently:** the human redirected scope mid-task, past
+  what this task file's own third Acceptance Criterion allows ("the rest
+  of `README.md`... unchanged... this task does not re-touch content
+  outside the Status line and 'Core idea' section"). The human's
+  instruction: "The Readme should be rewritten anyway to match the
+  target audience (HomeAssistant Users)... Also important is the
+  relation to the Effy project." Per this project's own golden rule
+  (human decisions govern; the Lead Agent's job is to execute them
+  accurately, not to hold a pre-written task file's narrower criteria
+  against an explicit, better-informed instruction that supersedes it),
+  the full file was rewritten, not just the two sections originally
+  scoped. A **chat-local proposal draft** was produced and reviewed
+  first, specifically because the scope had grown past a mechanical
+  trim into real content/tone decisions worth a human pass before
+  touching the repo — the human then rewrote the "Relationship to Effy"
+  and "Requirements" sections themselves in that review round (revealing
+  a real fact the Lead Agent could not have sourced independently: Effy
+  is a battery-management-system integration, and its per-string output
+  sensors are a valid literal input source for Shady, not just a
+  shared-conventions sibling as the Lead Agent had initially guessed
+  from ADR text alone), and the Lead Agent proof-read/polished that
+  wording (fixed a typo, an adverb, doubled-nested parentheses, hyphen/
+  em-dash inconsistency, and verified one technical claim — HA's
+  short-term-statistics 10-day purge being a separate, currently
+  non-configurable mechanism from `purge_keep_days` — against a live
+  web search before asserting it, per this project's "verify, don't
+  invent" standard) before it was folded into the final file.
+- **Still fully satisfied, from the original Acceptance Criteria:**
+  Status line is accurate, re-checked against `tasks/INDEX.md` at
+  execution time (not copied from this task file's own Goal section,
+  which was already stale by the time this task ran — 9/13 remediation
+  tasks were done by then, not 0): "Implementation complete (20/20 core
+  tasks); post-implementation ADR-conformance audit and remediation in
+  progress (9/13 remediation tasks done)." The old "Core idea" section's
+  duplicated-ADR-content problem is fully resolved — its successor
+  content (retitled "Why this exists" + "How it works, in plain terms",
+  since the full rewrite restructured section boundaries) is a short,
+  plain-language summary with no ADR-derived numeric defaults or
+  edge-case specifics duplicated inline (the 25% neighbor-exclusion
+  cutoff, 28-day window default, 12-slot ramp duration, and similar
+  specifics are gone from the main flow — described qualitatively
+  instead, e.g. "a rolling recent window (a few weeks by default)").
+  Before/after line count for that section: **84 lines → 40 lines**
+  (`git show HEAD~1:README.md`'s old `## Core idea` section through its
+  next `## ` heading vs. the new file's `## How it works, in plain
+  terms` section span). Full test suite unchanged, confirmed by re-run
+  (touches no `.py` file).
+- **Explicit ADR pointers:** kept, but relocated to a new "For
+  contributors" section at the end rather than inline after "Core idea"
+  — `adr/INDEX.md`, `adr/000-coding-standards.md`, and
+  `docs/architecture.mmd` (all three link targets verified to exist on
+  disk before committing). Did **not** keep the original per-topic
+  pointer list naming ADR-001/003a/003b/004/005/006/011 individually
+  inline — the human's redirected brief was explicit that a HA-user
+  audience "should not need to dive into the ADRs to get the intent of
+  the project," so the rewritten body itself carries the necessary
+  intent in plain language, and the ADR pointer is now a single,
+  general "read here for the detailed rationale" doorway rather than a
+  per-paragraph citation list — judged the better fit for the stated
+  audience than preserving the original per-ADR mapping verbatim.
+- **New content beyond the original scope** (all human-directed, not
+  independently added): a "Requirements" section (recorder short-term-
+  statistics history, the 10-day-purge-vs-training-window gotcha, an
+  existing baseline forecast/weather integration), an "Installation
+  (HACS)" section, a "Configuration" section describing the actual
+  three-step config-flow shape (verified against
+  `custom_components/shady/translations/en.json` and `hacs.json`
+  directly, not assumed), and an "Entities created" section (verified
+  against the actual class list in `sensor.py`/`select.py`/`button.py`
+  — 8 sensor classes, 1 select, 1 button — described by behavior/count
+  rather than by internal class name, appropriate for the audience).
+- **Deliberately dropped:** the stale "Open questions for further
+  brainstorming" section (one leftover item, "validate the smoothing-
+  radius default against real data") — flagged to the human in the
+  reviewed proposal as not fitting a user-facing README and suggested
+  as a candidate for ADR-011 instead if still wanted; no objection or
+  follow-up request came back in review, so it stays dropped, on record
+  here rather than silently vanished.
+- External dependencies added: none — `tasks/DEPENDENCIES.md` unchanged.
+- `git status --short` confirms exactly `README.md` changed (148
+  insertions, 109 deletions — `git diff --stat`). Full test suite:
+  445/445 passed, unchanged from the TASK-0023 baseline, as required for
+  a docs-only change touching no `.py` file. `mypy --config-file
+  mypy.ini custom_components/ tests/` clean on 53 source files. `ruff
+  check .` clean repo-wide. `ruff format --check .` shows only the one
+  pre-existing, unrelated, already-documented drift file, untouched.
