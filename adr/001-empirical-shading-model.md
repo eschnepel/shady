@@ -2,57 +2,15 @@
 
 **Date:** 2026-07-04
 **Status:** Accepted
-**Amended:** 2026-07-05 — §2/§2a updated to cross-reference ADR-004 and
-ADR-006 once accepted. **2026-08-13** — §3d updated to reference
-ADR-007 and ADR-008. **2026-08-14** — split: baseline-forecast sourcing
-(formerly §5) and the config flow shape (formerly §6) moved out to
-ADR-009 and ADR-010; no behavioral change — see the Revision note at
-the end of this document. **2026-08-17** — split again: temporal
-smoothing and neighbor-regime exclusion (formerly §3b/§3c/§3d) moved out
-to ADR-011; no behavioral change — see the Revision note. **2026-08-19**
-— §2's "Training-time `FC`" bullet updated: sourced primarily via push
-now (ADR-002 §4), with recorder query (ADR-007a §4) as the backfill/gap
-fallback, rather than query alone. **2026-08-25** — §2 gains a third
-sample-weight factor, `recency_weight_i` (downweights a training day by
-its distance from the rolling window's effective date, config-flow
-exposed, default max 50% at the oldest day); §4 updated to note this
-directly addresses its own previously-flagged "may need a
-slower-decaying window" Consequence — see the Amendment block below.
+**Last updated:** 2026-08-25
 
----
-
-**This ADR still covers:** predictor space (§1), regression method
+**This ADR covers:** predictor space (§1), regression method
 (§2/§2a), per-string/per-slot granularity (§3/§3a), rolling training
 window and recency weighting (§4/§4a).
-**Moved out:** baseline forecast sourcing → ADR-009; config flow shape →
+**Moved out** (2026-08-14 and 2026-08-17 respectively, pure
+documentation reorganization — no decision, default, or behavior
+changed): baseline forecast sourcing → ADR-009; config flow shape →
 ADR-010; temporal smoothing and neighbor-regime exclusion → ADR-011.
-
----
-
-## Amendment — 2026-08-25
-
-**Reason:** §2's weighted training pool already downweights samples by
-forecast magnitude (`magnitude_weight_i`) and by time-of-day distance
-from the target slot (`time_weight_i`, ADR-011 §1), but every sample
-within the rolling `window_days` (§4) is otherwise trusted equally
-regardless of *how old* it is. §4's own Consequences already flag this
-as an open trade-off ("slots that only ever see a narrow range of
-forecast values... may have persistently low confidence... may need a
-slower-decaying window"), and §4's own motivating example — a deciduous
-tree's canopy density changing across the seasons — is precisely the
-case where a stale 27-day-old sample and a fresh yesterday's sample
-should not count the same: a string transitioning into a falling-leaves
-autumn should have its model catch up on the most recent days'
-regime shift faster than an unweighted 28-day average allows.
-**Decision:** §2's per-sample weighting gains a third, independent
-factor, `recency_weight_i`, folded into the same weighted-pool mechanism
-`magnitude_weight_i`/`time_weight_i` already use — decreasing linearly
-from `1.0` for the most recent day in the window (yesterday, the
-window's effective date, per §4/ADR-007a §4) down to `1 -
-recency_decay_max` for the oldest day, `recency_decay_max` being a new
-global, config-flow-exposed (ADR-010) setting, default `0.5` (50%). See
-the updated §2/§4 below for the full formula and rationale.
-**Decided by:** human.
 
 ---
 
@@ -343,8 +301,10 @@ not patched afterwards — see ADR-011 §1.
 This ADR originally also specified how each slot's training pool is
 widened with weighted neighbor-slot data, and how a neighbor on the wrong
 side of a real shading boundary is detected and either excluded or
-rescaled. That content was split out, on 2026-08-17, into ADR-011 — see
-the Revision note at the end of this ADR for why.
+rescaled. That content was split out, on 2026-08-17, into ADR-011 as a
+separable concern from regression-method selection and granularity —
+pure documentation reorganization, no decision, default, or behavior
+changed.
 
 ### 4 — Rolling 28-day training window as the default
 
@@ -369,8 +329,7 @@ fitting cost already accepted in §3a.
 
 ### 4a — Recency weighting within the window: `recency_weight_i`
 
-**2026-08-25 amendment** (see the Amendment block near the top of this
-document). §4's rolling window already re-adapts to a seasonally
+Added 2026-08-25. §4's rolling window already re-adapts to a seasonally
 changing obstruction by *dropping* days older than `window_days` — but
 every day still inside the window counts equally regardless of whether
 it is yesterday or 27 days ago, so a canopy that is visibly thinning
@@ -446,8 +405,10 @@ count once they are already in the pool.
 
 This ADR originally also specified baseline (unshaded) forecast sourcing
 and the config flow shape tying this model together with ADR-003a/
-ADR-003b and ADR-006. Both were split out, on 2026-08-14, into their own documents —
-see the Revision note at the end of this ADR for why.
+ADR-003b and ADR-006. Both were split out, on 2026-08-14, into their own
+documents — ADR-009 and ADR-010 respectively — as separable concerns
+from the regression model itself; pure documentation reorganization, no
+decision, default, or behavior changed.
 
 ---
 
@@ -507,27 +468,3 @@ see the Revision note at the end of this ADR for why.
 See ADR-011's own Consequences for the trade-offs specific to temporal
 smoothing and neighbor-regime exclusion (formerly this document's
 §3b/§3c/§3d).
-
----
-
-## Revision note
-
-**2026-08-14 split:** this ADR originally also specified baseline
-(unshaded) forecast sourcing (formerly §5) and the config flow shape
-(formerly §6). Both were extracted into their own documents — ADR-009
-and ADR-010 respectively — because they are separable concerns from the
-regression model itself, and were already being referenced externally
-(ADR-003a/ADR-003b, ADR-004, ADR-005, ADR-006) as if they were independent
-documents. This was a pure documentation reorganization: no decision,
-default, or behavior changed. All cross-references throughout the ADR
-set were updated to point at the new documents directly.
-
-**2026-08-17 split:** this ADR originally also specified temporal
-smoothing and neighbor-regime exclusion/rescaling (formerly §3b/§3c/§3d).
-This was extracted into ADR-011, on the same grounds as the 2026-08-14
-split above — it is a separable concern from regression-method selection
-and granularity, and was already being cited externally (ADR-004,
-ADR-007, ADR-008, ADR-010) as a self-contained unit. Pure documentation
-reorganization: no decision, default, or behavior changed. All
-cross-references throughout the ADR set were updated to point at ADR-011
-directly.

@@ -5,8 +5,8 @@
 **Split from:** ADR-001 §5. Originally part of the shading-model ADR;
 extracted because baseline sourcing is a separable concern from the
 regression model itself, and was already being referenced externally
-(ADR-003a/ADR-003b, ADR-004) as if it were its own document. No behavior changed
-by this split — see ADR-001's Revision note.
+(ADR-003a/ADR-003b, ADR-004) as if it were its own document. No behavior
+changed by this split.
 **Amended:** 2026-09-08 — §1's sunshine-duration rescale claim retired
 to match the as-shipped, unscaled behavior — see the Amendment block
 following the Consequences section at the end of this document.

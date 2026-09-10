@@ -3,10 +3,10 @@
 **Date:** 2026-08-17
 **Status:** Accepted
 **Note:** Extracted from ADR-001 §3b/§3c/§3d (2026-08-17 split) — see the
-Revision note at the end of this document, and ADR-001's own Revision
-note. Pure documentation reorganization, following the same precedent as
-ADR-001's earlier 2026-08-14 split into ADR-009/ADR-010: no decision,
-default, or behavior changed.
+Revision note at the end of this document. Pure documentation
+reorganization, following the same precedent as ADR-001's earlier
+2026-08-14 split into ADR-009/ADR-010: no decision, default, or behavior
+changed.
 
 ---
 
