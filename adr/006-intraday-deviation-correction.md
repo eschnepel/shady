@@ -416,17 +416,12 @@ method, and smoothing radius (ADR-010).
 ## Revision note
 
 Pre-acceptance drafts of this ADR gated the correction behind a hard
-minimum-sample-size requirement (at least 12 active slots within the
-window) before trusting `ratio_string` at all, and treated a
-provider-update transition as a separate, ungated ~1-hour blend rather
-than part of the same mechanism as the initial ramp. Both were replaced,
-in place, by §1a's smooth ramp and §1b's unified ordering — one
-continuous function of `w` covering both the first-activation case and
-every later provider update, rather than two separately-gated stages —
-before this ADR was accepted. `ramp_slots`' default (`12`, i.e. 1 hour)
-and `intraday_correction_cutoff`'s default (`0.10`) preserve the rough
-magnitude of those earlier fixed values; nothing else about them carries
-forward, and neither default is validated against real installations yet
-— the same caveat ADR-011's Consequences already raises about
-`neighbor_fitting_cutoff`'s own (unrelated) default applies here too, for
-`intraday_correction_cutoff`.
+minimum-sample-size requirement, and treated a provider-update
+transition as a separate, ungated blend rather than part of the same
+mechanism as the initial ramp; both were replaced, before acceptance,
+by §1a's smooth ramp and §1b's unified ordering. `ramp_slots`' default
+(`12`, i.e. 1 hour) and `intraday_correction_cutoff`'s default (`0.10`)
+preserve the rough magnitude of those earlier fixed values; neither
+default is validated against real installations yet — the same caveat
+ADR-011's Consequences already raises about `neighbor_fitting_cutoff`'s
+own (unrelated) default applies here too.
