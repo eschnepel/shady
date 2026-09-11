@@ -7,9 +7,10 @@ extracted because baseline sourcing is a separable concern from the
 regression model itself, and was already being referenced externally
 (ADR-003a/ADR-003b, ADR-004) as if it were its own document. No behavior
 changed by this split.
-**Amended:** 2026-09-08 — §1's sunshine-duration rescale claim retired
-to match the as-shipped, unscaled behavior — see the Amendment block
-following the Consequences section at the end of this document.
+**Last updated:** 2026-09-08 — §1's sunshine-duration description-only
+fix (`AUDIT-0001-provider-package`): it was always used unscaled, a
+regression stage that absorbs arbitrary linear scale needs no rescale
+step; no behavior change.
 
 ---
 
@@ -51,9 +52,15 @@ signal:
   - sunshine-duration-like values in a weather integration's forecast
     attribute (e.g. `sunshine_duration`, common in DWD/Open-Meteo-based
     weather integrations) — already a *positive* clear-sky proxy (more
-    sunshine ⇒ more expected yield), so it is used directly, unscaled
-    (see the 2026-09-08 Amendment below for why no rescale step is
-    needed).
+    sunshine ⇒ more expected yield), so it is used directly, unscaled.
+    No rescale step is needed: ADR-001's regression is an empirical fit
+    of `PV` against whatever numeric range `FC` happens to be in, and
+    every one of that ADR's method choices (`linear`/`wls2`/`wls3`/
+    `kernel`) absorbs an arbitrary linear scale of its input
+    automatically, producing an equally-good fit with different (still
+    entirely valid) regression coefficients — an explicit rescale here
+    would change only the *coefficients* the fit learns, not the
+    *quality* of what it learns.
   - cloud-coverage-like values (e.g. `cloud_coverage`,
     `cloud_coverage_total`, common in Met.no/OpenWeatherMap-based weather
     integrations) — the *inverse* of a clear-sky proxy (more cloud ⇒ less
@@ -129,41 +136,4 @@ provider subclass.
   fallback, but a future HA core or integration update could still
   change an attribute's shape without notice, same caveat as Effy's
   ADR-003.
-
-## Amendment — 2026-09-08
-
-**Reason:** `AUDIT-0001-provider-package` found that §1's own text —
-sunshine-duration values are "used directly, only rescaled to the
-baseline's expected numeric range" — did not match the shipped code:
-`normalize_candidate_series`'s `"weather_sunshine"` branch calls
-`resolve_list_series` with no scaling step at all, unlike the
-neighboring `"weather_cloud"` branch two lines below it, which
-explicitly calls `invert_cloud_coverage`. A test
-(`tests/test_providers_normalize.py::test_weather_sunshine_shape_not_
-inverted`) confirmed this is deliberate, tested current behavior, not
-an oversight — but no amendment had recorded it as such.
-`TASK-0022-sunshine-duration-rescaling` was created to get a human
-decision between adding the missing rescale step (matching this
-document's original text) or amending this document to match the
-as-shipped, unscaled behavior.
-
-**Decision:** Amend — drop the "only rescaled" claim rather than add a
-rescale step. Rationale: ADR-001's regression is an empirical fit of
-`PV` against whatever numeric range `FC` happens to be in
-(`linear`/`wls2`/`wls3`/`kernel`, per that ADR's own method choices) —
-every one of those model kinds absorbs an arbitrary linear scale of its
-input automatically, producing an equally-good fit with different
-(still entirely valid) regression coefficients. An explicit rescale
-step before the regression stage would therefore be redundant work with
-no accuracy benefit: it would change the *coefficients* the fit learns,
-not the *quality* of what it learns. §1's text above now reads
-"used directly, unscaled" in place of the retired claim; the cloud-
-coverage branch's own inversion step is unaffected by this amendment —
-that transform changes the series' *sign* (more cloud ⇒ less yield
-becomes more (inverted) value ⇒ more yield), which a linear regression
-cannot absorb on its own the way it absorbs a pure scale change, so it
-remains necessary and is not in question here.
-
-**Decided by:** human (Enrico, via this task's own recorded `##
-Decision` — "Proceed with Option A").
 
