@@ -2,11 +2,12 @@
 
 **Date:** 2026-08-17
 **Status:** Accepted
-**Note:** Extracted from ADR-001 §3b/§3c/§3d (2026-08-17 split) — see the
-Revision note at the end of this document. Pure documentation
-reorganization, following the same precedent as ADR-001's earlier
-2026-08-14 split into ADR-009/ADR-010: no decision, default, or behavior
-changed.
+**Split from:** ADR-001 §3b/§3c/§3d. Extracted because it is a separable
+concern from ADR-001's own regression-method and granularity decisions,
+and was already being referenced externally (ADR-004, ADR-007, ADR-008,
+ADR-010) as a self-contained unit — the same rationale as ADR-001's
+earlier 2026-08-14 split into ADR-009/ADR-010. No behavior changed by
+this split.
 
 ---
 
@@ -242,17 +243,3 @@ pure function of whatever data it is handed.
   low, it would exclude neighbors over ordinary weather variance, quietly
   shrinking the effective smoothing radius most of the time; set too
   high, it would let a genuine regime difference through.
-
----
-
-## Revision note
-
-**2026-08-17 split:** this content originally lived in ADR-001 as
-§3b/§3c/§3d. It was extracted into this document because it is a
-separable concern from ADR-001's own regression-method and granularity
-decisions, and was already being referenced externally (ADR-004,
-ADR-007, ADR-008, ADR-010) as a self-contained unit — the same rationale
-ADR-001's 2026-08-14 split (into ADR-009/ADR-010) already used. This was
-a pure documentation reorganization: no decision, default, or behavior
-changed. All cross-references throughout the ADR set were updated to
-point at this document directly.
