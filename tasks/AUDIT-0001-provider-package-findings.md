@@ -1,14 +1,12 @@
 # Findings: AUDIT-0001 — Provider Package
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** PASS overall, with one PARTIAL requiring human clarification
-and one scope note.
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+PASS overall, with one PARTIAL requiring human clarification and one scope note.
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | One shared base class, both providers build on it (§1) | PASS | `providers/base.py:29` `class Provider(ABC)`; `discovery.py:175` `class BaselineProvider(Provider)`; `temperature.py:106` `class TemperatureProvider(Provider)`. |
 | 2 | Two shared helpers used by both, not reimplemented (§1a) | PASS | `map_state_value`/`assemble_series` defined once in `base.py:73,108`; imported and called by `discovery.py:23` (via `_series_to_slots`→`map_state_value`, and `normalize.py:18`→`assemble_series`) and `temperature.py:26` (both). No local reimplementation found (`grep` for a second `def map_state_value` / `def assemble_series` returns only `base.py`). |
 | 3 | Entities without discovery/scoring skip the abstraction (§2) | PASS (out-of-file, verified negatively) | `PV` (actual yield) has no provider class in this package at all — confirmed no `PvProvider`/similar exists. Full confirmation of the *consuming* side (that `coordinator.py` wires `PV`'s `entity_id` straight into `cache.py`) is AUDIT-0005's scope; this audit only confirms the providers/ side has nothing to skip. |
@@ -22,36 +20,34 @@ and one scope note.
 
 ### PARTIAL finding — sunshine-duration rescaling (ADR-009 §1)
 
-ADR-009 §1 states sunshine-duration values are "used directly, **only
-rescaled** to the baseline's expected numeric range." The shipped code
-does not rescale this value at all: `normalize_candidate_series`'s
-`"weather_sunshine"` branch (`normalize.py:162-163`) calls
-`resolve_list_series(raw, value_key_hint=SUNSHINE_DURATION_KEY)` with no
-scaling step, in contrast to the `"weather_cloud"` branch two lines below
-it, which explicitly calls `invert_cloud_coverage`. The test suite
-confirms this is intentional, not an oversight: `tests/
-test_providers_normalize.py:137-140`,
+ADR-009 §1 states sunshine-duration values are "used directly, **only rescaled**
+to the baseline's expected numeric range." The shipped code does not rescale
+this value at all: `normalize_candidate_series`'s `"weather_sunshine"` branch
+(`normalize.py:162-163`) calls
+`resolve_list_series(raw, value_key_hint=SUNSHINE_DURATION_KEY)` with no scaling
+step, in contrast to the `"weather_cloud"` branch two lines below it, which
+explicitly calls `invert_cloud_coverage`. The test suite confirms this is
+intentional, not an oversight: `tests/ test_providers_normalize.py:137-140`,
 `test_weather_sunshine_shape_not_inverted`, asserts a raw `600.0` maps to
 `600.0` unchanged.
 
-This is not necessarily a bug — since ADR-001's regression is an
-empirical fit of `PV` against whatever numeric range `FC` happens to be
-in, a linear/wls2/wls3/kernel model does not strictly need `FC` to be
-pre-scaled to match physical units; the fit absorbs an arbitrary linear
-scale automatically. But the ADR text commits to an explicit rescale
-step that the code does not perform, and no ADR amendment records this
-as a deliberate simplification. **Per this project's golden rule
-("when in doubt, escalate, never guess"), this is flagged as a question
-for the human rather than resolved here:** either (a) the code is
-missing a rescale step ADR-009 §1 requires, or (b) ADR-009 §1's wording
-should be amended to drop "only rescaled" as unnecessary given the
-regression model's scale-invariance — a decision only the human/Lead
-Agent should make, not something to silently patch during an audit.
+This is not necessarily a bug — since ADR-001's regression is an empirical fit
+of `PV` against whatever numeric range `FC` happens to be in, a
+linear/wls2/wls3/kernel model does not strictly need `FC` to be pre-scaled to
+match physical units; the fit absorbs an arbitrary linear scale automatically.
+But the ADR text commits to an explicit rescale step that the code does not
+perform, and no ADR amendment records this as a deliberate simplification. **Per
+this project's golden rule ("when in doubt, escalate, never guess"), this is
+flagged as a question for the human rather than resolved here:** either (a) the
+code is missing a rescale step ADR-009 §1 requires, or (b) ADR-009 §1's wording
+should be amended to drop "only rescaled" as unnecessary given the regression
+model's scale-invariance — a decision only the human/Lead Agent should make, not
+something to silently patch during an audit.
 
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Duplication regression (helpers reimplemented locally) would be caught | GAP | No test asserts `discovery.py`/`temperature.py` call `base.py`'s functions specifically (e.g. via monkeypatch/spy) — current tests only check output values, so a correct-but-duplicated reimplementation would still pass. Low-severity gap (duplication would still need to be *behaviorally* correct to pass, which is most of what matters), but worth naming. |
 | 2 | Tied/near-tied scoring produces a deterministic winner | GAP | No test constructs two candidates with equal scores and asserts a specific, stable ordering. `discover_baseline_candidates` (`discovery.py:154-156`) uses Python's stable `list.sort`, so ties would in practice preserve scan order (sensor domain before weather domain, dict-shape before list-shape within `_scan_sensor_domain`) — but nothing pins this down as intentional, testable behavior. |
 | 3 | Per-string override precedence | N/A to this package | Correctly out of scope — see AUDIT-0005 for the actual test-coverage check on `coordinator.py`'s override logic. |
@@ -61,17 +57,16 @@ Agent should make, not something to silently patch during an audit.
 
 ## Candidate Follow-Ups (not created — proposed only)
 
-1. **Human decision needed:** resolve the ADR-009 §1 "rescaled" wording
-   vs. actual unscaled sunshine-duration behavior — either amend ADR-009
-   §1 to drop the rescale claim (with rationale: regression model
-   absorbs arbitrary linear scale), or open a Scenario-C patch task
-   against `TASK-0003-baseline-forecast-discovery` to add the rescale
-   step.
-2. Optional, low-priority: add a tie-break test for
-   `discover_baseline_candidates` if deterministic candidate ordering
-   ever becomes user-visible/relied-upon (currently cosmetic — the user
-   confirms a candidate manually regardless of list order per ADR-009
-   §3).
+1. **Human decision needed:** resolve the ADR-009 §1 "rescaled" wording vs.
+   actual unscaled sunshine-duration behavior — either amend ADR-009 §1 to drop
+   the rescale claim (with rationale: regression model absorbs arbitrary linear
+   scale), or open a Scenario-C patch task against
+   `TASK-0003-baseline-forecast-discovery` to add the rescale step.
+1. Optional, low-priority: add a tie-break test for
+   `discover_baseline_candidates` if deterministic candidate ordering ever
+   becomes user-visible/relied-upon (currently cosmetic — the user confirms a
+   candidate manually regardless of list order per ADR-009 §3).
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0001-provider-package-findings.md` (this file)

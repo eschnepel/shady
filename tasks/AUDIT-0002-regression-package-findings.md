@@ -1,16 +1,14 @@
 # Findings: AUDIT-0002 — Regression Package
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** PASS overall. No FAILs. Two genuine test-coverage GAPs
-within this package's own test file (one with incidental coverage
-elsewhere); one self-correction to this audit task's own criterion
-wording.
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+PASS overall. No FAILs. Two genuine test-coverage GAPs within this package's own
+test file (one with incidental coverage elsewhere); one self-correction to this
+audit task's own criterion wording.
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Pluggable, globally-selected method; `wls2` default (§2) | PASS | Four independent strategy modules (`linear.py`, `wls2.py`, `wls3.py`, `kernel.py`), each exposing a module-level `fit(pool) -> FittedModel`, share `regression/base.py`'s `FittedModel`/`SamplePool`. Default-ness itself is a config-flow concern (verified in AUDIT-0010), not visible in this package — no `linear.py`-vs-`wls2.py` asymmetry in this package suggests one is privileged over another at this layer, consistent with "chosen once by the user," not hardcoded here. |
 | 2 | Daily-total goodness-of-fit, not per-slot (§2a) | N/A to this package | `regression/` only produces per-slot `confidence`; the daily-total-weighted aggregation ADR-002 §3/ADR-001 §2a describes is a `coordinator.py`/entity-layer concern. Correctly out of this package's scope — cross-ref AUDIT-0005/AUDIT-0009. |
 | 3 | One model per string (§3) | N/A to this package | `regression/` is per-string-agnostic by construction — it fits whatever pool it's handed, once per call. Cardinality (one call per string) is `coordinator.py`'s responsibility (AUDIT-0005). |
@@ -28,7 +26,7 @@ wording.
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Differential test: `recency_weight_i` actually changes the fit | COVERED | `tests/test_regression.py:403-406` `test_confidence_reflects_recency_weight_contribution` asserts `decayed.confidence < undecayed.confidence` — a genuine differential comparison, not just "parameter accepted." |
 | 2 | `magnitude_weight_i` default is a true no-op | COVERED | `test_true_default_reproduces_pre_patch_output_unmodified` (`test_regression.py:259-280`) asserts `np.array_equal` between default and explicit-`True` calls — byte-identical, not merely "doesn't crash." |
 | 3 | Neighbor-exclusion boundary test would catch a regression to down-weight | COVERED | `TestNeighborHardExclusion.test_deviating_neighbor_is_fully_excluded` (`test_regression.py:412` area) — needs to assert exact `0.0` weight, not just "reduced"; confirmed by reading the test body (uses `neighbor_fitting_cutoff` below the fixture's deviation and asserts zero contribution). |
@@ -40,16 +38,16 @@ wording.
 
 1. **Recommended, moderate priority:** add a direct
    `predict_unclamped()`-vs-`predict()` differential test to
-   `test_regression.py` itself (e.g. a fixture where the unclamped
-   prediction would exceed `FC` or go negative, asserting
-   `predict_unclamped` preserves that while `predict` clamps it) —
-   closes Test-Coverage Gap #5 without relying on a different audit
-   group's test file for a `regression/`-package-level guarantee.
-2. **Correction, no action needed:** this audit task's own Audit
-   Criterion #12 wording ("default to a no-op (disabled)") should be
-   read as "default preserves pre-existing behavior," not "defaults to
-   off" — noting this so a future re-run of this audit task doesn't
-   trip on the same imprecise phrasing.
+   `test_regression.py` itself (e.g. a fixture where the unclamped prediction
+   would exceed `FC` or go negative, asserting `predict_unclamped` preserves
+   that while `predict` clamps it) — closes Test-Coverage Gap #5 without relying
+   on a different audit group's test file for a `regression/`-package-level
+   guarantee.
+1. **Correction, no action needed:** this audit task's own Audit Criterion #12
+   wording ("default to a no-op (disabled)") should be read as "default
+   preserves pre-existing behavior," not "defaults to off" — noting this so a
+   future re-run of this audit task doesn't trip on the same imprecise phrasing.
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0002-regression-package-findings.md` (this file)

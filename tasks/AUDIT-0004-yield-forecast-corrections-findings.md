@@ -1,16 +1,14 @@
 # Findings: AUDIT-0004 — Yield & Forecast Corrections
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** PASS overall. No FAILs, no PARTIALs. Strongest-tested
-module pair audited so far — several Test-Coverage Criteria exceeded
-what was asked for (differential/spy-style proofs rather than
-output-equality checks alone).
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+PASS overall. No FAILs, no PARTIALs. Strongest-tested module pair audited so far
+— several Test-Coverage Criteria exceeded what was asked for
+(differential/spy-style proofs rather than output-equality checks alone).
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Clipping = exclusion, not down-weight (§1) | PASS | `yield_correction.py:59-61` `exclude_clipped`: `excluded[excluded >= clipping_threshold * inverter_limit] = np.nan` — full `NaN` marking, no scaling factor applied anywhere in the function. |
 | 2 | Inverter limit is a *second*, separate output clamp (§1a) | PASS | `forecast_adjust.py:49-65` `clamp_output`'s `upper = safe_fc if inverter_limit is None else np.minimum(safe_fc, inverter_limit)` — a distinct `min(FC, inverter_limit)` bound layered on top of the base `[0, FC]` clamp, not reusing/conflating the training-time exclusion threshold (`clipping_threshold`) at all — the output clamp uses the raw `inverter_limit`, not `clipping_threshold * inverter_limit`. |
 | 3 | Clipping exclusion stays inside `yield_correction.py`'s pre-processing, no leakage elsewhere (§2) | PASS | `exclude_clipped` is the only clipping-related function in the codebase; `grep -rn "clipping_threshold\|exclude_clipped" custom_components/shady/*.py custom_components/shady/**/*.py` (excluding `yield_correction.py` and `coordinator.py`'s call site) shows no clipping logic inside `regression/` or `forecast_adjust.py` — the latter only ever handles the *output*-clamp half (§1a), correctly kept separate per ADR-003a §2's explicit "not a call back into `yield_correction.py`." |
@@ -25,7 +23,7 @@ output-equality checks alone).
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Clipping exclusion removes points (count/identity), not just changes output values | COVERED | `TestExcludeClipped.test_exclusion_is_not_a_downweight_but_a_full_exclusion` (`test_yield_correction.py:57-63`) asserts exact `NaN`, explicitly named to guard against a down-weight regression. |
 | 2 | Inverter-limit output clamp asserted separately from training exclusion | COVERED | `TestInverterLimitClampsBelowForecast` (`test_forecast_adjust.py:109`) is a distinct test class from any clipping-exclusion test (which lives in a different file/module entirely — `yield_correction.py` doesn't know about output clamping at all), confirming the two are independently verified. |
 | 3 | Differential round-trip test: forward then reverse recovers the original value | COVERED, exceeds the bar | `TestReverseTransformRoundTrip` (`test_yield_correction.py:121-161`) tests round-trip recovery for both a scalar and an array case (`test_round_trip_recovers_original_value`, `test_round_trip_recovers_original_array`), not merely each direction in isolation as the audit criterion worried might be the case. |
@@ -35,29 +33,27 @@ output-equality checks alone).
 ### Additional coverage found exceeding the original audit task's own criteria
 
 - **`TestUsesPredictUnclampedNotPredict.test_predict_is_never_called`**
-  (`test_forecast_adjust.py:215-236`) is a genuine spy test — a stub
-  model whose `predict()` raises `AssertionError` if called at all —
-  directly proving `adjust_forecast` never touches the clamped
-  `predict()` path. This is a stronger proof than this audit task
-  originally asked for (which only asked whether the ordering/clamp
-  bug this guards against was covered).
-- **`TestCombinedOrderingReverseTransformThenClamp.
-  test_ordering_matters_transform_then_clamp_not_clamp_then_transform`**
+  (`test_forecast_adjust.py:215-236`) is a genuine spy test — a stub model whose
+  `predict()` raises `AssertionError` if called at all — directly proving
+  `adjust_forecast` never touches the clamped `predict()` path. This is a
+  stronger proof than this audit task originally asked for (which only asked
+  whether the ordering/clamp bug this guards against was covered).
+- **`TestCombinedOrderingReverseTransformThenClamp. test_ordering_matters_transform_then_clamp_not_clamp_then_transform`**
   (`test_forecast_adjust.py:177-209`) constructs a scenario where
-  transform-then-clamp and clamp-then-transform produce *different*
-  numeric results (700 vs. 980 vs. clamped-850) and asserts the correct
-  one — a true ordering-sensitive differential test, not just "the
-  final number looks plausible."
+  transform-then-clamp and clamp-then-transform produce *different* numeric
+  results (700 vs. 980 vs. clamped-850) and asserts the correct one — a true
+  ordering-sensitive differential test, not just "the final number looks
+  plausible."
 
 ## Candidate Follow-Ups (not created — proposed only)
 
-1. **Optional, low priority:** parametrize
-   `TestUsesPredictUnclampedNotPredict` (or add a sibling test) across
-   the four real `regression/` strategy modules, mirroring
-   `test_regression.py`'s `TestEveryStrategyHandlesTheSharedFixtures`
-   pattern — would close Test-Coverage Gap #5 and give this module pair
-   the same real-strategy assurance `test_regression.py` has for its
-   own package, rather than relying on hand-built stubs throughout.
+1. **Optional, low priority:** parametrize `TestUsesPredictUnclampedNotPredict`
+   (or add a sibling test) across the four real `regression/` strategy modules,
+   mirroring `test_regression.py`'s `TestEveryStrategyHandlesTheSharedFixtures`
+   pattern — would close Test-Coverage Gap #5 and give this module pair the same
+   real-strategy assurance `test_regression.py` has for its own package, rather
+   than relying on hand-built stubs throughout.
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0004-yield-forecast-corrections-findings.md` (this file)

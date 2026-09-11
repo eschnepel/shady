@@ -2,16 +2,15 @@
 
 This is the authoritative list of all ADRs in this project, their current
 status, and how they relate to one another. See
-[`adr/000-coding-standards.md`](000-coding-standards.md) §7 for what
-belongs in an ADR versus a code comment.
+[`adr/000-coding-standards.md`](000-coding-standards.md) §7 for what belongs in
+an ADR versus a code comment.
 
-**This file must be updated whenever an ADR undergoes a structural
-change** — a new ADR is added, one is split, superseded, or its status
-otherwise changes — see ADR-000 §7 for the mandatory-update rule this
-enforces.
+**This file must be updated whenever an ADR undergoes a structural change** — a
+new ADR is added, one is split, superseded, or its status otherwise changes —
+see ADR-000 §7 for the mandatory-update rule this enforces.
 
 | ADR | Status | Title |
-|---|---|---|
+| -- | -- | -- |
 | [000](000-coding-standards.md) | Accepted | Code Quality Standards, Programming Style & Core Concepts |
 | [001](001-empirical-shading-model.md) | Accepted | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, rolling window |
 | [002](002-coordinator-update-strategy.md) | Accepted | Coordinator Update Strategy: Recalibration vs. Forecast Recompute |
@@ -34,9 +33,9 @@ enforces.
 
 **Status key:** `Accepted` — in force, implemented or scheduled for
 implementation. `Superseded` — replaced by a later ADR, kept for history.
-`Proposed` — design sketch only; no task exists yet and MVP scope does
-not include it (see `tasks/adr-summary.md` §9 exclusions vs. this
-document's own "not yet scheduled" framing — a `Proposed` ADR may still
-be built later, unlike a permanent §9 exclusion).
+`Proposed` — design sketch only; no task exists yet and MVP scope does not
+include it (see `tasks/adr-summary.md` §9 exclusions vs. this document's own
+"not yet scheduled" framing — a `Proposed` ADR may still be built later, unlike
+a permanent §9 exclusion).
 
 Further ADRs (014 onward) will be added as brainstorming continues.

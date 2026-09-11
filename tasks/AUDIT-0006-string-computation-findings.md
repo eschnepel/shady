@@ -1,22 +1,20 @@
 # Findings: AUDIT-0006 — String Computation Module
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** Mostly PASS, well-tested (all 14 tests re-run live during
-this audit, 14/14 green). **One genuine FAIL**: the module's own
-docstring makes a factually false claim about who calls
-`predict_string_forecast` — it says `coordinator.py`'s no-intraday-
-correction path uses it; `coordinator.py` never calls
-`predict_string_forecast` at all. This sharpens (and is the same
-underlying fact as) AUDIT-0005's finding B, but is more directly
-actionable here since it's a defect in the audited file itself, not
-just the ADR text. One coverage GAP (duplication-regression is
-untestable at the unit level, same class of gap as AUDIT-0005's #4).
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+Mostly PASS, well-tested (all 14 tests re-run live during this audit, 14/14
+green). **One genuine FAIL**: the module's own docstring makes a factually false
+claim about who calls `predict_string_forecast` — it says `coordinator.py`'s
+no-intraday- correction path uses it; `coordinator.py` never calls
+`predict_string_forecast` at all. This sharpens (and is the same underlying fact
+as) AUDIT-0005's finding B, but is more directly actionable here since it's a
+defect in the audited file itself, not just the ADR text. One coverage GAP
+(duplication-regression is untestable at the unit level, same class of gap as
+AUDIT-0005's #4).
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Slot-count-agnostic — no hardcoded 288 or similar | PASS | `grep -n "288\|SLOTS_PER_DAY"  string_computation.py` returns nothing; every function signature takes `Mapping[int, NDArray]`/plain `NDArray` with no dimension assumption. `TestFitStringModel.test_single_slot_pool_n_slots_1` and `TestPredictStringForecast.test_single_slot_prediction` (`test_string_computation.py:297-305,336-346`) exercise `n_slots=1` directly and pass, empirically confirming the claim, not just by inspection. |
 | 2 | Pure — no `homeassistant.*`/`cache.py` import | PASS | Imports (`string_computation.py:53-56`): `.forecast_adjust`, `.regression`/`.regression.base`, `.yield_correction` only. `TestModulePurity.test_no_cache_or_homeassistant_import` (`:79-87`) asserts this from the source text directly and passes. |
 | 3 | `apply_training_corrections`/`REGRESSION_STRATEGIES` moved verbatim in behavior (§2) | PASS | `TestApplyTrainingCorrections`'s six tests (`:104-266`) each independently reconstruct the expected result via direct `exclude_clipped`/`derate_actual_to_reference`/`uplift_ambient_to_cell` calls (the same primitives the function composes) and assert exact array equality across the no-temperature, `cell`, `ambient`-with-uplift, `ambient`-without-capacity, `provider_already_corrects`, and multi-offset cases — genuine differential proofs, not smoke tests. `TestModulePurity.test_registry_has_all_four_methods` (`:89-94`) confirms `REGRESSION_STRATEGIES` still maps all four `const.py` method names to the correct modules by identity (`is`, not just equality). |
@@ -28,7 +26,7 @@ untestable at the unit level, same class of gap as AUDIT-0005's #4).
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | A test would fail if `coordinator.py` reintroduced a local copy of `fit_string_model`'s logic instead of calling this module | **GAP** | No test in either `test_string_computation.py` or `test_coordinator.py` inspects `coordinator.py`'s source/call-graph to confirm it delegates rather than reimplements — every existing test only checks *output* correctness. A hypothetical regression that reintroduced a correctness-preserving local copy of `fit_string_model`'s three-line sequence directly inside `coordinator.py` (exactly the ADR-014 §6 "drift risk" scenario) would pass every existing test undetected, since the numeric outputs would still match. Same class of gap as AUDIT-0005's Test-Coverage Gap #4 — an absence-of-a-second-implementation property is not naturally unit-testable; static grep (as done in Audit Criteria 5/7 above) is the practical substitute. |
 | 2 | `fit_string_model`/`predict_string_forecast` proven identical to pre-TASK-0017 `coordinator.py` behavior, empirically | COVERED, confirmed by live re-execution | `tests/test_coordinator.py`, `tests/test_coordinator_intraday.py`, and `tests/test_coordinator_temperature_forecast.py` are documented (TASK-0017 Delivered Artifacts) as passing unmodified after the refactor — this audit did not re-run those three files (they require the real `homeassistant` package, not installed in this sandbox), but **did** independently install `pytest` and re-run `tests/test_string_computation.py` live: **14/14 passed**, confirming the differential proofs against the underlying `regression/`/`forecast_adjust.py`/`yield_correction.py` primitives (Audit Criteria 3/4 above) hold today, not merely at TASK-0017's original landing. |
 | 3 | 14 tests still map one-to-one onto public functions, no ungrown surface | COVERED, with one bookkeeping nit | `grep -c "def test_"` confirms exactly 14 test functions today — unchanged since TASK-0017. `string_computation.py`'s public surface is unchanged too (`REGRESSION_STRATEGIES`, `apply_training_corrections`, `fit_string_model`, `predict_string_forecast` — four names, matching `__all__`-equivalent expectations, no fifth function added since). Minor nit: TASK-0017's own Delivered Artifacts block claims "14 tests across **5** classes"; the file actually has **4** classes (`TestModulePurity`, `TestApplyTrainingCorrections`, `TestFitStringModel`, `TestPredictStringForecast`). Cosmetic task-file bookkeeping error, not a code or coverage issue — noted for completeness only. |
@@ -38,27 +36,28 @@ untestable at the unit level, same class of gap as AUDIT-0005's #4).
 
 1. **Documentation fix, low risk, high value:** correct
    `string_computation.py`'s module docstring (`:34-42`) and
-   `predict_string_forecast`'s own docstring (`:187-198`) — remove the
-   false claim that `coordinator.py`'s no-intraday-correction path uses
-   `predict_string_forecast`. The accurate statement (already correctly
-   captured in `coordinator.py`'s own comments and in TASK-0017's
-   Acceptance Criteria) is that **both** of `coordinator.py`'s paths
-   (intraday on and off) call `reverse_transformed_forecast`/
-   `clamp_output` directly, and only `diagnostics/compare_regressions.py`
-   actually calls `predict_string_forecast`. This is a same-file
-   docstring correction — no behavior change, no test change needed.
-2. **Same underlying fact as AUDIT-0005's candidate follow-up #2:**
-   if/when ADR-014 §4 is amended (per that audit's recommendation) to
-   carve out `_predict_day_basis`/`_clamp_basis`'s exception, the same
-   amendment pass should note that `predict_string_forecast` today has
-   exactly one real caller (`diagnostics/`), not two — this findings
-   file and AUDIT-0005's are describing the same gap from two ends of
-   the same call graph and should be resolved together.
-3. **Optional, low priority:** a lightweight static check (e.g. a test
-   that parses `coordinator.py`'s source and asserts no
+   `predict_string_forecast`'s own docstring (`:187-198`) — remove the false
+   claim that `coordinator.py`'s no-intraday-correction path uses
+   `predict_string_forecast`. The accurate statement (already correctly captured
+   in `coordinator.py`'s own comments and in TASK-0017's Acceptance Criteria) is
+   that **both** of `coordinator.py`'s paths (intraday on and off) call
+   `reverse_transformed_forecast`/ `clamp_output` directly, and only
+   `diagnostics/compare_regressions.py` actually calls
+   `predict_string_forecast`. This is a same-file docstring correction — no
+   behavior change, no test change needed.
+1. **Same underlying fact as AUDIT-0005's candidate follow-up #2:** if/when
+   ADR-014 §4 is amended (per that audit's recommendation) to carve out
+   `_predict_day_basis`/`_clamp_basis`'s exception, the same amendment pass
+   should note that `predict_string_forecast` today has exactly one real caller
+   (`diagnostics/`), not two — this findings file and AUDIT-0005's are
+   describing the same gap from two ends of the same call graph and should be
+   resolved together.
+1. **Optional, low priority:** a lightweight static check (e.g. a test that
+   parses `coordinator.py`'s source and asserts no
    `_apply_training_corrections`-shaped private method exists, or a
-   `ruff`/code-review convention) would close Test-Coverage Gap #1 —
-   not urgent, same reasoning as AUDIT-0005's analogous follow-up #4.
+   `ruff`/code-review convention) would close Test-Coverage Gap #1 — not urgent,
+   same reasoning as AUDIT-0005's analogous follow-up #4.
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0006-string-computation-findings.md` (this file)

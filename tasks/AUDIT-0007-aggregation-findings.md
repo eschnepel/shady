@@ -1,22 +1,19 @@
 # Findings: AUDIT-0007 — Aggregation Module
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** PASS on every behavioral criterion — the two decisions
-(ADR-005 sums/integrals, ADR-006 intraday math) genuinely have not
-blurred together, confirmed by both code inspection and a live test
-run (19/19 passed). **One genuine FAIL, module-graph documentation**:
-both ADR-005's local module diagram and ADR-000 §3's canonical module
-graph claim an `aggregation --> forecast_adjust` edge that does not
-exist in the code — `aggregation.py` has zero imports beyond the
-standard library. One real Test-Coverage GAP (Ramping vs. Blending
-divergence mid-ramp is never asserted, only their convergence at
-`w=1`).
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+PASS on every behavioral criterion — the two decisions (ADR-005 sums/integrals,
+ADR-006 intraday math) genuinely have not blurred together, confirmed by both
+code inspection and a live test run (19/19 passed). **One genuine FAIL,
+module-graph documentation**: both ADR-005's local module diagram and ADR-000
+§3's canonical module graph claim an `aggregation --> forecast_adjust` edge that
+does not exist in the code — `aggregation.py` has zero imports beyond the
+standard library. One real Test-Coverage GAP (Ramping vs. Blending divergence
+mid-ramp is never asserted, only their convergence at `w=1`).
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | §1: `ShadyPvSumSensor`'s sum covers every configured string, no double-count/silent drop | PASS | `sum_values` (`aggregation.py:49-61`) is a plain, generic `sum()` over whatever iterable of `float \| None` it's handed — no per-string filtering, ordering, or length assumption of its own, so there is no code path inside this function that could double-count or silently drop a member of the list it's given. (Whether `coordinator.py` actually hands it every configured string's value is that module's concern, correctly out of this audit's Scope per the Out-of-Scope note.) |
 | 2 | §2: the FC-sum function sums the *corrected* forecast, not raw baseline FC | PASS | `sum_values` is type-agnostic about what its inputs represent — it has no way to distinguish "corrected" from "raw" values, so correctness here is entirely a question of what `coordinator.py` passes in. `coordinator.py`'s own comment (`coordinator.py:641`, cited already in AUDIT-0005) states directly: `aggregation.sum_values is only ever handed already-[adjusted values]`, i.e. `coordinator.py` performs the correction (via `string_computation.py`/`forecast_adjust.py`) before calling into `aggregation.py`, never the reverse. This is also the reason `aggregation.py` has no dependency on `forecast_adjust.py` at all — see the FAIL below. |
 | 3 | §3: whole-day sum genuinely covers all 288 slots including past ones, distinct from §4 | PASS | `day_energy_total_wh` (`:70-76`) takes no `now`/timestamp argument at all and sums every slot in whatever `slot_values` iterable it receives unconditionally — structurally incapable of excluding past slots, unlike `remaining_energy_wh` which explicitly filters by `timestamp >= now`. The two functions are cleanly distinct, not a shared implementation with a flag. |
@@ -33,11 +30,10 @@ divergence mid-ramp is never asserted, only their convergence at
 
 ### Additional finding, outside the enumerated criteria: stale module-dependency edge
 
-Neither ADR-005's local module diagram nor this audit's checklist
-explicitly asked about `aggregation.py`'s own *imports*, but verifying
-Criterion 2 (does the FC-sum use corrected values) required checking
-whether `aggregation.py` calls `forecast_adjust.py` itself, and it
-does not — at all:
+Neither ADR-005's local module diagram nor this audit's checklist explicitly
+asked about `aggregation.py`'s own *imports*, but verifying Criterion 2 (does
+the FC-sum use corrected values) required checking whether `aggregation.py`
+calls `forecast_adjust.py` itself, and it does not — at all:
 
 ```
 $ grep -n "forecast_adjust\|^from\|^import" custom_components/shady/aggregation.py
@@ -47,25 +43,24 @@ $ grep -n "forecast_adjust\|^from\|^import" custom_components/shady/aggregation.
 ```
 
 **Both** ADR-005's own module diagram (`adr/005-...md:169`,
-`aggregation --> forecast_adjust`) **and** ADR-000 §3's canonical,
-"current" module graph (`adr/000-...md:162`, the same edge) claim this
-dependency exists. It does not, and — per Criterion 2's evidence above
-— it structurally *shouldn't*: the correction step happens in
-`coordinator.py` before values ever reach `aggregation.py`'s purely
-numeric `sum_values`/`day_energy_total_wh`/`remaining_energy_wh`. This
-reads as a leftover from an earlier design (plausibly pre-dating
-ADR-014's `string_computation.py` split, when it may once have seemed
-natural for the aggregation layer to call the correction step
-directly) that was never removed from either diagram when the actual
-call chain settled into its current, correction-happens-upstream
-shape. This is a documentation defect in two ADRs, not a code defect —
-flagged as **FAIL** against diagram accuracy, with a recommendation
-below.
+`aggregation --> forecast_adjust`) **and** ADR-000 §3's canonical, "current"
+module graph (`adr/000-...md:162`, the same edge) claim this dependency exists.
+It does not, and — per Criterion 2's evidence above — it structurally
+*shouldn't*: the correction step happens in `coordinator.py` before values ever
+reach `aggregation.py`'s purely numeric
+`sum_values`/`day_energy_total_wh`/`remaining_energy_wh`. This reads as a
+leftover from an earlier design (plausibly pre-dating ADR-014's
+`string_computation.py` split, when it may once have seemed natural for the
+aggregation layer to call the correction step directly) that was never removed
+from either diagram when the actual call chain settled into its current,
+correction-happens-upstream shape. This is a documentation defect in two ADRs,
+not a code defect — flagged as **FAIL** against diagram accuracy, with a
+recommendation below.
 
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | A test per ADR-005 sensor function that would fail if a configured string were silently dropped | COVERED | Every `TestSumValues`/`TestDayEnergyTotalWh` test uses distinguishable, non-degenerate values (e.g. `[100.0, 200.0, 50.0]`, or four `600.0`s where dropping even one identical value still changes the total from 200 to 150) — any silent drop of an element changes the asserted result, so these are genuine drop-detecting tests, not merely happy-path totals. |
 | 2 | A midnight-boundary test for both integral resets, at the exact reset instant | COVERED, for this module's actual (narrow) scope | The full reset-at-midnight mechanism is `cache.py`'s responsibility (AUDIT-0003), correctly out of this file's scope. This file's only reset-adjacent contribution — `trapezoidal_energy_increment(None, current) == 0.0` — is directly tested (`test_no_previous_sample_contributes_zero`), which is the exact instant a reset "takes." |
 | 3 | A test proving `ramp_weight` hits the exact boundary values at `0` and at `ramp_slots` | COVERED | `test_zero_at_reset` (`agg_mod.ramp_weight(0, 12) == 0.0`) and `test_exactly_one_at_ramp_slots` (`agg_mod.ramp_weight(12, 12) == 1.0`) assert exact equality at both named boundaries, distinct from `test_linear_partway_through_the_ramp`'s interior-monotonicity check. |
@@ -75,9 +70,9 @@ below.
 
 ## Live re-execution
 
-Installed `pytest` and ran both test files directly during this audit
-(no `homeassistant` dependency needed — both are pure, zero-mocking
-modules per their own docstrings):
+Installed `pytest` and ran both test files directly during this audit (no
+`homeassistant` dependency needed — both are pure, zero-mocking modules per
+their own docstrings):
 
 ```
 $ python3 -m pytest tests/test_aggregation.py tests/test_aggregation_intraday.py -q
@@ -87,33 +82,32 @@ $ python3 -m pytest tests/test_aggregation.py tests/test_aggregation_intraday.py
 
 ## Note: two functions in this file fall outside this task's own checklist
 
-`diagnostic_accuracy` and `sum_predicted` (ADR-004 §2/§2b) live in this
-same file but are not mentioned anywhere in AUDIT-0007's Audit
-Criteria or Test-Coverage Criteria list — the task's own Goal names
-exactly two decisions to verify ("ADR-005's cross-string sums/integrals
-and ADR-006's intraday ramp/crossfade math"), not three. Their tests
-live in `tests/test_diagnostics_compare_regressions.py` rather than
-either file in this audit's Scope. Carrying this forward as a note for
-AUDIT-0008 (Diagnostics), which is better positioned to verify them in
-the context of their actual caller — not treated as a gap in *this*
-audit, since it was never in its checklist.
+`diagnostic_accuracy` and `sum_predicted` (ADR-004 §2/§2b) live in this same
+file but are not mentioned anywhere in AUDIT-0007's Audit Criteria or
+Test-Coverage Criteria list — the task's own Goal names exactly two decisions to
+verify ("ADR-005's cross-string sums/integrals and ADR-006's intraday
+ramp/crossfade math"), not three. Their tests live in
+`tests/test_diagnostics_compare_regressions.py` rather than either file in this
+audit's Scope. Carrying this forward as a note for AUDIT-0008 (Diagnostics),
+which is better positioned to verify them in the context of their actual caller
+— not treated as a gap in *this* audit, since it was never in its checklist.
 
 ## Candidate Follow-Ups (not created — proposed only)
 
-1. **Documentation fix, two ADRs:** remove the `aggregation -->
-   forecast_adjust` edge from both ADR-005's module diagram and
-   ADR-000 §3's canonical module graph, or replace it with an accurate
-   description of the actual chain (`coordinator.py` corrects values
-   via `string_computation.py`/`forecast_adjust.py` *before* handing
-   them to `aggregation.py`'s sum functions). No code change needed —
-   `aggregation.py`'s actual behavior is correct and, per Criterion 2's
-   evidence, arguably *more* correct (cleaner purity boundary) than
-   what the diagrams describe.
-2. **Test addition, optional:** a `TestRampingVsBlendingDivergeMidRamp`
-   test alongside the existing convergence test — same shape, but
-   asserting `!=` at e.g. `ramp_weight=0.3` instead of `==` at `w=1` —
-   would close Test-Coverage Gap #4 directly and cheaply, using data
-   already set up in the existing convergence test.
+1. **Documentation fix, two ADRs:** remove the `aggregation --> forecast_adjust`
+   edge from both ADR-005's module diagram and ADR-000 §3's canonical module
+   graph, or replace it with an accurate description of the actual chain
+   (`coordinator.py` corrects values via
+   `string_computation.py`/`forecast_adjust.py` *before* handing them to
+   `aggregation.py`'s sum functions). No code change needed — `aggregation.py`'s
+   actual behavior is correct and, per Criterion 2's evidence, arguably *more*
+   correct (cleaner purity boundary) than what the diagrams describe.
+1. **Test addition, optional:** a `TestRampingVsBlendingDivergeMidRamp` test
+   alongside the existing convergence test — same shape, but asserting `!=` at
+   e.g. `ramp_weight=0.3` instead of `==` at `w=1` — would close Test-Coverage
+   Gap #4 directly and cheaply, using data already set up in the existing
+   convergence test.
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0007-aggregation-findings.md` (this file)

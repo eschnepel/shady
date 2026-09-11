@@ -1,48 +1,67 @@
 # Findings: AUDIT-0008 — Diagnostics Package
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** PASS on every criterion checked. No FAIL. This is the
-most heavily-amended ADR in the project (five amendments) and the
-code matches the *final* (2026-09-03) shape throughout — no leftover
-references to any pre-amendment mechanism found anywhere in the
-audited files. The one required special check — whether
-`TASK-0015a-patch-1` is genuinely superseded rather than silently
-still-needed — is a clean, triply-corroborated PASS (see dedicated
-section below). Two minor scope-boundary notes (not findings): part of
-§2a's behavior and the mypy suppression-list question resolve to code
-outside this audit's own declared Source Files, and are answered by
-briefly reading those adjacent files rather than by anything inside
-`diagnostics/`. One coverage item is COVERED, but by tests living in
-`test_coordinator.py`/cache test files rather than in this audit's own
-Scope Test Files — noted, not treated as a gap, for the same reason
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+PASS on every criterion checked. No FAIL. This is the most heavily-amended ADR
+in the project (five amendments) and the code matches the *final* (2026-09-03)
+shape throughout — no leftover references to any pre-amendment mechanism found
+anywhere in the audited files. The one required special check — whether
+`TASK-0015a-patch-1` is genuinely superseded rather than silently still-needed —
+is a clean, triply-corroborated PASS (see dedicated section below). Two minor
+scope-boundary notes (not findings): part of §2a's behavior and the mypy
+suppression-list question resolve to code outside this audit's own declared
+Source Files, and are answered by briefly reading those adjacent files rather
+than by anything inside `diagnostics/`. One coverage item is COVERED, but by
+tests living in `test_coordinator.py`/cache test files rather than in this
+audit's own Scope Test Files — noted, not treated as a gap, for the same reason
 AUDIT-0007 gave for its analogous cases.
 
 ## Required check: is `TASK-0015a-patch-1` genuinely superseded?
 
 **Yes — triply corroborated, not resolved on inspection alone.**
 
-1. **The task file says so itself.** `tasks/TASK-0015a-patch-1-diagnostic-fit-inputs.md`'s own header: *"SUPERSEDED — 2026-09-01, no code written for this task... rather than threading fit inputs through `DiagnosticContext` per call as this task specifies, `DiagnosticMode` now receives the owning `ShadyCoordinator` at construction and gathers what it needs directly... `TASK-0015a-patch-2` doesn't just supersede this task's approach, it deletes the class this task would have extended — `DiagnosticSlotSample` and `DiagnosticContext` are removed from `diagnostics/base.py` entirely."*
-2. **The ADR agrees.** ADR-004 §5's second Amendment (2026-09-01) describes exactly this: dropping the `DiagnosticContext` parameter and giving every mode a construction-time `ShadyCoordinator` reference instead.
-3. **The code agrees, independently verified by this audit, not by trusting the above two claims.** `grep -n "DiagnosticContext\|DiagnosticSlotSample\|query_fc\|fit_inputs"  diagnostics/base.py diagnostics/compare_regressions.py` finds nothing — neither name exists anywhere in either file. `diagnostics/base.py`'s actual `DiagnosticMode.__init__(self, coordinator: "ShadyCoordinator") -> None` (`:78-84`) stores `self._coordinator` directly; `compute()`/`extra_fit()` are zero-argument (`:86-104`). `CompareRegressionsMode._gather_pool`/`_predict_all_methods` (`compare_regressions.py:79-176`) pull raw fit inputs — the exact thing patch-1 would have delivered — straight from `self._coordinator.cache.get_pinned_slot_pool(...)`/`self._coordinator.target_cell_temperature_for_slot(...)`/`self._coordinator.string_computation_config()`, on demand, with no DTO anywhere in the call chain.
+1. **The task file says so itself.**
+   `tasks/TASK-0015a-patch-1-diagnostic-fit-inputs.md`'s own header:
+   *"SUPERSEDED — 2026-09-01, no code written for this task... rather than
+   threading fit inputs through `DiagnosticContext` per call as this task
+   specifies, `DiagnosticMode` now receives the owning `ShadyCoordinator` at
+   construction and gathers what it needs directly... `TASK-0015a-patch-2`
+   doesn't just supersede this task's approach, it deletes the class this task
+   would have extended — `DiagnosticSlotSample` and `DiagnosticContext` are
+   removed from `diagnostics/base.py` entirely."*
+1. **The ADR agrees.** ADR-004 §5's second Amendment (2026-09-01) describes
+   exactly this: dropping the `DiagnosticContext` parameter and giving every
+   mode a construction-time `ShadyCoordinator` reference instead.
+1. **The code agrees, independently verified by this audit, not by trusting the
+   above two claims.**
+   `grep -n "DiagnosticContext\|DiagnosticSlotSample\|query_fc\|fit_inputs"  diagnostics/base.py diagnostics/compare_regressions.py`
+   finds nothing — neither name exists anywhere in either file.
+   `diagnostics/base.py`'s actual
+   `DiagnosticMode.__init__(self, coordinator: "ShadyCoordinator") -> None`
+   (`:78-84`) stores `self._coordinator` directly; `compute()`/`extra_fit()` are
+   zero-argument (`:86-104`).
+   `CompareRegressionsMode._gather_pool`/`_predict_all_methods`
+   (`compare_regressions.py:79-176`) pull raw fit inputs — the exact thing
+   patch-1 would have delivered — straight from
+   `self._coordinator.cache.get_pinned_slot_pool(...)`/`self._coordinator.target_cell_temperature_for_slot(...)`/`self._coordinator.string_computation_config()`,
+   on demand, with no DTO anywhere in the call chain.
 
-Additionally, `test_diagnostics_base.py` contains a test class
-literally named for this history —
+Additionally, `test_diagnostics_base.py` contains a test class literally named
+for this history —
 `TestDiagnosticContextRemoved`/`TestComputeAndExtraFitTakeNoArguments`
-(`:70-93`) — assert `not hasattr(module, "DiagnosticContext")` and
-inspect `compute`'s signature has no parameters beyond `self`,
-directly guarding against a regression back toward patch-1's shape.
+(`:70-93`) — assert `not hasattr(module, "DiagnosticContext")` and inspect
+`compute`'s signature has no parameters beyond `self`, directly guarding against
+a regression back toward patch-1's shape.
 
-**Conclusion: TASK-0015a-patch-1's intended functionality was
-genuinely delivered — just via a completely different mechanism
-(direct coordinator pull inside `compute()`/`extra_fit()`) than the
-one it specified (a `DiagnosticContext` DTO). Its `SUPERSEDED` marking
-is accurate, not a task-file claim left unverified.**
+**Conclusion: TASK-0015a-patch-1's intended functionality was genuinely
+delivered — just via a completely different mechanism (direct coordinator pull
+inside `compute()`/`extra_fit()`) than the one it specified (a
+`DiagnosticContext` DTO). Its `SUPERSEDED` marking is accurate, not a task-file
+claim left unverified.**
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | §1 (2026-08-30 amendment): no leftover `switch.py`/boolean diagnostic entity | PASS | `find . -iname switch.py` finds nothing in the whole repo; the only reference to "switch.py" anywhere in `custom_components/` is `select.py`'s own docstring explicitly noting its absence ("there is no `switch.py` anywhere in this..."), i.e. the code itself documents the amendment rather than silently having stale references. |
 | 2 | §2/§2b: per-string identity threaded correctly, no cross-string mixing, sum entry independent | PASS | `CompareRegressionsMode.sensor_ids()`/`compute()` loop over `self._coordinator.strings()` once per configured string, each producing a `_StringDiagnostic` with `sensor_id=str(string_index)` (`compare_regressions.py`, confirmed via `TestSensorIdsDeclaredWithoutComputing.test_one_id_per_string_plus_sum` — exactly `n_strings + 1` ids, the `+1` being `"sum"`). `TestSumEntryDayAlignment`'s two tests specifically regression-guard the sum entry against a real, previously-shipped bug (summing values from misaligned days across strings) — not a synthetic edge case. |
 | 3 | §2a: manual slot-selection timestamp validation, out-of-range handling | PASS, **but implemented outside this audit's declared Scope Source Files** | `pin_diagnostic_slot` (`coordinator.py:907`) and its caller, the `shady.select_diagnostic_slot` service handler (`__init__.py:147-176`), carry this behavior — confirmed the handler raises `ServiceValidationError` naming every rejecting config entry when `pin_diagnostic_slot` returns `False` (beyond-forecast-horizon), rather than crashing or silently no-op'ing. Neither `diagnostics/base.py` nor `diagnostics/compare_regressions.py` contains any timestamp-validation logic at all — by design, this behavior belongs entirely to `coordinator.py`/`__init__.py` (correctly out of AUDIT-0008's Scope Source Files, which list only the two `diagnostics/*.py` files plus the empty `diagnostics/__init__.py`). Verified by briefly reading the adjacent files, the same shallow-cross-check pattern AUDIT-0006/0007 used for adjacent-but-out-of-deep-scope files. |
@@ -57,7 +76,7 @@ is accurate, not a task-file claim left unverified.**
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Test names/docstrings still map onto the *current* (post-fifth-amendment) responsibilities, not a pre-amendment shape | COVERED, unusually well | `test_diagnostics_base.py`'s `TestDiagnosticContextRemoved` and `TestDiagnosticStringResultNoLongerExported`-style tests (exact names confirmed via `grep -n "class Test"`, `:70,` `:150`-ish) explicitly name what was *removed*, correctly framing prior states as history, not as current behavior under test — the opposite of the stale-docstring risk this criterion is checking for. |
 | 2 | A test would fail if `DiagnosticMode`'s `TYPE_CHECKING`-only coordinator reference became an unconditional import | COVERED, verified empirically during this audit, not merely asserted | This audit built a scratch copy of `diagnostics/base.py` with the `TYPE_CHECKING` guard removed (unconditional `from ..coordinator import ShadyCoordinator`) and attempted to load it the same way `test_diagnostics_base.py`'s own `_load()` helper does (file-path `importlib` load, no package context). Result: **`ModuleNotFoundError: No module named 'shady.coordinator'`** — immediate failure at module-load time. Since every test in the file shares this same loading mechanism, this regression would fail the *entire file's test collection*, not just one assertion — a strong, if indirect, guarantee. (Scratch copy only; no repository file was modified.) |
 | 3 | Historical-pool no-refire-mid-tick guarantee, call-count style | COVERED, in a different file (see Audit Criterion 4) | `test_cache_pinned_slot_pool.py::test_already_validated_window_triggers_no_new_fetch` — see above. |
@@ -65,8 +84,8 @@ is accurate, not a task-file claim left unverified.**
 
 ## Live re-execution
 
-`tests/test_diagnostics_base.py` requires no `homeassistant` install
-(stub coordinator only) — re-ran live during this audit:
+`tests/test_diagnostics_base.py` requires no `homeassistant` install (stub
+coordinator only) — re-ran live during this audit:
 
 ```
 $ python3 -m pytest tests/test_diagnostics_base.py -q
@@ -74,29 +93,28 @@ $ python3 -m pytest tests/test_diagnostics_base.py -q
 ```
 
 `tests/test_diagnostics_compare_regressions.py` imports
-`tests.test_coordinator`, which requires the real `homeassistant`
-package — not installed in this sandbox (a very large dependency to
-add for a single audit task) and **not re-run live**; its correctness
-was verified by full manual reading instead, cross-checked against
-`string_computation.py`'s and `aggregation.py`'s already-live-verified
-behavior (AUDIT-0006/0007) wherever this file calls into them.
+`tests.test_coordinator`, which requires the real `homeassistant` package — not
+installed in this sandbox (a very large dependency to add for a single audit
+task) and **not re-run live**; its correctness was verified by full manual
+reading instead, cross-checked against `string_computation.py`'s and
+`aggregation.py`'s already-live-verified behavior (AUDIT-0006/0007) wherever
+this file calls into them.
 
 ## Candidate Follow-Ups (not created — proposed only)
 
 1. **Not diagnostics-specific, noted in passing:** `mypy.ini`'s
    `python_version = "3.14"` line has extra quotes mypy itself rejects
-   (`Invalid python version '"3.14"' (expected format: 'x.y')`),
-   silently falling back to a default rather than enforcing 3.14
-   semantics. Discovered incidentally while empirically checking
-   Criterion 8 above. This is tooling/config, squarely AUDIT-0012's
-   territory (Tooling & Release Config) — flagged here only because
-   this audit happened to run mypy first; not otherwise investigated
-   or acted on.
-2. No diagnostics-specific follow-ups — every criterion resolved
-   cleanly, with no FAIL and no coverage GAP found in this audit
-   (unusual among AUDIT-0005 through AUDIT-0007, all of which found
-   at least one FAIL or GAP — worth the human's attention as a
-   positive data point, not just an absence of findings).
+   (`Invalid python version '"3.14"' (expected format: 'x.y')`), silently
+   falling back to a default rather than enforcing 3.14 semantics. Discovered
+   incidentally while empirically checking Criterion 8 above. This is
+   tooling/config, squarely AUDIT-0012's territory (Tooling & Release Config) —
+   flagged here only because this audit happened to run mypy first; not
+   otherwise investigated or acted on.
+1. No diagnostics-specific follow-ups — every criterion resolved cleanly, with
+   no FAIL and no coverage GAP found in this audit (unusual among AUDIT-0005
+   through AUDIT-0007, all of which found at least one FAIL or GAP — worth the
+   human's attention as a positive data point, not just an absence of findings).
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0008-diagnostics-package-findings.md` (this file)

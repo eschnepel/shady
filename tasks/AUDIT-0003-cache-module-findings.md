@@ -1,15 +1,14 @@
 # Findings: AUDIT-0003 — Cache Module
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** One confirmed FAIL (fitted-model cache is not in `cache.py`,
-contradicting ADR-007 §1 and ADR-007a §5's explicit text). Every other
-criterion PASSes, several very precisely.
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+One confirmed FAIL (fitted-model cache is not in `cache.py`, contradicting
+ADR-007 §1 and ADR-007a §5's explicit text). Every other criterion PASSes,
+several very precisely.
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | `cache.py` owns all retained state; pure, no `hass` (§1) | **FAIL (partial)** | See dedicated finding below — the fitted-model cache does not live here. Purity itself is confirmed: `grep -n "hass\|homeassistant" custom_components/shady/cache.py` returns zero matches; `Cache.__init__` (`cache.py:170`) takes only `window_days`/`fetch_fn`. |
 | 2 | `coordinator.py` shrunk to orchestration-only; no fit/predict/business logic leaked into `cache.py` (§2) | PASS | `cache.py` contains no `regression/`, `yield_correction.py`, or `forecast_adjust.py` imports (`grep -n "^from \.\|^import"` at the top of the file shows only `numpy`/stdlib); confirmed storage-and-accessor-only content throughout. |
 | 3 | Three genuine states for stored values (§1) | PASS | `_write`/`_read` (`cache.py:243-284`) store/retrieve `float \| None \| str` directly, no collapsing. `_shape` (`cache.py:132`) and `_shadow_value` (`cache.py:147`) both explicitly branch on all three states. |
@@ -23,17 +22,16 @@ criterion PASSes, several very precisely.
 
 ### FAIL — Fitted-model cache is not in `cache.py` (ADR-007 §1, ADR-007a §5)
 
-ADR-007 §1 explicitly lists the five caches `cache.py` "holds," the first
-being "Per-string, per-slot fitted-model cache (ADR-002 §1)." ADR-007a §5
-is even more explicit about *where*: "The model cache (fitted model
-objects per string/slot)... stay[s] as simple `dict[key, value]`
-structures **elsewhere in `cache.py`**, without the index/validation
-machinery above."
+ADR-007 §1 explicitly lists the five caches `cache.py` "holds," the first being
+"Per-string, per-slot fitted-model cache (ADR-002 §1)." ADR-007a §5 is even more
+explicit about *where*: "The model cache (fitted model objects per
+string/slot)... stay[s] as simple `dict[key, value]` structures **elsewhere in
+`cache.py`**, without the index/validation machinery above."
 
-The shipped code does not do this. `grep -n "model" custom_components/
-shady/cache.py` returns no cache-storage matches at all (only three
-docstring mentions of an unrelated word). The actual fitted-model cache
-lives in **`coordinator.py`**:
+The shipped code does not do this.
+`grep -n "model" custom_components/ shady/cache.py` returns no cache-storage
+matches at all (only three docstring mentions of an unrelated word). The actual
+fitted-model cache lives in **`coordinator.py`**:
 
 ```
 coordinator.py:461:  self._models: dict[int, FittedModel] = {}
@@ -42,35 +40,34 @@ coordinator.py:470:  self._temperature_models: dict[int, FittedModel] = {}
 
 constructed directly in `coordinator.py`'s setup, alongside (not inside)
 `self.cache = Cache(...)` (`coordinator.py:452`). `cache.py`'s own module
-docstring (`cache.py:1-54`) is consistent with this: it explicitly
-enumerates what the module owns (three-state store, energy totals,
-pinned-reference/`get_pinned_slot_pool`, `IntradayState`/`IntradayBasis`
-ramp state) and **never mentions a model cache** — meaning this isn't an
-accidental omission from the docstring while the code secretly complies;
-the code and its own documentation agree with each other, and both
-disagree with ADR-007/ADR-007a.
+docstring (`cache.py:1-54`) is consistent with this: it explicitly enumerates
+what the module owns (three-state store, energy totals,
+pinned-reference/`get_pinned_slot_pool`, `IntradayState`/`IntradayBasis` ramp
+state) and **never mentions a model cache** — meaning this isn't an accidental
+omission from the docstring while the code secretly complies; the code and its
+own documentation agree with each other, and both disagree with
+ADR-007/ADR-007a.
 
 This is architecturally defensible — a `FittedModel` is an object, not a
-`float | None | str`/time-series value, so it never needed the
-index-addressable machinery `cache.py`'s other four stores share, and
-keeping it directly next to `coordinator.py`'s per-string fit/predict
-loop (which TASK-0017 later also relocated to `string_computation.py`,
-AUDIT-0006) may well be the more coherent design in practice. But no ADR
-amendment records this deviation, and ADR-007a §5's ramp-state analogy
-(`IntradayState`, which correctly *did* land in `cache.py` as a plain
-dict, confirming the pattern was followed for the *other* non-time-series
-cache) makes the model cache's absence look like an unrecorded scope
-decision rather than a documented one. Per the golden rule, this is
-flagged for a human decision rather than resolved here: either (a) amend
-ADR-007 §1 / ADR-007a §5 to reflect that the model cache is intentionally
-`coordinator.py`-owned (with rationale), or (b) treat this as a Scenario-C
-gap against `TASK-0002`/`TASK-0006` to actually move `self._models`/
+`float | None | str`/time-series value, so it never needed the index-addressable
+machinery `cache.py`'s other four stores share, and keeping it directly next to
+`coordinator.py`'s per-string fit/predict loop (which TASK-0017 later also
+relocated to `string_computation.py`, AUDIT-0006) may well be the more coherent
+design in practice. But no ADR amendment records this deviation, and ADR-007a
+§5's ramp-state analogy (`IntradayState`, which correctly *did* land in
+`cache.py` as a plain dict, confirming the pattern was followed for the *other*
+non-time-series cache) makes the model cache's absence look like an unrecorded
+scope decision rather than a documented one. Per the golden rule, this is
+flagged for a human decision rather than resolved here: either (a) amend ADR-007
+§1 / ADR-007a §5 to reflect that the model cache is intentionally
+`coordinator.py`-owned (with rationale), or (b) treat this as a Scenario-C gap
+against `TASK-0002`/`TASK-0006` to actually move `self._models`/
 `self._temperature_models` into `cache.py` as ADR-007a §5 describes.
 
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | Three-state semantics wouldn't collapse to two undetected | COVERED | `test_cache_core.py`'s push/invalidate tests and `test_cache_regression_pools.py`'s `TestShadowArrayMirrorsThreeStateList` (`:48`) explicitly assert `None` and `str` map to distinct outcomes (`str` preserved via `on_invalid="raw"`, both become `NaN` only in the *shadow* array, which is a documented, deliberate second-purpose collapse, not the three-state list itself). |
 | 2 | Validated-range boundary tested at exact edges | COVERED | `TestMissingTailOnlyRefetchesTail` (`test_cache_core.py:62`) and its head-fetch counterpart (`:93`) exercise exactly the boundary-adjacent fetch behavior, not just well-inside-range reads. |
 | 3 | `invalidate`/`push` differential effect | COVERED | `TestPushGuardAndPushOnlySensor` (`:133-173`) and `TestInvalidate` (`:258-291`) are separate test classes with observably different assertions (`to_index` stays `None` after push vs. shrinks/clears after invalidate) — not merely "both can be called." |
@@ -83,16 +80,15 @@ gap against `TASK-0002`/`TASK-0006` to actually move `self._models`/
 ## Candidate Follow-Ups (not created — proposed only)
 
 1. **Human decision needed (primary finding):** resolve the ADR-007 §1 /
-   ADR-007a §5 vs. actual `coordinator.py`-resident model-cache
-   discrepancy — either amend the ADRs to document the as-built location
-   (with rationale, likely tied to `TASK-0017`'s later relocation of
-   fit/predict logic to `string_computation.py`), or schedule a
-   Scenario-C task to move `self._models`/`self._temperature_models`
-   into `cache.py`.
-2. Optional, low priority: add one differential test cross-checking
+   ADR-007a §5 vs. actual `coordinator.py`-resident model-cache discrepancy —
+   either amend the ADRs to document the as-built location (with rationale,
+   likely tied to `TASK-0017`'s later relocation of fit/predict logic to
+   `string_computation.py`), or schedule a Scenario-C task to move
+   `self._models`/`self._temperature_models` into `cache.py`.
+1. Optional, low priority: add one differential test cross-checking
    `get_regression_pools`'s cell values against `get_pinned_slot_pool`'s
-   single-slot read for the same sensor/index, to close Test-Coverage
-   Gap #6.
+   single-slot read for the same sensor/index, to close Test-Coverage Gap #6.
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0003-cache-module-findings.md` (this file)

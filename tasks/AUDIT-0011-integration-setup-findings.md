@@ -1,34 +1,30 @@
 # Findings: AUDIT-0011 — Integration Setup & Wiring
 
-**Auditor:** Lead Agent (inline, single-pass)
-**Date:** 2026-09-06
-**Verdict:** No behavioral FAIL — `__init__.py`'s startup-ordering logic
-matches ADR-002 §1a's three-step decision tree closely and correctly,
-error handling never swallows a setup failure silently, and
-`services.yaml`/`manifest.json` are both internally consistent with
-what the code actually implements/declares elsewhere. **2 PARTIALs**,
-both documentation-staleness findings rather than code defects: ADR-002
-§1a's own prose still names the removed `switch` platform instead of
-`select` (the same rename AUDIT-0008/0009 already found cleanly
-executed in code); and ADR-000 §3's module diagram draws `init -->
-entity_glue` — an edge that doesn't correspond to any real Python
-import (`__init__.py` never imports `sensor.py`/`config_flow.py`/
-`select.py`/`button.py` at all; platform forwarding is HA's own
-name-based mechanism) — while omitting the one direct import edge that
-does exist, `init --> coordinator`. **3 coverage GAPs**: no test for a
-genuine (non-`ConfigEntryNotReady`) setup-time failure such as a
-malformed config entry or a provider-discovery exception; no test
-exercises the service-registration side of teardown (the code, by
-design, never unregisters the domain-wide service on a single entry's
-unload, but nothing documents or verifies this); and no executable test
-cross-checks `services.yaml` against the registered handlers — the
-symmetry this audit verified by hand. All 13 tests in the one Scope
-Test File re-run live: **13/13 passed**.
+**Auditor:** Lead Agent (inline, single-pass) **Date:** 2026-09-06 **Verdict:**
+No behavioral FAIL — `__init__.py`'s startup-ordering logic matches ADR-002
+§1a's three-step decision tree closely and correctly, error handling never
+swallows a setup failure silently, and `services.yaml`/`manifest.json` are both
+internally consistent with what the code actually implements/declares elsewhere.
+**2 PARTIALs**, both documentation-staleness findings rather than code defects:
+ADR-002 §1a's own prose still names the removed `switch` platform instead of
+`select` (the same rename AUDIT-0008/0009 already found cleanly executed in
+code); and ADR-000 §3's module diagram draws `init --> entity_glue` — an edge
+that doesn't correspond to any real Python import (`__init__.py` never imports
+`sensor.py`/`config_flow.py`/ `select.py`/`button.py` at all; platform
+forwarding is HA's own name-based mechanism) — while omitting the one direct
+import edge that does exist, `init --> coordinator`. **3 coverage GAPs**: no
+test for a genuine (non-`ConfigEntryNotReady`) setup-time failure such as a
+malformed config entry or a provider-discovery exception; no test exercises the
+service-registration side of teardown (the code, by design, never unregisters
+the domain-wide service on a single entry's unload, but nothing documents or
+verifies this); and no executable test cross-checks `services.yaml` against the
+registered handlers — the symmetry this audit verified by hand. All 13 tests in
+the one Scope Test File re-run live: **13/13 passed**.
 
 ## Audit Criteria
 
 | # | Criterion (ADR) | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | [ADR-002 §1a] `async_setup_entry` sequences coordinator creation, first refresh, and platform forwarding with a concrete ordering guarantee, avoiding the "entities may not exist yet" race | PASS | Branch `hass.is_running is True` (`__init__.py:90-102`): `missing_required_entities()` checked immediately (`:91`), `ConfigEntryNotReady` raised with the transient coordinator `shutdown()` first if any are missing (`:93-97`) — matching §1a point 1 exactly, including the "never stored, never handed a platform" detail (module docstring `:22-29`, live-verified: `test_missing_required_entities_raises_not_ready` asserts `entry.entry_id not in hass.data`, `hass.config_entries.forwarded == []`, and the transient coordinator's own state-change listener already cancelled). If nothing is missing: `hass.data[...] = coordinator` → `await coordinator.async_restore_energy_state()` → `await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)` → `await coordinator.async_startup()` (`:98-101`) — every step `await`ed in sequence, a real ordering guarantee, not a scheduler assumption. Branch `hass.is_running is False` (`:104-126`): `hass.data`/energy-restore/platform-forward happen unconditionally (`:107-109`, matching §1a point 2's "forward... exactly as usual... Shady's own entities register on the normal schedule regardless"), then `async_at_started(hass, _async_handle_started)` registers the deferred fit **without being awaited** (`:125`) — matching §1a's explicit "must not itself block on that event" requirement. The deferred callback (`:111-123`) repeats the exact same `missing_required_entities()` check (§1a point 3), and on still-missing falls back to `asyncio.sleep(_MISSING_ENTITIES_RELOAD_DELAY_S)` + `hass.config_entries.async_schedule_reload(entry.entry_id)` (`:120-121`) rather than a bespoke retry loop, matching §1a's "rejoining the standard path" instruction precisely. |
 | 2 | [ADR-002 §5] `__init__.py`'s module responsibility matches what §5 assigns it, distinct from `coordinator.py`'s; limits itself to setup/teardown/service registration, no business logic | PASS, with a scope note | §5's own bullet list (`002-coordinator-update-strategy.md:272-296`) assigns responsibilities to `coordinator.py`, `button.py`, and `forecast_adjust.py` specifically — it does **not** actually mention `__init__.py` at all, so there is no §5 text to compare `__init__.py` against directly; this criterion's premise (that §5 assigns something specific to `__init__.py`) doesn't hold on inspection, so the check falls back to the general "thin glue, no business logic" convention `__init__.py`'s own docstring claims (`:1-8`) and ADR-000 §3's one-line description ("wires platforms + coordinator into `hass.data`", `000-coding-standards.md:261`). On that standard: every computation is delegated — `missing_required_entities()`, `async_restore_energy_state()`, `async_startup()`, `pin_diagnostic_slot()`/`clear_diagnostic_slot()` are all `coordinator.py` methods; the service handler's own body (`__init__.py:147-176`) is a plain loop collecting rejected entry IDs and one `ServiceValidationError` construction — control flow, not domain computation. No arithmetic, no threshold logic, no forecast/regression code anywhere in the file. |
 | 3 | [ADR-000 §1] `manifest.json` internally consistent with `pyproject.toml`'s declared dependencies — same `numpy` version floor | PASS | `manifest.json:8`: `"requirements": ["numpy>=1.26.0"]`. `pyproject.toml:14-16`: `dependencies = ["numpy>=1.26.0"]`. Identical floor, identical single dependency, no divergence. Triple-checked against `tasks/DEPENDENCIES.md`'s own `numpy 1.26.0 (lower bound)` entry (`:6-12`), which explicitly cross-references both files and instructs "do not re-add" — all three sources agree. |
@@ -39,7 +35,7 @@ Test File re-run live: **13/13 passed**.
 ## Test-Coverage Criteria
 
 | # | Criterion | Verdict | Evidence |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | 1 | A test simulating the startup-ordering race itself — entities genuinely missing when a coordinator update fires — not just the already-settled case | COVERED, strongly | `TestAsyncSetupEntryHassStarting::test_deferred_callback_schedules_reload_if_still_missing` (`test_init.py:544-572`) is a direct, complete simulation: `hass.is_running = False`, zero entities seeded, `async_setup_entry` runs (forwarding platforms unconditionally per §1a point 2), then `hass.async_finish_starting()` fires the deferred callback while entities are **still** missing — asserts the fit correctly never ran (`coordinator._last_fit_at is None`) and the code correctly fell back to `async_schedule_reload` (`hass.config_entries.reload_calls == [entry.entry_id]`). Two sibling tests round out the state machine: `test_missing_entities_still_stores_and_forwards_platforms` (missing at initial setup, still deferred correctly) and `test_deferred_callback_runs_fit_once_started_if_entities_present` (missing at setup, present by the time "started" fires — fit runs, no reload). One phrasing note: `TASK-0016`'s own Delivered Artifacts text says this file "extends `tests/test_button.py`'s hand-written `homeassistant` stub **convention**" (`tasks/TASK-0016-integration-setup-entry.md:180-181`) — i.e. the same *style* of hand-written stub, not literal fixture reuse — so this audit criterion's "confirm this extension actually reaches the race condition, not just reuses fixtures" is answered on the stronger, more direct evidence above rather than on the (mildly imprecise) fixture-sharing premise itself. |
 | 2 | A test asserting `async_unload_entry` reverses everything `async_setup_entry` registered — every platform unloaded, every service unregistered | COVERED for platforms/listeners; **GAP** for the service half | `TestAsyncUnloadEntry::test_unload_cancels_listeners_and_removes_data_slot` (`:576-589`) directly proves platform-unload symmetry (`hass.config_entries.unloaded == [(entry, PLATFORMS)]`), `hass.data` slot removal, and listener cancellation (`hass.states._listeners.get(_ACTUAL_YIELD_ENTITY, []) == []`) — genuinely strong. However, `async_unload_entry` (`__init__.py:129-136`) never unregisters the `select_diagnostic_slot` service (`grep -n "async_remove"` → zero matches) — a deliberate, defensible design given the service is domain-wide and idempotently registered once per HA instance, not once per config entry (removing it on one entry's unload could break other still-loaded entries relying on it) — but this asymmetry is neither documented in the module's own docstring nor exercised by any test: no test checks `has_service` after an unload, with either one or multiple loaded entries. `grep -n "async_unload_entry\|has_service" test_init.py` confirms the two unload tests never call `has_service` afterward. |
 | 3 | A test for a provider-discovery failure at setup time asserting graceful `ConfigEntryNotReady`-or-equivalent failure, not an unhandled exception | **GAP** | `grep -n "malformed\|discovery.*fail"` across `test_init.py` found nothing; the only "raises" tests in the file cover the expected, controlled `missing_required_entities()` → `ConfigEntryNotReady` path (Criterion 1 above) and the service's `ServiceValidationError` path — neither simulates an actual unexpected exception during `ShadyCoordinator(hass, entry)` construction (e.g., a malformed config entry, or a `providers/discovery.py` failure surfacing through coordinator construction). The code's own structure (Criterion 5: zero `try`/`except` in the file) means such an exception would propagate naturally to HA's loader — the architecturally correct behavior — but nothing in the test suite exercises or documents this path explicitly; it is inferred from the absence of exception-swallowing code, not demonstrated by a test. |
@@ -58,38 +54,35 @@ installed into the sandbox (`voluptuous`) and AUDIT-0009's `pytest`.
 ## Candidate Follow-Ups (not created — proposed only)
 
 1. **Criterion 5's incidental finding:** correct ADR-002 §1a's stale
-   "`sensor`/`switch`/`button`" platform list to "`sensor`/`select`/
-   `button`" — a one-line text fix, no code change, and no downstream
-   task depends on this text. The identical stale reference in ADR-007's
-   module diagram is a candidate for the same pass, though outside this
-   audit's own Related ADRs.
-2. **Criterion 4's PARTIAL:** ADR-000 §3's diagram could be corrected to
-   show `init --> coordinator` (the real, necessary construction-time
-   import) rather than (or in addition to) `init --> entity_glue` (which
-   describes the platform-forwarding *relationship* but not an actual
-   Python import edge) — a documentation-accuracy fix, not a code
-   change; the underlying dependency direction is not violated either
+   "`sensor`/`switch`/`button`" platform list to "`sensor`/`select`/ `button`" —
+   a one-line text fix, no code change, and no downstream task depends on this
+   text. The identical stale reference in ADR-007's module diagram is a
+   candidate for the same pass, though outside this audit's own Related ADRs.
+1. **Criterion 4's PARTIAL:** ADR-000 §3's diagram could be corrected to show
+   `init --> coordinator` (the real, necessary construction-time import) rather
+   than (or in addition to) `init --> entity_glue` (which describes the
+   platform-forwarding *relationship* but not an actual Python import edge) — a
+   documentation-accuracy fix, not a code change; the underlying dependency
+   direction is not violated either way.
+1. **Test-Coverage Criterion 2's GAP:** add a small test — either asserting
+   `has_service` correctly stays `True` after unloading one of two loaded
+   entries (service persists for the remaining entry, matching the domain-wide
+   design), or documenting in `__init__.py`'s own docstring why service
+   unregistration is deliberately not part of `async_unload_entry`. Either
+   closes the gap; the current silence leaves the asymmetry unverified either
    way.
-3. **Test-Coverage Criterion 2's GAP:** add a small test — either
-   asserting `has_service` correctly stays `True` after unloading one of
-   two loaded entries (service persists for the remaining entry, matching
-   the domain-wide design), or documenting in `__init__.py`'s own
-   docstring why service unregistration is deliberately not part of
-   `async_unload_entry`. Either closes the gap; the current silence
-   leaves the asymmetry unverified either way.
-4. **Test-Coverage Criterion 3's GAP:** add one test that makes
-   `ShadyCoordinator.__init__` (or a call it makes during construction)
-   raise a plain exception for a malformed config entry, and asserts
-   `async_setup_entry` lets it propagate unhandled (rather than
-   swallowing it) — turning the current code-structure inference into a
-   demonstrated behavior.
-5. **Test-Coverage Criterion 4's GAP:** add a `test_services_yaml.py`
-   (or a section in `test_init.py`) that loads `services.yaml`, extracts
-   its top-level service names, and cross-checks them against
-   `hass.services.has_service(DOMAIN, ...)` after `_register_services`
-   runs — the executable version of Audit Criterion 6's manual check,
-   mirroring `test_translations.py`'s dynamic-introspection pattern from
-   AUDIT-0010.
+1. **Test-Coverage Criterion 3's GAP:** add one test that makes
+   `ShadyCoordinator.__init__` (or a call it makes during construction) raise a
+   plain exception for a malformed config entry, and asserts `async_setup_entry`
+   lets it propagate unhandled (rather than swallowing it) — turning the current
+   code-structure inference into a demonstrated behavior.
+1. **Test-Coverage Criterion 4's GAP:** add a `test_services_yaml.py` (or a
+   section in `test_init.py`) that loads `services.yaml`, extracts its top-level
+   service names, and cross-checks them against
+   `hass.services.has_service(DOMAIN, ...)` after `_register_services` runs —
+   the executable version of Audit Criterion 6's manual check, mirroring
+   `test_translations.py`'s dynamic-introspection pattern from AUDIT-0010.
 
 ## Delivered Artifacts (for the task file)
+
 - `tasks/AUDIT-0011-integration-setup-findings.md` (this file)

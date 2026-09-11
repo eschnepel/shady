@@ -1,46 +1,42 @@
 # ADR-010 – Config Flow Shape
 
-**Date:** 2026-08-14
-**Status:** Accepted
-**Split from:** ADR-001 §6. Originally part of the shading-model ADR;
-extracted because it is a cross-cutting specification that collects
-fields introduced by several other ADRs, and was already being
-referenced externally (ADR-003a/ADR-003b, ADR-005, ADR-006) as if it
-were its own document. No behavior changed by this split.
-**Last updated:** 2026-09-10
+**Date:** 2026-08-14 **Status:** Accepted **Split from:** ADR-001 §6. Originally
+part of the shading-model ADR; extracted because it is a cross-cutting
+specification that collects fields introduced by several other ADRs, and was
+already being referenced externally (ADR-003a/ADR-003b, ADR-005, ADR-006) as if
+it were its own document. No behavior changed by this split. **Last updated:**
+2026-09-10
 
-This ADR is kept current in place as the single authoritative field
-list — every field below is live in the shipped config/options flow.
-Fields added after the original split: ADR-003c's weather-forecast
-entity and temperature regression method (2026-08-18); the
-ambient-to-cell max uplift and rated DC capacity fields ADR-003b §1a's
-formula needs (2026-08-20); `recency_decay_max` for ADR-001 §4a's
-day-recency weighting (2026-08-25); `baseline_manual_shape` for
-ADR-009 §3's manual-entry baseline fallback (implemented earlier,
-documented here 2026-09-10 per `AUDIT-0010`).
+This ADR is kept current in place as the single authoritative field list — every
+field below is live in the shipped config/options flow. Fields added after the
+original split: ADR-003c's weather-forecast entity and temperature regression
+method (2026-08-18); the ambient-to-cell max uplift and rated DC capacity fields
+ADR-003b §1a's formula needs (2026-08-20); `recency_decay_max` for ADR-001 §4a's
+day-recency weighting (2026-08-25); `baseline_manual_shape` for ADR-009 §3's
+manual-entry baseline fallback (implemented earlier, documented here 2026-09-10
+per `AUDIT-0010`).
 
----
+______________________________________________________________________
 
 ## Context
 
-Shady's config flow collects settings introduced across several ADRs:
-the regression model and its granularity/smoothing/window (ADR-001
-§2/§3/§4), baseline sourcing (ADR-009), yield corrections (ADR-003a,
-ADR-003b, ADR-003c), and the intraday deviation correction (ADR-006).
-This ADR is the single, authoritative specification of the resulting
-flow's shape and step ordering — other ADRs that add a config-flow
-field point here rather than each describing their own step placement.
+Shady's config flow collects settings introduced across several ADRs: the
+regression model and its granularity/smoothing/window (ADR-001 §2/§3/§4),
+baseline sourcing (ADR-009), yield corrections (ADR-003a, ADR-003b, ADR-003c),
+and the intraday deviation correction (ADR-006). This ADR is the single,
+authoritative specification of the resulting flow's shape and step ordering —
+other ADRs that add a config-flow field point here rather than each describing
+their own step placement.
 
----
+______________________________________________________________________
 
 ## Decision
 
-Given ADR-001 §3 (one model per configured string) and ADR-009
-(baseline sourcing), the config flow establishes global settings
-**first**, before any string exists — a person configures "how Shady
-should behave" once, then adds however many strings share that
-behavior, rather than being asked global questions only after already
-committing to a first string:
+Given ADR-001 §3 (one model per configured string) and ADR-009 (baseline
+sourcing), the config flow establishes global settings **first**, before any
+string exists — a person configures "how Shady should behave" once, then adds
+however many strings share that behavior, rather than being asked global
+questions only after already committing to a first string:
 
 ```
 Step "settings" (first):
@@ -157,23 +153,22 @@ Step "add_another":
   - "Add another string?" (boolean) → back to "add_string" or finish
 ```
 
-Note there is no latitude/longitude/elevation field anywhere in this
-flow — see ADR-001 §1 for why.
+Note there is no latitude/longitude/elevation field anywhere in this flow — see
+ADR-001 §1 for why.
 
-The options flow mirrors this to allow adding/editing strings and
-changing any global setting after initial setup, following the same
-pattern as Effy's `EffyOptionsFlow`.
+The options flow mirrors this to allow adding/editing strings and changing any
+global setting after initial setup, following the same pattern as Effy's
+`EffyOptionsFlow`.
 
----
+______________________________________________________________________
 
 ## Consequences
 
-- **Pro:** Establishes every global setting before a person configures
-  their first string, so string-specific questions (baseline override,
-  converter limit, temperature override) are answered with the relevant
-  global defaults already visible, rather than the reverse.
-- **Con:** As the single place every other ADR's config-flow fields
-  converge, this document has to be kept in sync whenever a future ADR
-  adds or changes a field — a cost concentrated here specifically so it
-  does not have to be paid by re-deriving step ordering independently in
-  each of those ADRs.
+- **Pro:** Establishes every global setting before a person configures their
+  first string, so string-specific questions (baseline override, converter
+  limit, temperature override) are answered with the relevant global defaults
+  already visible, rather than the reverse.
+- **Con:** As the single place every other ADR's config-flow fields converge,
+  this document has to be kept in sync whenever a future ADR adds or changes a
+  field — a cost concentrated here specifically so it does not have to be paid
+  by re-deriving step ordering independently in each of those ADRs.
