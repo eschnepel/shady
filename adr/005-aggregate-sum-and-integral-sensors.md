@@ -2,12 +2,8 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted
-**Amended:** 2026-09-10 — module diagram's nonexistent `aggregation -->
-forecast_adjust` edge removed (`aggregation.py` has zero non-stdlib
-imports; `coordinator.py` applies `forecast_adjust.py`'s correction
-before values reach `aggregation.py`'s sum functions) and the
-`forecast_adjust.py` bullet updated to state this explicitly.
-Description-only, no behavior change (`TASK-0027`, `AUDIT-0005`).
+**Last updated:** 2026-09-10 — module diagram description-only fix
+(`TASK-0027`, `AUDIT-0005`), no behavior change.
 
 ---
 
