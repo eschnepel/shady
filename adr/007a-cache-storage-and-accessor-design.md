@@ -6,18 +6,15 @@
 coordinator/cache-module-split ADR; separated because the concrete
 storage scheme and accessor API are a separable, and independently
 heavily cross-referenced, concern from the *decision to extract
-`cache.py` as its own module* in the first place — see ADR-007's
-Revision note. No behavior changed by this split.
-**Amended:** 2026-08-19 — §2/§3: any provider-backed predictor series
-(baseline `FC`; temperature) is now a hybrid push/query sensor, not
-purely query-based; `push` generalized to a bulk `dict[index, value]`
-call with a `not_before_index` guard. See ADR-012 §4 for the generic
-policy, ADR-002 §4 / ADR-003c §7 for `FC`'s and temperature's own
-triggers, and ADR-001 §2 for the updated "Training-time `FC`" definition
-this enables.
-**2026-09-08** — Amendment: §5's "model cache stays a bare
-`dict[key, value]`" text superseded — see the Amendment block at the
-end of this document.
+`cache.py` as its own module* in the first place. No behavior changed
+by this split.
+**Last updated:** 2026-09-08
+
+This ADR is kept current in place: §2/§3's hybrid push/query handling
+for provider-backed predictor series (baseline `FC`, temperature), and
+§5's model-cache accessor design (`get_model`/`set_model`/
+`invalidate_models`, not a bare `dict`), are both folded directly into
+their sections below.
 
 ---
 
@@ -312,15 +309,43 @@ call, and no duplicate storage, per string that happens to share it.
 The **model cache** (fitted model objects per string/slot) and the
 **ramp/crossfade state** (ADR-006 §1b) do not fit this time-series shape
 — a fitted model is an object, not a float, and ramp/crossfade state is a
-small, short-lived record, not a rolling window. Both stay as simple
-`dict[key, value]` structures elsewhere in `cache.py`, without the
-index/validation machinery above; only the genuinely time-series-shaped
-caches (raw `FC`/`PV` history, the day-snapshot array) use it.
-**2026-09-08 Amendment:** the model cache no longer stays a *bare*
-`dict[key, value]` — see the Amendment block at the end of this
-document for the reasoning and the resulting `get_model`/`set_model`/
-`invalidate_models` shape. The ramp/crossfade state (ADR-006 §1b) is
-unaffected by that amendment and remains exactly as described here.
+small, short-lived record, not a rolling window. The ramp/crossfade
+state stays a simple `dict[key, value]` structure, without the
+index/validation machinery above.
+
+The model cache carries a narrower, deliberate reuse of the time-series
+design's *validity* half only — not `fetch_fn`/`_validate_range` (§4): a
+fitted model is never fetched from the recorder, it is always produced
+locally by `coordinator.py`'s own fit loop
+(`string_computation.fit_string_model`), so the fetch-on-demand half of
+the machinery has no meaning here. `Cache` exposes:
+
+- **`get_model(kind, string_index) -> FittedModel | None`** — `kind` is
+  `"shading"` (every string) or `"temperature"` (`cell`/`ambient`-tier
+  strings with a resolved source only, ADR-003c §2). Returns `None` for
+  a never-fit string **or** one whose entry has been invalidated and not
+  yet re-populated this cycle.
+- **`set_model(kind, string_index, model)`** — writes the model and
+  marks it valid. Mirrors `push()`'s "always current, never re-queried"
+  contract (§2/§3 above): once set, `_recompute_string` reads the exact
+  same model unchanged all day — only the *predicted slot values* are
+  refreshed/pushed as new baseline data arrives — until the next
+  `invalidate_models` call.
+- **`invalidate_models()`** — marks every entry invalid without
+  discarding the stale objects (mirrors `invalidate()`'s §3 semantics:
+  forces a fresh `set_model` before `get_model` serves that key again).
+  `coordinator.py`'s `_refit_sync` calls this once, before its
+  per-string fit loop, so a string whose fit fails partway through a
+  recalibration pass correctly reads back as "no valid model" for the
+  rest of the day rather than silently continuing to serve a previous,
+  now-superseded cycle's model — a deliberate behavior change from an
+  earlier, `coordinator.py`-resident implementation that never cleared a
+  string's entry on a failed refit.
+
+Keyed by `(kind, string_index)` tuples rather than two separate dicts,
+matching this file's own `EnergyKind`-parametrized
+`energy_total`/`set_energy_total` pair more closely than a two-
+separate-dicts shape would.
 
 ### 6 — Pinned diagnostic reference date: one value, cache-wide
 
@@ -465,65 +490,3 @@ window" case, just narrower in scope now.
   living with this asymmetry, though the mechanism itself does not grow
   more complex per provider.
 
-## Amendment — 2026-09-08
-
-**Reason:** `AUDIT-0003-cache-module` found the fitted-model cache
-living in `coordinator.py`, not `cache.py`, contradicting both this
-section's "stays a simple `dict[key, value]` structure... without the
-index/validation machinery" text and ADR-007 §1's own listing. `TASK-
-0021` was created to get a human decision on where the model cache
-should live; ADR-007's own Amendment (same date) records the "relocate
-to `cache.py`" half of that decision. This amendment records the
-second half: once relocated, should the store stay the bare `dict` this
-section originally specified, or should it carry its own validity
-tracking?
-
-**Decision:** Relocate **and** give the store explicit validity
-tracking — not a bare `dict`. Per the human's own framing: "midnight
-invalidates; fitting model updates over the day just refresh/push
-future slots." Concretely, `Cache` gained:
-
-- `get_model(kind, string_index) -> FittedModel | None` — `kind` is
-  `"shading"` (every string) or `"temperature"` (`cell`/`ambient`-tier
-  strings with a resolved source only, ADR-003c §2). Returns `None` for
-  a never-fit string **or** one whose entry has been invalidated and
-  not yet re-populated this cycle.
-- `set_model(kind, string_index, model)` — writes the model and marks
-  it valid. Mirrors `push()`'s "always current, never re-queried"
-  contract (§2/§3 above): once set, `_recompute_string` reads the exact
-  same model unchanged all day — only the *predicted slot values* are
-  refreshed/pushed as new baseline data arrives — until the next
-  `invalidate_models` call.
-- `invalidate_models()` — marks every entry invalid without discarding
-  the stale objects (mirrors `invalidate()`'s §3 semantics for the
-  time-series stores: forces a fresh `set_model` before `get_model`
-  serves that key again). `coordinator.py`'s `_refit_sync` calls this
-  once, before its per-string fit loop, so a string whose fit fails
-  partway through a recalibration pass correctly reads back as "no
-  valid model" for the rest of the day rather than silently continuing
-  to serve a previous, now-superseded cycle's model.
-
-This is a deliberate, narrower reuse of the time-series design's
-*validity* half only — **not** `fetch_fn`/`_validate_range` (§4): a
-fitted model is never fetched from the recorder, it is always produced
-locally by `coordinator.py`'s own fit loop (`string_computation.
-fit_string_model`), so the fetch-on-demand half of the machinery this
-section otherwise describes has no meaning here and was not added.
-Keyed by `(kind, string_index)` tuples rather than two separate dicts,
-matching this file's own `EnergyKind`-parametrized
-`energy_total`/`set_energy_total` pair (§ energy-integral totals) more
-closely than the two-separate-dicts shape `coordinator.py` used before
-this amendment.
-
-**Behavior note:** this is not a pure relocation — `invalidate_models`
-being called unconditionally at the start of every `_refit_sync` is a
-small, intentional behavior change from the prior `coordinator.py`-
-resident dicts, which never cleared a string's entry on a failed
-refit and so could silently keep serving an arbitrarily stale model
-across many failed cycles. The amended behavior surfaces that state
-explicitly as "no valid model" instead.
-
-**Decided by:** human (Enrico) — the top-level relocation choice via
-`TASK-0021`'s own recorded `## Decision`, and the store-shape follow-up
-via direct clarification when the Lead Agent flagged that "the
-validated range logic" was ambiguous for a non-time-series object.
