@@ -6,32 +6,18 @@
 extracted because it is a cross-cutting specification that collects
 fields introduced by several other ADRs, and was already being
 referenced externally (ADR-003a/ADR-003b, ADR-005, ADR-006) as if it
-were its own document. No behavior changed by this split — see ADR-001's
-Revision note.
-**Amended:** 2026-08-18 — added the weather forecast entity and
-temperature regression method fields introduced by ADR-003c.
-**2026-08-20** — added two fields ADR-003b §1a's ambient→cell uplift
-formula depends on but which this document had never actually listed:
-a global "ambient-to-cell max uplift" field in "settings", and a
-per-string "rated DC capacity" field in "add_string_advanced". Closes a
-gap where ADR-003b called the first of these "configurable" with no
-matching field here, and the second had no config-flow source at all.
-**2026-08-25** — added `recency_decay_max` (global, default 50%) to
-"settings", introduced by ADR-001 §4a's new day-recency sample
-weighting.
-**2026-09-10** — added `baseline_manual_shape` (global, default
-`"sensor_dict"`, one of `"sensor_dict"`/`"sensor_list"`/
-`"weather_sunshine"`/`"weather_cloud"`) to "settings" — the shape
-choice ADR-009 §3's manual-entry baseline fallback needs, introduced by
-`TASK-0009-patch-1-manual-baseline-shape`. A documentation-only
-catch-up: the field was correctly implemented, tested, and translated
-at the time it shipped, but never added to this document's field list
-or amendment history, contradicting this document's own Consequences
-section (`AUDIT-0010`). Dated at this catch-up's own completion, not
-the field's original shipping date — the more honest reading of "when
-did this document's text change," and consistent with how this
-project's other post-hoc documentation fixes (e.g. `TASK-0018`) are
-dated.
+were its own document. No behavior changed by this split.
+**Last updated:** 2026-09-10
+
+This ADR is kept current in place as the single authoritative field
+list — every field below is live in the shipped config/options flow.
+Fields added after the original split: ADR-003c's weather-forecast
+entity and temperature regression method (2026-08-18); the
+ambient-to-cell max uplift and rated DC capacity fields ADR-003b §1a's
+formula needs (2026-08-20); `recency_decay_max` for ADR-001 §4a's
+day-recency weighting (2026-08-25); `baseline_manual_shape` for
+ADR-009 §3's manual-entry baseline fallback (implemented earlier,
+documented here 2026-09-10 per `AUDIT-0010`).
 
 ---
 
@@ -62,8 +48,12 @@ Step "settings" (first):
     providers/discovery.py per ADR-009 — covering both `sensor.*`
     PV-forecast candidates and `weather.*` sunshine-duration/
     cloud-coverage proxy candidates alike; "None of these" → manual
-    entity + attribute path entry) — used by any string that does not
-    override it
+    entity + attribute path entry, plus a manual shape selector,
+    `baseline_manual_shape` (default `"sensor_dict"`, one of
+    `"sensor_dict"`/`"sensor_list"`/`"weather_sunshine"`/
+    `"weather_cloud"` — ADR-009 §3's shape choice for the manually-
+    entered entity/attribute, unused when a discovered candidate is
+    selected instead)) — used by any string that does not override it
   - "Does this baseline already account for temperature effects itself?"
     (boolean, default false — ADR-003b §1c; presented right alongside the
     baseline candidate above, since it is a property of *that* choice)
