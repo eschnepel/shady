@@ -2,18 +2,13 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted
-**Amended:** 2026-08-13 — §1e revised: `get_slot_pool` removed (no
-remaining caller — see ADR-008 §2, which added a dedicated batched
-accessor for the full sweep, while diagnostics already had its own
-accessor in §1f). §1e and §1f reworded accordingly; no other behavior
-changes.
-**2026-08-19** — split: `cache.py`'s storage scheme and accessor design
-(formerly §1a–§1f) moved out to ADR-007a — see the Revision note at the
-end of this document.
-**2026-09-08** — Amendment: the fitted-model cache, listed in §1's
-Context/Decision as living in `cache.py`, actually lived in
-`coordinator.py` until this date — relocated to close the gap; see the
-Amendment block above the Revision note.
+**Last updated:** 2026-09-08
+
+This ADR is kept current in place. `cache.py`'s concrete storage scheme
+and accessor API — including the 2026-08-13 `get_slot_pool` removal —
+moved to ADR-007a on 2026-08-19 (see the Revision note at the end of
+this document); the fitted-model cache's relocation into `cache.py` is
+folded into §1 above.
 
 ---
 
@@ -75,7 +70,12 @@ set, evict) with nothing HA-specific about their own correctness.
 
 ### 1 — A new `cache.py`: owns all retained state, stays pure
 
-`cache.py` holds the five caches listed above. It has **no `hass`
+`cache.py` holds the five caches listed above, including the fitted-model
+cache (`Cache.get_model`/`set_model`/`invalidate_models`, keyed by
+`(kind, string_index)`) — not merely listed as belonging here while
+actually living in `coordinator.py` alongside `Cache`, which is what an
+early implementation pass did until `AUDIT-0003-cache-module`/
+`TASK-0021` closed the gap. It has **no `hass`
 import** and is tested with zero mocking, exactly like `providers/`,
 `regression/`, `aggregation.py`, and `yield_correction.py` (ADR-000 §6) —
 this was the whole point of the split: cache correctness (does an
@@ -194,48 +194,13 @@ See ADR-007a's own Consequences for the storage-scheme and accessor
 trade-offs (index-addressable design, the three-state value model,
 `fetch_fn` injection, the two-accessor-shape trade-off).
 
-## Amendment — 2026-09-08
-
-**Reason:** `AUDIT-0003-cache-module` found that this section's own
-claim — "the fitted-model cache lives in `cache.py`" — did not match
-the as-built code: `self._models`/`self._temperature_models` were
-constructed and read/written directly in `coordinator.py`, alongside,
-not inside, `self.cache = Cache(...)`. The audit itself judged this
-architecturally defensible either way (a `FittedModel` is an object,
-not a time-series value), so `TASK-0021` was created to get a human
-decision between amending this document to match the as-built
-`coordinator.py` location, or relocating the code to match this
-document as originally written.
-
-**Decision:** Relocate — `cache.py` now genuinely owns the fitted-model
-cache (`Cache.get_model`/`set_model`/`invalidate_models`, keyed by
-`(kind, string_index)`), closing the gap rather than documenting it
-away. This section's "Per-string, per-slot fitted-model cache" listing
-above is accurate again as written; no further edit to it was needed.
-See ADR-007a §5's own Amendment (same date) for the accessor's exact
-shape, which itself deviates from that section's original "bare
-`dict[key, value]`" specification.
-
-**Decided by:** human (Enrico, via this task's own recorded `##
-Decision` — "Proceed with Option B including the validated range
-logic" — plus a follow-up clarification on what "validated range
-logic" should concretely mean for a non-time-series object: "midnight
-invalidates. Fitting model updates over the day just refresh/push
-future slots.").
-
 ## Revision note
 
 **2026-08-19 split:** this ADR originally also specified `cache.py`'s
 concrete storage scheme and accessor API (formerly §1a–§1f). That
-content was extracted into ADR-007a because it is a separable, and
-independently heavily cross-referenced, concern from the *decision to
-extract `cache.py` as its own module* in the first place — nearly every
-later ADR that cites this document (001, 002, 003c, 004, 005, 006, 008,
-009, 011, 012) was actually pointing at one of §1a–§1f's specific
-subsections rather than this document's own split rationale, and ADR-008
-§2 had already added a third accessor to the same family from outside
-this document, meaning the accessor design was already living across two
-documents in practice rather than one. This was a pure documentation
-reorganization: no decision, default, or behavior changed. All
-cross-references throughout the ADR set were updated to point at
-ADR-007a directly.
+content was extracted into ADR-007a because nearly every later ADR that
+cites this document was actually pointing at one of those specific
+subsections rather than this document's own split rationale, and
+ADR-008 §2 had already added a third accessor to the same family from
+outside this document. Pure documentation reorganization: no decision,
+default, or behavior changed.
