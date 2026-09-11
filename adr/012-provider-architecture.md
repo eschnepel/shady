@@ -2,25 +2,14 @@
 
 **Date:** 2026-08-18
 **Status:** Accepted
-**Amended:** 2026-08-19 — new §4 generalizes ADR-002 §4's raw-`FC` push
-into a policy for any provider-backed predictor; former §4 ("Module
-boundary is unchanged") renumbered to §5. See ADR-003c §7 for
-temperature's own instantiation. Later the same day: §1 revised —
-`providers/base.py` is now an actual base class (not a structural
-protocol), with a new optional `forward(now)` method alongside `fetch`/
-`identify`; §4 revised to describe one generic `coordinator.py` loop
-over `forward()`-implementing providers, rather than one hand-rolled
-listener per provider. No change to what gets pushed, when, or the
-`not_before_index` guard — only to how the mechanism is shared across
-providers.
-**2026-08-20** — new §1a: two small, HA-agnostic helpers (an
-HA-state-to-three-state-value mapper, and a series-tuple assembly
-primitive) moved into `providers/base.py`, previously reimplemented
-independently inside `providers/normalize.py` and
-`providers/temperature.py`. §5 updated to match — `base.py` is no
-longer just the bare class definition. No change to either concrete
-provider's own `fetch()`/`identify()`/`forward()` behavior or output
-shape.
+**Last updated:** 2026-08-20
+
+This ADR is kept current in place: §1 already describes `providers/base.py`
+as an actual base class (not a structural protocol) with the optional
+`forward(now)` push method alongside `fetch`/`identify`; §4 already
+describes `coordinator.py`'s one generic loop over `forward()`-
+implementing providers; §1a's two shared helpers (state-value mapping,
+series-tuple assembly) are folded into §1a/§5 directly.
 
 ---
 
@@ -163,8 +152,8 @@ providers rather than reimplemented in each:
 
 Both helpers are pure functions of their inputs — no `hass` access, no
 provider-specific branching inside either one — so they stay in the
-zero-mocking pure tier alongside the rest of `providers/base.py` (ADR-000
-§6, amended alongside this document; see that ADR's own amendment note).
+zero-mocking pure tier alongside the rest of `providers/base.py`
+(ADR-000 §6).
 
 ### 2 — Not every external entity needs a provider
 
