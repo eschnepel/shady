@@ -13,3 +13,9 @@ codeformatters = [  # options: a list of enabled code formatter languages (defau
 
 [plugin.tables]
 compact_tables = true
+
+exclude = [
+    ".venv/**",
+    ".venv\\**",
+    ".venv",
+]
