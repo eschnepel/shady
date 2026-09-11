@@ -2,14 +2,8 @@
 
 **Date:** 2026-08-31
 **Status:** Accepted
-**Amended:** 2026-09-10 — §4's Decision text corrected: it previously
-claimed all four relocated `coordinator.py` methods "delegate everything
-else to `string_computation.py`," which was never true of
-`_predict_day_basis`/`_clamp_basis` (they call `forecast_adjust.py`
-directly, unchanged, per `TASK-0017`'s own Acceptance Criteria). §4 now
-carves this out explicitly, wording adapted from that already-reviewed
-Acceptance Criteria text rather than drafted fresh. Description-only,
-no behavior change (`TASK-0027`, `AUDIT-0006`).
+**Last updated:** 2026-09-10 — §4 description-only fix
+(`TASK-0027`, `AUDIT-0006`), no behavior change.
 
 ---
 
@@ -62,7 +56,7 @@ responsibility, its function signatures, and its dependency direction.
 It does not redefine any of the math it wraps — `regression/`'s fitting
 mechanics (ADR-001/ADR-008/ADR-011), `yield_correction.py`'s clipping/
 derating formulas (ADR-003a/ADR-003b), and `forecast_adjust.py`'s
-reverse-transform/clamp ordering (ADR-006 §1b Amendment) all remain
+reverse-transform/clamp ordering (ADR-006 §1b) all remain
 exactly as those documents specify; this ADR only relocates the
 *calling code* that ties them together for one string, one target
 slot at a time, and names the module that now owns it.
@@ -143,9 +137,8 @@ it worthwhile rather than inlining it a third time too:
   float, provider_already_corrects: bool, inverter_limit: float | None) ->
   NDArray[np.float64]`** — calls `forecast_adjust
   .reverse_transformed_forecast(...)` then `forecast_adjust
-  .clamp_output(...)`, in that fixed order (ADR-006 §1b Amendment's
-  canonical ordering: raw-predict → reverse-transform → exactly-one
-  final clamp). Replaces `_predict_day_basis`'s reverse-transform step
+  .clamp_output(...)`, in that fixed order (ADR-006 §1b's canonical
+  ordering: raw-predict → reverse-transform → exactly-one final clamp). Replaces `_predict_day_basis`'s reverse-transform step
   plus `_clamp_basis`'s clamp step, previously two separate calls a
   caller had to remember to chain in the right order; now one call that
   cannot be chained wrong. This is the literal "turn a fitted model and
