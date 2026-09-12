@@ -187,3 +187,70 @@ class TestIdentifyByTier:
         hass = FakeHomeAssistant([_WEATHER_ENTITY])
         provider = TemperatureProvider(hass, "weather.dwd", "weather")
         assert provider.identify() == _temperature_mod.EntityRef("weather.dwd", "temperature")
+
+
+class TestParseForecastSeriesNeverRaises:
+    """`_parse_forecast_series`'s own explicit contract — "returns `[]`
+    ... if `forecast_raw` isn't actually shaped this way" — is only
+    ever exercised above through well-formed `forecast` attributes
+    (`_WEATHER_ENTITY`'s own fixture). Different weather integrations
+    genuinely vary here (ADR-003b §1a's "stable, versioned HA
+    conventions" is a convention, not an enforced schema), so this
+    parser's defensive branches are worth their own direct coverage,
+    not just an implicit side effect of the happy-path fetch tests."""
+
+    def test_non_sequence_input_returns_empty(self) -> None:
+        assert _temperature_mod._parse_forecast_series(None) == []
+        assert _temperature_mod._parse_forecast_series(42) == []
+
+    def test_string_input_is_not_treated_as_a_sequence_of_entries(self) -> None:
+        # A `str` *is* a `Sequence`, which is exactly why the isinstance
+        # check singles it out explicitly rather than iterating its
+        # characters as if they were forecast entries.
+        assert _temperature_mod._parse_forecast_series("sunny") == []
+
+    def test_non_mapping_entries_are_skipped_not_fatal(self) -> None:
+        result = _temperature_mod._parse_forecast_series(
+            ["not-a-dict", 42, {"datetime": "2026-01-01T10:00:00+00:00", "temperature": 15.0}]
+        )
+        assert result == [(datetime(2026, 1, 1, 10, 0, tzinfo=UTC), 15.0)]
+
+    def test_entries_missing_either_key_are_skipped(self) -> None:
+        result = _temperature_mod._parse_forecast_series(
+            [
+                {"datetime": "2026-01-01T10:00:00+00:00"},  # no temperature
+                {"temperature": 15.0},  # no datetime
+                {"datetime": "2026-01-01T10:05:00+00:00", "temperature": 15.4},
+            ]
+        )
+        assert result == [(datetime(2026, 1, 1, 10, 5, tzinfo=UTC), 15.4)]
+
+    def test_unparseable_timestamp_string_is_skipped_not_fatal(self) -> None:
+        result = _temperature_mod._parse_forecast_series(
+            [
+                {"datetime": "not-a-timestamp", "temperature": 15.0},
+                {"datetime": "2026-01-01T10:00:00+00:00", "temperature": 16.0},
+            ]
+        )
+        assert result == [(datetime(2026, 1, 1, 10, 0, tzinfo=UTC), 16.0)]
+
+    def test_already_a_datetime_object_is_used_directly(self) -> None:
+        # Defensive: most integrations hand back an ISO string, but
+        # nothing in the type contract rules out an integration handing
+        # back an already-parsed `datetime`.
+        already_parsed = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+        result = _temperature_mod._parse_forecast_series(
+            [{"datetime": already_parsed, "temperature": 15.0}]
+        )
+        assert result == [(already_parsed, 15.0)]
+
+    def test_non_numeric_temperature_value_falls_back_to_empty_not_a_raise(self) -> None:
+        # `assemble_series`'s own `float(entry[value_key])` raises on a
+        # non-numeric value — the one path that isn't caught per-entry
+        # above (it happens inside `assemble_series`, after every entry
+        # already looked well-formed), so the whole call must still not
+        # propagate, per this function's own "never raises" promise.
+        result = _temperature_mod._parse_forecast_series(
+            [{"datetime": "2026-01-01T10:00:00+00:00", "temperature": "unavailable"}]
+        )
+        assert result == []

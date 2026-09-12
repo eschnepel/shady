@@ -375,6 +375,47 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+def _make_temperature_aware_coordinator() -> tuple[Any, FakeHomeAssistant]:
+    """A single string resolving a `weather`-tier temperature source
+    (ADR-003b §1a) — the simplest tier to fixture: unlike `cell`/
+    `ambient`, `weather` needs no separate `weather_forecast_
+    temperature_entity` predictor (`_resolve_temperature_entity`
+    resolves it from the string's own domain check alone), and
+    `TemperatureProvider.fetch()` falls back to the entity's current
+    `temperature` attribute for every historical slot with no matching
+    `forecast` entry (`providers/temperature.py`), so one static state
+    is enough for a full `window_days` history. `rated_dc_capacity_wp`
+    is set because the weather tier's uplift branch
+    (`_predict_target_slot_temperature`) gates to `None` without it.
+
+    Used both for `_fit_string`'s own temperature-aware branch
+    (`coordinator.py`) and, via `tests/test_diagnostics_compare_
+    regressions.py`'s reuse of this module, `CompareRegressionsMode.
+    extra_fit()`'s temperature-aware `_gather_pool`/`_predict_all_
+    methods` branches — both previously only exercised formula-by-
+    formula in isolation (`test_coordinator_temperature_forecast.py`),
+    never through a real end-to-end fit/predict call."""
+    entry = _make_entry(
+        strings=[
+            {
+                "name": "Dach Süd",
+                "baseline_entity_id": None,
+                "baseline_attribute": None,
+                "baseline_shape": None,
+                "temperature_aware": False,
+                "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                "converter_limit_w": None,
+                "temperature_source_entity_id": "weather.home",
+                "temperature_coefficient_pct_per_c": -0.4,
+                "rated_dc_capacity_wp": 5000.0,
+            }
+        ],
+    )
+    coordinator, hass = _make_coordinator(entry)
+    hass.states.set("weather.home", {"temperature": 15.0, "forecast": []})
+    return coordinator, hass
+
+
 def _set_state(
     hass: FakeHomeAssistant,
     entity_id: str,
@@ -567,6 +608,71 @@ class TestRefitTriggersRecompute:
         # test actually cares about — no recompute ever *pushed* a
         # value — is `hass_pushed_values` returning empty.
         assert hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0)) == {}
+
+
+class TestStringLevelBaselineOverrideRegistration:
+    """Given a string configures its own `baseline_entity_id` (ADR-002
+    §2's per-string override, distinct from — here, in place of
+    entirely — the global default), When the coordinator is
+    constructed, Then `_ensure_baseline_provider` actually registers a
+    working `BaselineProvider` for it and a model can be fit through
+    it end to end. Previously untested: every other coordinator test in
+    this file relies on the *global* `baseline_entity_id` fallback
+    (`string.has_baseline_override` was always `False`)."""
+
+    def test_shading_model_fits_from_a_per_string_override_entity(self) -> None:
+        override_entity = "sensor.string_a_own_baseline"
+        entry = _make_entry(
+            baseline_entity_id=None,  # no global fallback configured at all
+            strings=[
+                {
+                    "name": "Dach Süd",
+                    "baseline_entity_id": override_entity,
+                    "baseline_attribute": "wh_period",
+                    "baseline_shape": "sensor_dict",
+                    "temperature_aware": False,
+                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                    "converter_limit_w": None,
+                    "temperature_source_entity_id": None,
+                    "temperature_coefficient_pct_per_c": -0.4,
+                    "rated_dc_capacity_wp": None,
+                }
+            ],
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(
+            override_entity,
+            {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=3))},
+        )
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        _seed_actual_yield_statistics(hass, _YESTERDAY, _YESTERDAY + timedelta(days=1))
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+
+        _run(coordinator.async_refit(_NOW))
+
+        assert coordinator.cache.get_model("shading", 0) is not None
+
+
+class TestFitStringWithResolvedTemperatureSource:
+    """Given a string resolves a temperature source (weather tier —
+    ADR-003b §1a's simplest case, no separate predictor entity needed),
+    When `_fit_string` runs (via `async_refit`), Then the temperature-
+    aware branch — gathering a `temperature_by_offset` pool and passing
+    it into `apply_training_corrections` — actually executes end to
+    end. Previously only exercised formula-by-formula in isolation
+    (`test_coordinator_temperature_forecast.py`'s own docstring says as
+    much: "deliberately does NOT re-test regression/'s fitting math...
+    only the coordinator-level wiring" — but that file's one true
+    end-to-end test, `TestNoPredictorSkipsBothSidesEndToEnd`, is
+    specifically the *unconfigured* skip path, not this one)."""
+
+    def test_shading_model_still_fits_with_a_resolved_temperature_source(self) -> None:
+        coordinator, _hass = _make_temperature_aware_coordinator()
+
+        _run(coordinator.async_refit(_NOW))
+
+        assert coordinator.cache.get_model("shading", 0) is not None
 
 
 class TestRefitInvalidatesStaleModelOnSubsequentFailure:

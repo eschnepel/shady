@@ -103,6 +103,64 @@ class TestResolveListSeries:
     def test_string_input_returns_none(self) -> None:
         assert _normalize_mod.resolve_list_series("not-a-list") is None
 
+    def test_first_entry_not_a_mapping_returns_none(self) -> None:
+        assert _normalize_mod.resolve_list_series([1, 2, 3]) is None
+
+    def test_a_later_entry_missing_a_key_returns_none(self) -> None:
+        # The first entry alone decides which timestamp_key/value_key
+        # apply (both present here) — a later entry lacking one of them
+        # invalidates the whole series rather than being skipped, same
+        # "all or nothing" contract `resolve_dict_series` has.
+        raw = [
+            {"datetime": "2026-01-01T10:00:00+00:00", "value": 1.0},
+            {"datetime": "2026-01-01T10:05:00+00:00"},  # missing "value"
+        ]
+        assert _normalize_mod.resolve_list_series(raw) is None
+
+    def test_a_later_entry_with_an_unparseable_timestamp_returns_none(self) -> None:
+        raw = [
+            {"datetime": "2026-01-01T10:00:00+00:00", "value": 1.0},
+            {"datetime": "not-a-timestamp", "value": 2.0},
+        ]
+        assert _normalize_mod.resolve_list_series(raw) is None
+
+    def test_a_later_entry_with_a_non_numeric_value_returns_none(self) -> None:
+        raw = [
+            {"datetime": "2026-01-01T10:00:00+00:00", "value": 1.0},
+            {"datetime": "2026-01-01T10:05:00+00:00", "value": "n/a"},
+        ]
+        assert _normalize_mod.resolve_list_series(raw) is None
+
+
+class TestParseTimestamp:
+    """`parse_timestamp` (ADR-009 §3's scoring signal) is only ever
+    exercised indirectly above, through `resolve_dict_series`/`resolve_
+    list_series` — direct coverage of its own three short-circuit
+    branches."""
+
+    def test_already_a_datetime_is_returned_directly(self) -> None:
+        already_parsed = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+        assert _normalize_mod.parse_timestamp(already_parsed) is already_parsed
+
+    def test_non_string_non_datetime_returns_none(self) -> None:
+        assert _normalize_mod.parse_timestamp(12345) is None
+
+    def test_blank_string_returns_none(self) -> None:
+        assert _normalize_mod.parse_timestamp("   ") is None
+
+
+class TestNormalizeCandidateSeriesUnrecognizedShape:
+    """`normalize_candidate_series`'s own final `return []` — reached
+    only if `shape` is somehow none of the four `BaselineShape` values
+    at runtime (e.g. stale config data from a version with a shape this
+    version no longer recognizes) — the same "never raises outside its
+    normal operating range" contract the module docstring states for
+    the recognized-shape branches above."""
+
+    def test_unrecognized_shape_string_returns_empty(self) -> None:
+        result = _normalize_mod.normalize_candidate_series("some_future_shape", {"x": 1.0})
+        assert result == []
+
 
 class TestInvertCloudCoverage:
     """Given cloud-coverage percentage values, invert_cloud_coverage

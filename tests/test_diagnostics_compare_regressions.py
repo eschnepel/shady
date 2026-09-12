@@ -31,6 +31,7 @@ from tests import test_coordinator as tc
 # shady.aggregation` isn't on any import path this harness sets up).
 _aggregation_mod = sys.modules["shady.aggregation"]
 diagnostic_accuracy = _aggregation_mod.diagnostic_accuracy
+_string_computation_mod = sys.modules["shady.string_computation"]
 
 # A 3-day window, no smoothing (single offset "0") — small enough to hand
 # -verify, big enough to demonstrate a real gap-pattern mismatch across
@@ -195,6 +196,24 @@ class TestSumEntryUnavailableWhenNothingContributes:
         assert summed.state == "unavailable"
         assert summed.attributes == {}
 
+    def test_extra_fit_returns_none_and_caches_nothing(self) -> None:
+        """The `extra_fit()` counterpart to the test above: every
+        configured string's `config.baseline_entity_id` resolves to
+        `None`, so `extra_fit()`'s per-string loop `continue`s every
+        iteration without ever populating `by_sensor` — previously
+        untested, since every other test in this file either bypasses
+        `extra_fit()` entirely (seeding `cache.set_diagnostic_fit`
+        directly) or has at least one string that *does* resolve a
+        baseline."""
+        coordinator, _hass = _make_two_string_setup()
+        coordinator._global_baseline_entity_id = None
+        _activate(coordinator)
+
+        coordinator._diagnostics_tick_sync(_PIN)
+
+        assert coordinator.cache.diagnostic_fit("0") is None
+        assert coordinator.cache.diagnostic_fit("1") is None
+
 
 class TestSelectedAggregatesSummedIndependently:
     """The "selected slot" accuracy path (ADR-004 §2b/§5): `predictions`
@@ -241,6 +260,44 @@ class TestSelectedAggregatesSummedIndependently:
             for entry in selected_series
         )
         assert summed.attributes["accuracy"] == {"method_x": expected_accuracy}
+
+
+class TestExtraFitAcrossAllRegressionStrategies:
+    """`extra_fit()` (ADR-004 §2/§4) is only ever driven through
+    `_diagnostics_tick_sync`, the coordinator's own 5-minute tick
+    (ADR-004 §4) — no earlier test in this file calls it, since every
+    scenario above bypasses real fitting by seeding `cache.set_
+    diagnostic_fit` directly instead. Reuses `test_coordinator.py`'s
+    weather-tier temperature-aware fixture (`_make_temperature_aware_
+    coordinator`) so this same call also exercises `_gather_pool`'s and
+    `_predict_all_methods`'s temperature branches (previously
+    completely uncovered — `config.temperature_entity_id` was never
+    non-`None` in any prior test in this file), not just the
+    untempered path."""
+
+    def test_extra_fit_populates_a_prediction_per_regression_strategy(self) -> None:
+        coordinator, _hass = tc._make_temperature_aware_coordinator()
+        ok = coordinator.pin_diagnostic_slot(tc._NOW)
+        assert ok
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        coordinator._diagnostics_tick_sync(tc._NOW)
+
+        predictions = coordinator.cache.diagnostic_fit("0")
+        assert predictions is not None
+        assert set(predictions) == set(_string_computation_mod.REGRESSION_STRATEGIES)
+
+        # The same tick's `compute()` (both cadences are "slot") reads
+        # this prediction straight back — and `_predict_all_methods`
+        # only reaches its `target_cell_temperature` branch at all
+        # when `coordinator.target_cell_temperature_for_slot` itself
+        # resolves to a real value, not `None` — confirmed directly
+        # here, since a `None` target would still silently produce *a*
+        # prediction without proving the temperature branch actually
+        # fed anything through.
+        diagnosed = coordinator.diagnosed_slot()
+        assert diagnosed is not None
+        assert coordinator.target_cell_temperature_for_slot(0, diagnosed.index) is not None
 
 
 class TestFuturePinnedSlotOmitsSelectedActual:
