@@ -1,6 +1,6 @@
 # Audit Task: Provider Package (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/providers/*.py` (`base.py`,
   `discovery.py`, `normalize.py`, `temperature.py`)
 - **Related ADRs:** [ADR-009, ADR-012 §1/§1a, ADR-003b §1a]

@@ -1,6 +1,6 @@
 # Audit Task: Regression Package (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/regression/*.py` (`base.py`, `kernel.py`,
   `linear.py`, `wls2.py`, `wls3.py`)
 - **Related ADRs:** [ADR-001 §2/§2a/§3/§3a, ADR-008 §1, ADR-011, ADR-000 §3/§4]

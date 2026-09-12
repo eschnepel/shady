@@ -1,6 +1,6 @@
 # Audit Task: Config Flow & Translations (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/config_flow.py`,
   `custom_components/shady/const.py`,
   `custom_components/shady/translations/en.json`,

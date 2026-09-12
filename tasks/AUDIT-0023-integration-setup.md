@@ -1,6 +1,6 @@
 # Audit Task: Integration Setup & Wiring (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/__init__.py`,
   `custom_components/shady/services.yaml`,
   `custom_components/shady/manifest.json`

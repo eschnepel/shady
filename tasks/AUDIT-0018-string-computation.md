@@ -1,6 +1,6 @@
 # Audit Task: String Computation Module (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/string_computation.py`
 - **Related ADRs:** [ADR-014, ADR-000 §3]
 - **Source Tasks:** \[TASK-0017-string-computation-module,

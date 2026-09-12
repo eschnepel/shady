@@ -1,6 +1,6 @@
 # Audit Task: HA Entity Layer (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/sensor.py`,
   `custom_components/shady/button.py`, `custom_components/shady/select.py`
 - **Related ADRs:** \[ADR-002 §3/§5, ADR-004 §2, ADR-005 §2, ADR-006 §2, ADR-000

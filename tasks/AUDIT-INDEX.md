@@ -1,12 +1,17 @@
 # Audit Task Index — Round 2 (Post-Remediation ADR Conformance Review)
 
-**Status of this phase:** Executed inline (Lead Agent acting as Auditor, no
-sub-agents available in this environment — see the main orchestration prompt's
-"If you are unable to use subagents... work strictly sequentially" clause).
-Findings below are real, evidence-based (file:line citations, live
-`pytest`/`mypy`/`ruff` runs), not placeholders. No code, test, or ADR file has
-been modified during this phase — per Phase 7 rule 6, audits are generated (with
-findings), not executed as fixes. Fixes happen in Phase 8.
+**Status of this phase:** Phase 7 (audit generation) and Phase 8 (remediation)
+both complete, 2026-09-12. Executed inline throughout (Lead Agent acting as
+Auditor/Worker/Reviewer — no sub-agents available in this environment; see the
+main orchestration prompt's "If you are unable to use subagents... work strictly
+sequentially" clause). Findings below are real, evidence-based (file:line
+citations, live `pytest`/`mypy`/`ruff` runs), not placeholders. Of the 12
+round-2 audit groups, 4 had a scheduled fix (`AUDIT-0016`, `AUDIT-0017`,
+`AUDIT-0020`, `AUDIT-0024`) — all now `done`; the other 8 needed none and are
+closed as clean. Every finding had exactly one reasonable fix (no Open
+Questions), so Phase 8 required no live human decisions. Full toolchain
+re-verified green after every change: 446/446 tests (445 + 1 new coverage test),
+`mypy --strict` clean, `ruff check`/`ruff format --check` clean.
 
 ## Why a round 2
 
@@ -100,18 +105,18 @@ finding twice.
 
 | Slug | Title | Status | Round-1 items re-verified | New findings this round | Auditor |
 | -- | -- | -- | -- | -- | -- |
-| AUDIT-0013-provider-package | Provider Package | review | 1 T1 decision (sunshine rescaling) — confirmed fixed | none | Lead Agent (inline) |
-| AUDIT-0014-regression-package | Regression Package | review | 1 coverage gap (`predict_unclamped`) — confirmed fixed | 1 cross-ref (false diagram edge, primary write-up in AUDIT-0016) | Lead Agent (inline) |
-| AUDIT-0015-cache-module | Cache Module | review | 1 FAIL (model cache location) — confirmed fixed | 1 cross-ref each (invalidate-on-failure coverage gap, primary in AUDIT-0017; false `cache --> aggregation` edge, primary in AUDIT-0017; missing `diagnostics --> cache` edge, primary in AUDIT-0020) | Lead Agent (inline) |
-| AUDIT-0016-yield-forecast-corrections | Yield & Forecast Corrections | review | 1 minor coverage gap (4-strategy parametrization) — confirmed fixed | **1 new FAIL**: ADR-000 §3 diagram/prose — 2 false edges + 1 false claim about which module calls `yield_correction.py` forward | Lead Agent (inline) |
-| AUDIT-0017-coordinator | Coordinator | review | 2 ADR-text-staleness items (single merged listener; ADR-014 overclaim) — confirmed fixed; 1 acknowledged-not-scheduled gap — unchanged, still acknowledged | **1 new FAIL** (false `cache --> aggregation` edge / missing `coordinator --> aggregation` edge) + **1 new coverage gap** (invalidate-on-refit-failure behavior untested at coordinator level) | Lead Agent (inline) |
-| AUDIT-0018-string-computation | String Computation Module | review | 1 FAIL (docstring false-claim) — confirmed fixed; 1 minor coverage gap — unchanged, low priority, not previously scheduled | none | Lead Agent (inline) |
-| AUDIT-0019-aggregation | Aggregation Module | review | 1 FAIL outside checklist (stale `aggregation --> forecast_adjust` edge) — confirmed fixed; 1 coverage gap (Ramping/Blending divergence) — confirmed fixed | 1 cross-ref (false `cache --> aggregation` edge, primary in AUDIT-0017) | Lead Agent (inline) |
-| AUDIT-0020-diagnostics-package | Diagnostics Package | review | clean in round 1 (no FAIL, no gap) | **1 new FAIL**: ADR-000 §3's explicit "coordinator.py is the only module that imports cache.py" claim is false — `diagnostics/compare_regressions.py` also imports it | Lead Agent (inline) |
-| AUDIT-0021-entity-layer | HA Entity Layer | review | 1 PARTIAL (3 sensor classes bypass coordinator wrapper methods) — confirmed fixed (documented + `cache` made read-only); 1 coverage gap (`unique_id` distinctness) — confirmed fixed | none | Lead Agent (inline) |
-| AUDIT-0022-config-flow-translations | Config Flow & Translations | review | 1 FAIL (`baseline_manual_shape` undocumented) — confirmed fixed; 2 coverage gaps (en/de key-set equality; manual-shape round-trip) — confirmed fixed | none | Lead Agent (inline) |
-| AUDIT-0023-integration-setup | Integration Setup & Wiring | review | 2 PARTIALs (stale `switch` reference; diagram edges) — confirmed fixed; 3 coverage gaps (setup failure; teardown asymmetry; services.yaml symmetry) — confirmed fixed | none | Lead Agent (inline) |
-| AUDIT-0024-tooling-release-config | Tooling & Release Configuration | review | 2 FAILs (`mypy.ini` syntax; `architecture.mmd` staleness) + 1 FAIL outside checklist (pytest config dupe) + 1 Test-Coverage FAIL (`codeql.yml` branch) — all confirmed fixed, live-verified; 2 coverage gaps — unchanged, both explicitly acknowledged-not-scheduled by round 1's own assessment | **1 new FAIL**: `README.md`'s own Status line is stale — claims "9/13 remediation tasks done," actual state is 13/13 | Lead Agent (inline) |
+| AUDIT-0013-provider-package | Provider Package | done | 1 T1 decision (sunshine rescaling) — confirmed fixed | none | Lead Agent (inline) |
+| AUDIT-0014-regression-package | Regression Package | done | 1 coverage gap (`predict_unclamped`) — confirmed fixed | 1 cross-ref (false diagram edge, primary write-up in AUDIT-0016) | Lead Agent (inline) |
+| AUDIT-0015-cache-module | Cache Module | done | 1 FAIL (model cache location) — confirmed fixed | 1 cross-ref each (invalidate-on-failure coverage gap, primary in AUDIT-0017; false `cache --> aggregation` edge, primary in AUDIT-0017; missing `diagnostics --> cache` edge, primary in AUDIT-0020) | Lead Agent (inline) |
+| AUDIT-0016-yield-forecast-corrections | Yield & Forecast Corrections | done | 1 minor coverage gap (4-strategy parametrization) — confirmed fixed | **1 FAIL fixed**: ADR-000 §3 diagram/prose — 2 false edges removed + false forward-caller claim corrected (also fixed the same claim in `tasks/adr-summary.md`; discovered and fixed 2 additional missing real edges, `coordinator --> providers` / `entity_glue --> providers`, exposed by removing the false edge) | Lead Agent (inline) |
+| AUDIT-0017-coordinator | Coordinator | done | 2 ADR-text-staleness items (single merged listener; ADR-014 overclaim) — confirmed fixed; 1 acknowledged-not-scheduled gap — unchanged, still acknowledged | **1 FAIL fixed** (false `cache --> aggregation` edge → `coordinator --> aggregation`) + **1 coverage gap closed** (new `tests/test_coordinator.py::TestRefitInvalidatesStaleModelOnSubsequentFailure`, sanity-checked against a deliberately broken `coordinator.py`) | Lead Agent (inline) |
+| AUDIT-0018-string-computation | String Computation Module | done | 1 FAIL (docstring false-claim) — confirmed fixed; 1 minor coverage gap — unchanged, low priority, not previously scheduled | none | Lead Agent (inline) |
+| AUDIT-0019-aggregation | Aggregation Module | done | 1 FAIL outside checklist (stale `aggregation --> forecast_adjust` edge) — confirmed fixed; 1 coverage gap (Ramping/Blending divergence) — confirmed fixed | 1 cross-ref (false `cache --> aggregation` edge, fixed under AUDIT-0017) | Lead Agent (inline) |
+| AUDIT-0020-diagnostics-package | Diagnostics Package | done | clean in round 1 (no FAIL, no gap) | **1 FAIL fixed**: added missing `diagnostics --> cache` diagram edge; corrected the false "coordinator.py is the only module that imports cache.py" claim in ADR-000 and `tasks/adr-summary.md` | Lead Agent (inline) |
+| AUDIT-0021-entity-layer | HA Entity Layer | done | 1 PARTIAL (3 sensor classes bypass coordinator wrapper methods) — confirmed fixed (documented + `cache` made read-only); 1 coverage gap (`unique_id` distinctness) — confirmed fixed | none | Lead Agent (inline) |
+| AUDIT-0022-config-flow-translations | Config Flow & Translations | done | 1 FAIL (`baseline_manual_shape` undocumented) — confirmed fixed; 2 coverage gaps (en/de key-set equality; manual-shape round-trip) — confirmed fixed | none | Lead Agent (inline) |
+| AUDIT-0023-integration-setup | Integration Setup & Wiring | done | 2 PARTIALs (stale `switch` reference; diagram edges) — confirmed fixed; 3 coverage gaps (setup failure; teardown asymmetry; services.yaml symmetry) — confirmed fixed | none | Lead Agent (inline) |
+| AUDIT-0024-tooling-release-config | Tooling & Release Configuration | done | 2 FAILs (`mypy.ini` syntax; `architecture.mmd` staleness) + 1 FAIL outside checklist (pytest config dupe) + 1 Test-Coverage FAIL (`codeql.yml` branch) — all confirmed fixed, live-verified; 2 coverage gaps — unchanged, both explicitly acknowledged-not-scheduled by round 1's own assessment | **1 FAIL fixed**: `README.md`'s Status line updated to reflect both rounds complete (13/13 + 4/4) | Lead Agent (inline) |
 
 No cross-group dependencies: every group audits code that is already `done` and
 stable, so groups 13–24 could run in parallel or any order — same as round
@@ -137,3 +142,10 @@ role" section for the full instruction text this pass followed.
 | 2026-09-11 | Lead Agent | Installed `mypy`/`pytest`/`pytest-asyncio`/`pytest-cov`/`ruff==0.16.4`/`voluptuous`/`numpy` in sandbox; ran full suite (445/445 passed), `mypy --strict` (clean), `ruff check`/`ruff format --check` (both clean) | Live-verify round-1's FAILs are genuinely fixed, not just claimed, before writing round-2 findings |
 | 2026-09-11 | Lead Agent | Traced the complete internal import graph via `grep` across every `custom_components/shady/**/*.py` and diffed it against ADR-000 §3's Mermaid diagram + prose | Systematic check the same class of finding (`aggregation --> forecast_adjust`) round 1 only caught incidentally, per-group |
 | 2026-09-11 | Lead Agent | Generated `AUDIT-0013`–`AUDIT-0024` findings; no code/test/ADR file modified | Phase 7 rule 6 — audits are generated, not executed, during this phase |
+| 2026-09-12 | Human ("Start a new phase 8.") | Resumed session against the `initialcode` branch; re-verified all 12 round-2 audit tasks and re-ran the full toolchain (445/445 tests, mypy --strict clean, ruff clean) before touching anything | Phase 8 trigger — proceed with the audit tasks from Phase 7 |
+| 2026-09-12 | Lead Agent | Processed `AUDIT-0017-coordinator`: fixed the false `cache --> aggregation` diagram edge (→ `coordinator --> aggregation`); added `tests/test_coordinator.py::TestRefitInvalidatesStaleModelOnSubsequentFailure`, sanity-checked by temporarily disabling `invalidate_models()` and confirming the test fails, then restoring the file. Status → `done`. | Open Questions: none — single reasonable fix per the audit task's own Definition of Done; no live decision needed |
+| 2026-09-12 | Lead Agent | Processed `AUDIT-0016-yield-forecast-corrections`: removed 2 false diagram edges (`yield_correction --> providers`, `regression --> yield_correction`); corrected the `yield_correction.py` forward-caller prose (`regression/` → `string_computation.py`) in both `adr/000-coding-standards.md` and `tasks/adr-summary.md`. Status → `done`. | same — no Open Questions |
+| 2026-09-12 | Lead Agent | Scenario-B-style discovery mid-fix: removing the false `yield_correction --> providers` edge left the `providers` node with zero edges, though `coordinator.py` and `config_flow.py` (`entity_glue`) both really import it. Added the two real missing edges (`coordinator --> providers`, `entity_glue --> providers`) as part of the same `AUDIT-0016` fix rather than leaving the diagram newly wrong in a different way | Diagram accuracy is `AUDIT-0016`'s own stated goal; the gap was a direct side effect of that task's own edit, not unrelated scope |
+| 2026-09-12 | Lead Agent | Processed `AUDIT-0020-diagnostics-package`: added the missing `diagnostics --> cache` diagram edge; corrected the false "coordinator.py is the only module that imports cache.py" claim in `adr/000-coding-standards.md` and `tasks/adr-summary.md`, narrowed to the accurate claim (only module holding a `Cache` instance / calling its methods). Status → `done`. | same — no Open Questions |
+| 2026-09-12 | Lead Agent | Processed `AUDIT-0024-tooling-release-config`: updated `README.md`'s stale "9/13 remediation tasks done" status line to reflect both rounds complete (13/13 round 1, 4/4 round 2). Status → `done`. | same — no Open Questions |
+| 2026-09-12 | Lead Agent | Closed the remaining 8 round-2 audit tasks (`AUDIT-0013`/`0014`/`0015`/`0018`/`0019`/`0021`/`0022`/`0023`) from `review` → `done`; each had "no independent fix scheduled" in its own Definition of Done (either clean, or its one live finding's fix is tracked and delivered under a cross-referenced sibling task) | Close the audit trail — nothing left pending for any round-2 group |

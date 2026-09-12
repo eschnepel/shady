@@ -1,6 +1,6 @@
 # Audit Task: Aggregation Module (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/aggregation.py`
 - **Related ADRs:** [ADR-005, ADR-006 §1a, ADR-000 §3]
 - **Source Tasks:** \[TASK-0010-yield-aggregation-and-blending,

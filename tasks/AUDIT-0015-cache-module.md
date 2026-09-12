@@ -1,6 +1,6 @@
 # Audit Task: Cache Module (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/cache.py`
 - **Related ADRs:** [ADR-007, ADR-007a, ADR-008 §2/§3]
 - **Source Tasks:** \[TASK-0002-cache-core-time-series-store,
