@@ -1,7 +1,11 @@
 # Shady – Shading-Adjusted PV Forecast
 
-**Status:** Implementation complete (20/20 core tasks); post-implementation
-ADR-conformance audit and remediation in progress (9/13 remediation tasks done).
+**Status:** Implementation complete (20/20 core tasks); two rounds of
+post-implementation ADR-conformance audit and remediation complete — round 1
+(13/13 remediation tasks, closed 2026-09-10) and round 2 (4/4 remediation
+tasks, closed 2026-09-12; 8 of the 12 round-2 audit groups needed no fix at
+all). See `tasks/AUDIT-INDEX.md` for the full round-2 findings and
+`tasks/archived/` for round 1.
 
 Shady is a Home Assistant integration that corrects an existing solar (PV) yield
 forecast — from Forecast.Solar, Solcast, or a weather integration — for **your

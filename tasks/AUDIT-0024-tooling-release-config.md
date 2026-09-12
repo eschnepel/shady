@@ -1,6 +1,6 @@
 # Audit Task: Tooling & Release Configuration (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `pyproject.toml`, `mypy.ini`, `pytest.ini`, `hacs.json`,
   `.pre-commit-config.yaml`, `.github/workflows/*`, `README.md`,
   `docs/architecture.mmd`
@@ -103,4 +103,14 @@ attention, not a finding requiring a choice between fix options.)
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker during Phase 8. -->
+- `README.md` — replaced the stale "9/13 remediation tasks done" status line
+  with the accurate current state: round-1 remediation complete (13/13, closed
+  2026-09-10) and round-2 remediation complete (4/4 scheduled fixes —
+  `AUDIT-0016`, `AUDIT-0017`, `AUDIT-0020`, `AUDIT-0024` itself — closed
+  2026-09-12; the other 8 round-2 audit groups needed no fix), with a pointer to
+  `tasks/AUDIT-INDEX.md` and `tasks/archived/` for detail, so the line doesn't
+  go stale the same way again without at least directing a reader to the live
+  source of truth.
+- No `.py`/test file changed; no external dependencies added.
+- Full suite re-run after the change: 446/446 passed, `mypy --strict` clean (53
+  files), `ruff check`/`ruff format --check` clean.
