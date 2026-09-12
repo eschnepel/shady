@@ -569,6 +569,37 @@ class TestRefitTriggersRecompute:
         assert hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0)) == {}
 
 
+class TestRefitInvalidatesStaleModelOnSubsequentFailure:
+    """Given a string has a previously-valid fitted model from a prior
+    successful refit, When a later refit's fit attempt for that same
+    string fails, Then the stale model is actually cleared, not
+    silently kept (AUDIT-0017/TASK-0021: `_refit_sync`'s unconditional
+    `self.cache.invalidate_models()` call must be exercised end to end,
+    not just the storage-layer contract in isolation —
+    `tests/test_cache_core.py::TestFittedModelCacheInvalidation` already
+    covers that half)."""
+
+    def test_model_is_cleared_not_left_stale_after_a_failed_refit(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        assert coordinator.cache.get_model("shading", 0) is not None  # valid model exists
+
+        # Simulate the string's baseline provider becoming unavailable
+        # before the next refit: `_fit_string` (coordinator.py:761)
+        # returns `None` whenever the resolved `baseline_entity_id` has
+        # no registered provider, which is exactly the "persistently
+        # failing fit" scenario TASK-0021 called out.
+        del coordinator._entity_providers[_BASELINE_ENTITY]
+
+        _run(coordinator.async_refit(_NOW))
+
+        # Not "still None because never set" (that's the other,
+        # already-covered scenario in TestRefitTriggersRecompute) —
+        # here a model *was* valid and must now be gone, proving
+        # `invalidate_models()` actually ran and nothing re-set it.
+        assert coordinator.cache.get_model("shading", 0) is None
+
+
 class TestRecomputeOnBaselineUpdate:
     """Given a baseline-provider update fires mid-day, When it fires,
     Then a forecast recompute happens immediately with no debounce, but

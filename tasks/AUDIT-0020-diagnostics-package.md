@@ -1,6 +1,6 @@
 # Audit Task: Diagnostics Package (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/diagnostics/*.py` (`base.py`,
   `compare_regressions.py`)
 - **Related ADRs:** [ADR-004, ADR-012 §1, ADR-013 §1, ADR-014, ADR-000 §3]
@@ -70,4 +70,20 @@ None.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker during Phase 8. -->
+- `adr/000-coding-standards.md` §3 Mermaid diagram — added the missing
+  `diagnostics --> cache` edge, matching the real
+  `from ..cache import SLOTS_PER_DAY` import at
+  `diagnostics/compare_regressions.py:52`.
+- `adr/000-coding-standards.md`'s `coordinator.py` bullet — corrected the false
+  "the only module that imports `cache.py`" claim, narrowed to the true claim
+  ("the only module that holds a `Cache` instance and calls its instance
+  methods"), with a parenthetical noting `diagnostics/compare_regressions.py`'s
+  narrow `SLOTS_PER_DAY` constant import as the one other real importer.
+- `tasks/adr-summary.md`'s mirrored `coordinator.py` bullet — same correction
+  applied for consistency with the ground-truth doc every worker's context
+  package includes; the file's own separate linear pipeline diagram (§2) was
+  re-checked and already shows `diagnostics/ → cache.py` correctly (no fix
+  needed there).
+- No `.py` file changed; no external dependencies added.
+- Full suite re-run after the change: 446/446 passed, `mypy --strict` clean (53
+  files), `ruff check`/`ruff format --check` clean.

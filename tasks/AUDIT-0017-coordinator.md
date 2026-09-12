@@ -1,6 +1,6 @@
 # Audit Task: Coordinator (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/coordinator.py`
 - **Related ADRs:** [ADR-002, ADR-007, ADR-014 §4, ADR-000 §3]
 - **Source Tasks:** \[TASK-0009-coordinator-refresh-cycle,
@@ -109,4 +109,23 @@ exactly one reasonable fix (add the missing test).
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker during Phase 8. -->
+- `adr/000-coding-standards.md` §3 Mermaid diagram — replaced the false
+  `cache --> aggregation` edge with the real `coordinator --> aggregation` edge
+  (line 112). Re-confirmed against a live `grep` of `coordinator.py`'s import
+  block: `from .aggregation import (...)` at line 118; `cache.py` imports only
+  `.regression.base`; `aggregation.py` has zero internal imports.
+- `tests/test_coordinator.py` → new class
+  `TestRefitInvalidatesStaleModelOnSubsequentFailure`, test
+  `test_model_is_cleared_not_left_stale_after_a_failed_refit`: establishes a
+  valid `shading` model for string 0 via a successful `async_refit`, removes
+  that string's registered baseline provider to force the next fit attempt to
+  fail, re-runs `async_refit`, and asserts
+  `coordinator.cache.get_model("shading", 0)` is `None` afterward — exercising
+  `_refit_sync`'s unconditional `self.cache.invalidate_models()` call end to
+  end, not just the storage-layer contract in isolation. Sanity-checked by
+  temporarily disabling the `invalidate_models()` call in `coordinator.py` and
+  confirming the new test fails (then restoring the original file, confirmed via
+  `git diff` showing zero changes to `coordinator.py`).
+- No external dependencies added.
+- Full suite re-run after the change: 446/446 passed (445 + 1 new),
+  `mypy --strict` clean (53 files), `ruff check`/`ruff format --check` clean.

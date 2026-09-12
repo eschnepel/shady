@@ -101,19 +101,20 @@ flowchart BT
     entity_glue["sensor.py / config_flow.py / select.py / button.py"]
     init["__init__.py"]
 
-    yield_correction --> providers
-    regression --> yield_correction
     forecast_adjust --> regression
     string_computation --> regression
     string_computation --> forecast_adjust
     string_computation --> yield_correction
     diagnostics --> aggregation
     diagnostics --> string_computation
-    cache --> aggregation
+    diagnostics --> cache
+    coordinator --> aggregation
     coordinator --> cache
     coordinator --> string_computation
     coordinator --> diagnostics
+    coordinator --> providers
     entity_glue --> coordinator
+    entity_glue --> providers
     init --> coordinator
     forecast_adjust -.->|"reverse transform, ADR-003b §1b/§2"| yield_correction
     diagnostics -.->|"construction-time coordinator ref, TYPE_CHECKING-only (ADR-004 §5, 2026-09-01)"| coordinator
@@ -130,11 +131,11 @@ flowchart BT
   no coordinator/internal API access.
 - **`yield_correction.py`** — pure logic: optional per-string clipping exclusion
   (ADR-003a) + temperature derating correction (ADR-003b), no-op if not
-  configured. Used at two points in the pipeline, not only the one upward edge
-  above: `regression/` calls it forward to prepare training data, and
-  `forecast_adjust.py` calls back into it in reverse (the dashed edge above) to
-  finish a prediction — see ADR-003b §2 for the detailed view of this module
-  alone.
+  configured. Used at two points in the pipeline: `string_computation.py` calls
+  it forward to prepare training data, and `forecast_adjust.py` calls back into
+  it in reverse (the dashed edge above) to finish a prediction — see ADR-003b §2
+  for the detailed view of this module alone. Has no internal imports of its own
+  (no edge points away from this node).
 - **`regression/`** (`base.py`, `kernel.py`, `linear.py`, `wls2.py`, `wls3.py`)
   — pure logic: pluggable per-string, per-5-minute-slot regression strategy —
   linear/kernel/wls2/wls3, fitting actual yield as a function of the raw
@@ -180,19 +181,23 @@ flowchart BT
   triggers, see ADR-012 §4), reads raw data from `cache.py`/ `providers/` and
   hands it to `string_computation.py` (ADR-014) for the actual fit/predict
   computation, decides which cache instances get restart-persisted, pushes
-  results to sensors — the only module that imports `cache.py`. Exposes its
-  `Cache` instance via a `cache` property — a getter with no matching setter (§3
-  above, TASK-0023, per `AUDIT-0009-entity-layer`), so no caller holding a
-  coordinator reference can accidentally reassign it; the property does not
-  restrict which methods are callable on the returned `Cache`, only reassignment
-  of the reference itself. As of ADR-014, `coordinator.py` no longer performs
-  the fit/correction/predict computation itself (previously
-  `_apply_training_corrections` and inlined build-pool/fit/ reverse-transform
-  sequences) — that moved to `string_computation.py`, narrowing this module back
-  toward its own stated orchestration-only scope. Also holds `_diagnostic_modes`
-  (mirrors `string_computation.py`'s `REGRESSION_STRATEGIES` lookup in shape,
-  but is a **per-instance** attribute built in `__init__` as of ADR-004 §5's
-  2026-09-01 amendment, not a module-level constant, since constructing each
+  results to sensors — the only module that holds a `Cache` instance and calls
+  its instance methods (`diagnostics/compare_regressions.py` separately imports
+  one plain module-level constant, `SLOTS_PER_DAY`, from `cache.py` — a narrow,
+  stateless import that doesn't reach the `Cache` class itself or bypass any
+  encapsulation boundary). Exposes its `Cache` instance via a `cache` property —
+  a getter with no matching setter (§3 above, TASK-0023, per
+  `AUDIT-0009-entity-layer`), so no caller holding a coordinator reference can
+  accidentally reassign it; the property does not restrict which methods are
+  callable on the returned `Cache`, only reassignment of the reference itself.
+  As of ADR-014, `coordinator.py` no longer performs the fit/correction/predict
+  computation itself (previously `_apply_training_corrections` and inlined
+  build-pool/fit/ reverse-transform sequences) — that moved to
+  `string_computation.py`, narrowing this module back toward its own stated
+  orchestration-only scope. Also holds `_diagnostic_modes` (mirrors
+  `string_computation.py`'s `REGRESSION_STRATEGIES` lookup in shape, but is a
+  **per-instance** attribute built in `__init__` as of ADR-004 §5's 2026-09-01
+  amendment, not a module-level constant, since constructing each
   `DiagnosticMode` now requires passing `self`) and dispatches to the currently
   selected `DiagnosticMode`'s `extra_fit()` generically at the recalibration
   trigger (ADR-004 §1/§5) — a third dispatch shape alongside scheduling triggers

@@ -1,6 +1,6 @@
 # Audit Task: Yield & Forecast Corrections (Round 2)
 
-- **Status:** review
+- **Status:** done
 - **Group:** `custom_components/shady/yield_correction.py`,
   `custom_components/shady/forecast_adjust.py`
 - **Related ADRs:** [ADR-003a, ADR-003b, ADR-001 §2, ADR-006 §1b, ADR-000 §3]
@@ -110,4 +110,36 @@ None — the diagram/prose fix above has exactly one reasonable resolution.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker during Phase 8. -->
+- `adr/000-coding-standards.md` §3 Mermaid diagram — deleted the false
+  `yield_correction --> providers` and `regression --> yield_correction` edges.
+- `adr/000-coding-standards.md`'s `yield_correction.py` bullet — rewritten to
+  name `string_computation.py`, not `regression/`, as the module that calls it
+  forward to prepare training data; added "has no internal imports of its own"
+  for clarity, matching the now-empty edge list pointing away from that node.
+- **Scope note (discovered during implementation, not in the original
+  finding):** deleting `yield_correction --> providers` left the `providers`
+  node with zero edges in the diagram — but `coordinator.py`
+  (`from .providers.base import Provider`, etc., line 169) and `config_flow.py`
+  (part of the `entity_glue` node;
+  `from .providers.discovery import BaselineCandidate, discover_baseline_candidates`,
+  line 69) both really do import it at runtime (confirmed via `grep`, excluding
+  one `TYPE_CHECKING`-only import in `coordinator.py` that doesn't count as a
+  real edge, consistent with how the diagram already treats other
+  `TYPE_CHECKING`-only relationships as dashed). Left uncorrected, the fix would
+  have silently traded one inaccuracy (a false edge) for another (an orphaned
+  node implying nothing imports `providers/`) as a direct side effect of this
+  task's own edit — same file, same diagram, no separate decision needed. Added
+  the two real edges: `coordinator --> providers` and
+  `entity_glue --> providers`.
+- `tasks/adr-summary.md` — checked and corrected the same stale claim ("Called
+  forward (training prep) by `regression/` callers" → `string_computation.py`),
+  per this task's own Definition of Done. Did not restructure the file's
+  separate linear pipeline-order diagram (§2): that notation is an
+  already-annotated simplification of the real import DAG (its own inline "--
+  also reads X directly" footnotes acknowledge it isn't a literal 1:1 edge
+  list), and the specific prose claim mirrored from ADR-000 is the one this
+  task's DoD calls out — reworking the chain notation itself would be a
+  separate, broader documentation task.
+- No `.py` file changed; no external dependencies added.
+- Full suite re-run after the change: 446/446 passed, `mypy --strict` clean (53
+  files), `ruff check`/`ruff format --check` clean.

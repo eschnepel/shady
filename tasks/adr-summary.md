@@ -80,8 +80,8 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   fixture).
 - **`yield_correction.py`** — optional per-string clipping exclusion (ADR-003a)
   \+ temperature derating (ADR-003b), no-op if unconfigured. Called forward
-  (training prep) by `regression/` callers and in reverse (prediction finishing)
-  by `forecast_adjust.py`.
+  (training prep) by `string_computation.py` and in reverse (prediction
+  finishing) by `forecast_adjust.py`. Has no internal imports of its own.
 - **`regression/`** — pluggable per-string, per-5-min-slot strategy:
   `linear`/`kernel`/`wls2` (default)/`wls3`. Shared `base.py` protocol:
   `fit(samples) -> FittedModel`,
@@ -128,28 +128,31 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   (`get_model`/`set_model`/`invalidate_models`, explicit validity tracking,
   TASK-0021) + simple dict store (ramp state) + 2 restart-persisted integral
   totals. See §5 below.
-- **`coordinator.py`** — the only module that imports `cache.py`. Exposes its
-  `Cache` instance via a read-only `cache` property (getter, no setter,
-  TASK-0023) — reassignment raises `AttributeError`, method calls on the
-  returned object are unrestricted. Six of `sensor.py`'s nine entity classes
-  reach it via `coordinator.py` wrapper methods (`pv_sum()`, `fc_sum()`, etc.);
-  three (`ShadyForecastSensor`, `ShadyPvEnergyIntegralSensor`,
-  `ShadyFcEnergyIntegralSensor`) are a reviewed exception calling
-  `coordinator.cache.<method>(...)` directly (TASK-0011, confirmed by
-  `AUDIT-0009`/ADR-000 §3-Amendment). Registers all scheduling triggers + one
-  generic push listener per `forward()`-implementing provider; reads raw data
-  from `cache.py`/ `providers/` and hands off to `string_computation.py`
-  (ADR-014) for the actual fit/correction/predict computation — no longer
-  performs that computation itself as of ADR-014 (previously
-  `_apply_training_corrections` + inlined build-pool/fit/ reverse-transform
-  sequences); pushes results to sensors. Exposes `missing_required_entities()`
-  for `__init__.py`'s startup-ordering guard (ADR-002 §1a). Also holds
-  `_diagnostic_modes` (mirrors `string_computation.py`'s `REGRESSION_STRATEGIES`
-  dict in shape, but is a **per-instance** attribute built in `__init__` as of
-  the 2026-09-01 amendment — each `DiagnosticMode` is now constructed with
-  `self`, so a module-level constant no longer works), dispatching to the
-  select-chosen `DiagnosticMode`'s `extra_fit()` at the recalibration trigger
-  and caching whatever it returns (ADR-004 §5).
+- **`coordinator.py`** — the only module that holds a `Cache` instance and calls
+  its instance methods (`diagnostics/compare_regressions.py` separately imports
+  the plain module-level constant `SLOTS_PER_DAY` from `cache.py`, not the
+  `Cache` class). Exposes its `Cache` instance via a read-only `cache` property
+  (getter, no setter, TASK-0023) — reassignment raises `AttributeError`, method
+  calls on the returned object are unrestricted. Six of `sensor.py`'s nine
+  entity classes reach it via `coordinator.py` wrapper methods (`pv_sum()`,
+  `fc_sum()`, etc.); three (`ShadyForecastSensor`,
+  `ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`) are a reviewed
+  exception calling `coordinator.cache.<method>(...)` directly (TASK-0011,
+  confirmed by `AUDIT-0009`/ADR-000 §3-Amendment). Registers all scheduling
+  triggers + one generic push listener per `forward()`-implementing provider;
+  reads raw data from `cache.py`/ `providers/` and hands off to
+  `string_computation.py` (ADR-014) for the actual fit/correction/predict
+  computation — no longer performs that computation itself as of ADR-014
+  (previously `_apply_training_corrections` + inlined build-pool/fit/
+  reverse-transform sequences); pushes results to sensors. Exposes
+  `missing_required_entities()` for `__init__.py`'s startup-ordering guard
+  (ADR-002 §1a). Also holds `_diagnostic_modes` (mirrors
+  `string_computation.py`'s `REGRESSION_STRATEGIES` dict in shape, but is a
+  **per-instance** attribute built in `__init__` as of the 2026-09-01 amendment
+  — each `DiagnosticMode` is now constructed with `self`, so a module-level
+  constant no longer works), dispatching to the select-chosen `DiagnosticMode`'s
+  `extra_fit()` at the recalibration trigger and caching whatever it returns
+  (ADR-004 §5).
 - **`sensor.py`/`config_flow.py`/`select.py`/`button.py`** — thin HA entity
   glue, all classes prefixed `Shady`. `select.py`'s `ShadyDiagnosticModeSelect`
   replaces the original `switch.py` as of ADR-004's 2026-08-30 amendment.
