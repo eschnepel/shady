@@ -16,6 +16,6 @@ compact_tables = true
 
 exclude = [
     ".venv/**",
-    ".venv\\**",
-    ".venv",
+    ".pytest_cache/**",
+    "tasks/archived/**",
 ]
