@@ -1,0 +1,19 @@
+select_diagnostic_slot:
+  name: Select diagnostic slot
+  description: >-
+    Pins every diagnostic sensor (ADR-004) to the 5-minute slot
+    containing the given timestamp, instead of auto-tracking the last
+    complete slot. Applies to every loaded Shady config entry. Calling
+    with no timestamp clears the pin and returns to auto-tracking.
+  fields:
+    timestamp:
+      name: Timestamp
+      description: >-
+        The moment to inspect, rounded down to the nearest 5-minute
+        boundary. Must fall within the available forecast horizon
+        (the remainder of today, plus tomorrow once published) —
+        omit to clear an existing pin.
+      required: false
+      example: "2026-06-15T14:00:00+00:00"
+      selector:
+        datetime:

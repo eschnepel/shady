@@ -1,0 +1,656 @@
+"""Zero-mocking tests for `regression/` (ADR-001 §2/§2a/§3/§3a, ADR-011
+§1-§3, ADR-008 §1, ADR-000 §6).
+
+Loaded via direct file-path import, not package import, so that
+`custom_components/shady/__init__.py` (which imports `homeassistant.*`)
+is never pulled in just to test these dependency-free modules. Scenario
+fixtures are shared functions reused across all four strategies, per
+ADR-000 §6's explicit testing philosophy, rather than bespoke data per
+strategy.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import numpy as np
+import pytest
+
+_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
+
+
+def _load(relative_path: str, module_name: str) -> ModuleType:
+    path = _SHADY_DIR / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+base_mod = _load("regression/base.py", "shady.regression.base")
+linear_mod = _load("regression/linear.py", "shady.regression.linear")
+wls2_mod = _load("regression/wls2.py", "shady.regression.wls2")
+wls3_mod = _load("regression/wls3.py", "shady.regression.wls3")
+kernel_mod = _load("regression/kernel.py", "shady.regression.kernel")
+
+ALL_STRATEGIES = [linear_mod, wls2_mod, wls3_mod, kernel_mod]
+
+RNG_SEED = 20260821
+
+
+# -- shared scenario fixtures (ADR-000 §6: reused across all four strategies) --
+
+
+def _hard_shading_edge_pool() -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    """A pool with a hard shading edge crossing mid-window: for the
+    center offset's target slots, the first half of the rolling window's
+    days is unshaded (PV/FC ~ 0.9) and the second half is heavily shaded
+    (PV/FC ~ 0.3) — a genuinely non-stationary, non-trivial training set,
+    not clean single-regime noise. Neighbor offsets carry ordinary,
+    single-regime data.
+    """
+    rng = np.random.default_rng(RNG_SEED)
+    n_slots = 5
+    window_days = 20
+    half = window_days // 2
+
+    fc_by_offset: dict[int, np.ndarray] = {}
+    pv_by_offset: dict[int, np.ndarray] = {}
+    for offset in (-1, 0, 1):
+        fc = rng.uniform(50.0, 1200.0, size=(n_slots, window_days))
+        if offset == 0:
+            ratio = np.empty((n_slots, window_days))
+            ratio[:, :half] = 0.9
+            ratio[:, half:] = 0.3
+        else:
+            ratio = np.full((n_slots, window_days), 0.7)
+        pv = fc * ratio + rng.normal(0, 3.0, size=(n_slots, window_days))
+        pv = np.clip(pv, 0.0, None)
+        fc_by_offset[offset] = fc
+        pv_by_offset[offset] = pv
+    return fc_by_offset, pv_by_offset
+
+
+def _clipping_ceiling_pool() -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    """A pool where PV saturates at a ceiling for high-FC samples
+    (inverter-clipping-style), all comfortably within a moderate FC
+    range — used to query predict() at an FC well *above* anything ever
+    seen in training (ADR-001 §2's documented extrapolation scenario)."""
+    rng = np.random.default_rng(RNG_SEED + 1)
+    n_slots = 4
+    window_days = 24
+    ceiling = 600.0
+
+    fc_by_offset: dict[int, np.ndarray] = {}
+    pv_by_offset: dict[int, np.ndarray] = {}
+    for offset in (-1, 0, 1):
+        fc = rng.uniform(100.0, 900.0, size=(n_slots, window_days))
+        pv = np.minimum(fc * 0.85, ceiling) + rng.normal(0, 2.0, size=(n_slots, window_days))
+        pv = np.clip(pv, 0.0, None)
+        fc_by_offset[offset] = fc
+        pv_by_offset[offset] = pv
+    return fc_by_offset, pv_by_offset
+
+
+def _deviating_neighbor_pool(
+    smoothing_radius: int = 1,
+) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    """A center slot with a stable PV/FC ~ 0.8, and a `+1` neighbor whose
+    PV/FC sits at ~0.3 — a deviation of 0.5, comfortably past the default
+    `neighbor_fitting_cutoff` of 0.25 (ADR-011 §2). The `-1` neighbor
+    stays close to the center (deviation ~0) as a control."""
+    rng = np.random.default_rng(RNG_SEED + 2)
+    n_slots = 3
+    window_days = 16
+
+    fc_by_offset: dict[int, np.ndarray] = {}
+    pv_by_offset: dict[int, np.ndarray] = {}
+    ratios = {-1: 0.78, 0: 0.8, 1: 0.3}
+    for offset in range(-smoothing_radius, smoothing_radius + 1):
+        ratio = ratios.get(offset, 0.8)
+        fc = rng.uniform(200.0, 800.0, size=(n_slots, window_days))
+        pv = fc * ratio + rng.normal(0, 1.5, size=(n_slots, window_days))
+        pv = np.clip(pv, 0.0, None)
+        fc_by_offset[offset] = fc
+        pv_by_offset[offset] = pv
+    return fc_by_offset, pv_by_offset
+
+
+# -- AC1: clamp invariant across all four strategies -----------------------
+
+
+class TestClampInvariantAcrossAllStrategies:
+    """Given the shared hard-shading-edge scenario fixture, when each of
+    the four strategies fits and predicts on it, every strategy's output
+    satisfies 0 <= predicted <= FC for every sample (ADR-000 §6
+    invariant)."""
+
+    def test_clamp_holds_for_every_strategy_and_query(self) -> None:
+        fc_by_offset, pv_by_offset = _hard_shading_edge_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+
+        query_values = [0.0, 1.0, 250.0, 600.0, 1500.0, 5000.0]
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)
+            for query in query_values:
+                fc_query = np.full(n_slots, query)
+                adjusted, confidence = model.predict(fc_query)
+                assert adjusted.shape == (n_slots,)
+                assert confidence.shape == (n_slots,)
+                assert np.all(adjusted >= 0.0), f"{strategy.__name__} went negative at FC={query}"
+                assert np.all(adjusted <= fc_query), (
+                    f"{strategy.__name__} exceeded FC at FC={query}"
+                )
+
+
+# -- AC2: wls2/wls3 extrapolation safety ------------------------------------
+
+
+class TestExtrapolationSafetyWls2Wls3:
+    """Given a scenario with samples at/above a clipping-style ceiling,
+    when wls2/wls3 predict at an out-of-training-range FC, the output
+    still respects the clamp invariant (ADR-001 §2)."""
+
+    def test_extrapolation_beyond_training_range_stays_clamped(self) -> None:
+        fc_by_offset, pv_by_offset = _clipping_ceiling_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+        max_training_fc = max(arr.max() for arr in fc_by_offset.values())
+
+        # Well outside anything seen in training — the exact scenario
+        # ADR-001 §2 flags as the normal, not edge-case, query pattern.
+        extreme_fc = np.full(n_slots, max_training_fc * 5.0)
+
+        for strategy in (wls2_mod, wls3_mod):
+            model = strategy.fit(pool)
+            adjusted, _confidence = model.predict(extreme_fc)
+            assert np.all(adjusted >= 0.0)
+            assert np.all(adjusted <= extreme_fc)
+
+
+# -- AC3: magnitude_weight_i is smooth, only exactly 0 at FC_i == 0 --------
+
+
+class TestMagnitudeWeightSmoothNearZeroFC:
+    """Given a pool with near-zero-FC samples (sunrise/sunset), when
+    weights are computed, magnitude_weight_i smoothly approaches (but is
+    only exactly 0 at) FC_i == 0 (ADR-001 §2)."""
+
+    def test_weight_is_continuous_and_zero_only_at_exact_zero(self) -> None:
+        # Isolate magnitude_weight_i cleanly: radius=0 (no neighbors, so
+        # time_weight == 1.0 everywhere) and every sample valid, so the
+        # center-offset weight block *is* magnitude_weight_i directly.
+        fc_values = np.array([[0.0, 0.001, 1.0, 10.0, 100.0, 500.0, 1000.0]])
+        pv_values = fc_values * 0.6
+
+        fc_by_offset = {0: fc_values}
+        pv_by_offset = {0: pv_values}
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        weights = pool.weight[0]
+
+        # Exactly 0 only where FC_i == 0.
+        assert weights[0] == 0.0
+        assert np.all(weights[1:] > 0.0)
+
+        # Smooth/monotonically non-decreasing with FC (no hard cutoff,
+        # no discontinuity) — every step up in FC gives a step up (or at
+        # worst equal) weight.
+        assert np.all(np.diff(weights) >= 0.0)
+
+        # A small-but-nonzero FC gets a small-but-nonzero weight, not
+        # excluded outright.
+        assert 0.0 < weights[1] < weights[2]
+
+
+# -- TASK-0005-patch-5: apply_magnitude_weight=False (ADR-003c §2) ---------
+
+
+class TestOptionalMagnitudeWeight:
+    """Given `build_pool`'s `apply_magnitude_weight` parameter, When it is
+    `False`, Then every valid sample's weight is entirely unaffected by
+    its own raw predictor value (ADR-003c §2's second, non-PV reuse of
+    `build_pool` — a predictor that is routinely negative, unlike `FC`,
+    has no analogous near-zero degeneracy and must not be weighted as if
+    it did)."""
+
+    def test_false_reduces_weight_to_valid_mask_at_radius_zero(self) -> None:
+        # smoothing_radius=0 (TASK-0014's own shape: no ADR-011 neighbor
+        # smoothing/exclusion reused either) and recency_decay_max=0.0
+        # isolate apply_magnitude_weight as the only varying factor —
+        # combined_weight should reduce to exactly valid_mask.
+        predictor = np.array([[-10.0, -0.001, 0.0, 0.001, 10.0, np.nan]])
+        target = predictor * 2.0
+        pool = base_mod.build_pool(
+            {0: predictor},
+            {0: target},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=False,
+        )
+        expected_valid = np.array([[1.0, 1.0, 1.0, 1.0, 1.0, 0.0]])
+        assert np.array_equal(pool.weight, expected_valid)
+
+    def test_true_default_reproduces_pre_patch_output_unmodified(self) -> None:
+        # The exact fixture TestMagnitudeWeightSmoothNearZeroFC already
+        # exercises, called with the new parameter omitted — confirms
+        # the default is fully behavior-preserving.
+        fc_values = np.array([[0.0, 0.001, 1.0, 10.0, 100.0, 500.0, 1000.0]])
+        pv_values = fc_values * 0.6
+        with_default = base_mod.build_pool(
+            {0: fc_values},
+            {0: pv_values},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        with_explicit_true = base_mod.build_pool(
+            {0: fc_values},
+            {0: pv_values},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=True,
+        )
+        assert np.array_equal(with_default.weight, with_explicit_true.weight)
+
+    def test_negative_predictor_values_uncorrupted_only_when_false(self) -> None:
+        # A predictor row with both sub-freezing (negative) and
+        # above-freezing (positive) values — an ordinary, non-degenerate
+        # temperature forecast, ADR-003c §2's own motivating example.
+        # The pre-patch/True default's masked_fc / row_max ratio divides
+        # by this row's *positive* max, so its negative-valued entries
+        # get *negative* sample weight — mathematically invalid for a
+        # weighted fit (inverting, not merely discounting, that sample's
+        # contribution), not just "unwanted downweighting" of an
+        # otherwise-ordinary reading. apply_magnitude_weight=False must
+        # sidestep this entirely, returning the plain valid mask
+        # regardless of sign.
+        predictor = np.array([[-5.0, -1.0, 5.0, 10.0]])
+        target = predictor * 0.5
+        corrupted = base_mod.build_pool(
+            {0: predictor},
+            {0: target},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=True,
+        )
+        uncorrupted = base_mod.build_pool(
+            {0: predictor},
+            {0: target},
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+            apply_magnitude_weight=False,
+        )
+        # The bug this patch prevents: negative sample weights leak
+        # straight into the WLS normal equations when True.
+        assert np.any(corrupted.weight < 0.0)
+        assert np.array_equal(uncorrupted.weight, np.ones_like(uncorrupted.weight))
+
+
+# -- ADR-001 §4a: recency_weight_i ------------------------------------------
+
+
+class TestRecencyWeight:
+    """Given `build_pool`'s new `recency_decay_max` parameter, the
+    per-training-day-column `recency_weight_i` decays linearly from
+    `1.0` at the most recent day (last column) to `1 - recency_decay_max`
+    at the oldest (first column) — ADR-001 §4a, `TASK-0005-patch-4`."""
+
+    @staticmethod
+    def _isolated_pool(
+        window_days: int, recency_decay_max: float, smoothing_radius: int = 0
+    ) -> Any:
+        """A pool where `magnitude_weight_i` and `time_weight_i` are both
+        pinned at `1.0` for every sample (constant `FC` per offset row,
+        radius `0` unless overridden) — isolates `recency_weight_i` as
+        the *only* varying factor in `pool.weight`, mirroring
+        `TestMagnitudeWeightSmoothNearZeroFC`'s own isolation approach.
+
+        Returns `base_mod.build_pool`'s actual `SamplePool` — annotated
+        `Any`, not the real class, since `base_mod` itself is loaded
+        dynamically (via `_load`, not a static import), so mypy already
+        sees every attribute access on it as `Any`; declaring `object`
+        here (as this previously did) actively widened that back down,
+        masking `.weight`/`.confidence` on every caller below.
+        """
+        n_slots = 2
+        fc_by_offset = {}
+        pv_by_offset = {}
+        for offset in range(-smoothing_radius, smoothing_radius + 1):
+            fc_by_offset[offset] = np.full((n_slots, window_days), 500.0)
+            pv_by_offset[offset] = np.full((n_slots, window_days), 400.0)
+        return base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=smoothing_radius,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=recency_decay_max,
+        )
+
+    def test_most_recent_day_weight_1_and_oldest_matches_1_minus_decay(self) -> None:
+        window_days = 10
+        pool = self._isolated_pool(window_days, recency_decay_max=0.5)
+        # column 0 = oldest, column -1 = most recent (build_pool's own
+        # column-layout convention, matching cache.py's).
+        assert np.allclose(pool.weight[:, -1], 1.0)
+        assert np.allclose(pool.weight[:, 0], 0.5)
+
+    def test_linear_interpolation_between_the_two_ends(self) -> None:
+        window_days = 10
+        pool = self._isolated_pool(window_days, recency_decay_max=0.5)
+        # day_age=5 at column 4 (0-indexed, oldest=0): weight =
+        # 1 - (5/9) * 0.5.
+        expected = 1.0 - (5 / 9) * 0.5
+        assert np.allclose(pool.weight[:, 4], expected)
+
+    def test_recency_decay_max_zero_reproduces_pre_patch_output(self) -> None:
+        pool = self._isolated_pool(window_days=10, recency_decay_max=0.0)
+        assert np.allclose(pool.weight, 1.0)
+
+    def test_window_days_one_is_the_degenerate_case(self) -> None:
+        # Guards against a `window_days - 1 == 0` division; recency_weight_i
+        # is 1.0 unconditionally regardless of recency_decay_max.
+        pool = self._isolated_pool(window_days=1, recency_decay_max=0.9)
+        assert np.allclose(pool.weight, 1.0)
+
+    def test_identical_recency_weight_across_every_offset_block(self) -> None:
+        # recency_weight_i is a property of the calendar day, not of
+        # slot-of-day distance — the -1 and +1 offset blocks share the
+        # same |offset| (so the same time_weight_i too), so their raw
+        # weight blocks must be exactly equal if recency_weight_i is
+        # truly shared identically between them.
+        window_days = 8
+        pool = self._isolated_pool(window_days, recency_decay_max=0.5, smoothing_radius=1)
+        minus_one_block = pool.weight[:, 0:window_days]
+        center_block = pool.weight[:, window_days : 2 * window_days]
+        plus_one_block = pool.weight[:, 2 * window_days : 3 * window_days]
+        assert np.allclose(minus_one_block, plus_one_block)
+        # The center block only differs from a neighbor block by the
+        # time_weight_i factor (1.0 vs 0.5 at radius=1) — a constant
+        # multiplicative ratio, confirming recency_weight_i itself
+        # cancels out identically between them.
+        ratio = center_block / plus_one_block
+        assert np.allclose(ratio, 2.0)
+
+    def test_confidence_reflects_recency_weight_contribution(self) -> None:
+        undecayed = self._isolated_pool(window_days=10, recency_decay_max=0.0)
+        decayed = self._isolated_pool(window_days=10, recency_decay_max=0.5)
+        assert np.all(decayed.confidence < undecayed.confidence)
+
+
+# -- AC4: neighbor hard exclusion at a shading boundary ---------------------
+
+
+class TestNeighborHardExclusion:
+    """Given a center slot and a neighbor slot whose median PV/FC ratio
+    deviates beyond neighbor_fitting_cutoff (default 0.25), when the pool
+    is built, that neighbor's entire series is hard-excluded
+    (time_weight_i forced to 0), not merely downweighted (ADR-011 §2)."""
+
+    def test_deviating_neighbor_is_fully_excluded(self) -> None:
+        fc_by_offset, pv_by_offset = _deviating_neighbor_pool(smoothing_radius=1)
+        window_days = fc_by_offset[0].shape[1]
+
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+
+        # Pool column layout: offsets concatenated in order [-1, 0, 1],
+        # each contributing `window_days` columns.
+        deviating_neighbor_block = pool.weight[:, 2 * window_days : 3 * window_days]
+        assert np.all(deviating_neighbor_block == 0.0)
+
+        # The control (-1) neighbor, which agrees with the center, keeps
+        # nonzero weight — proving the exclusion is specific to the
+        # deviating series, not a global effect of any nonzero cutoff.
+        agreeing_neighbor_block = pool.weight[:, 0:window_days]
+        assert np.any(agreeing_neighbor_block > 0.0)
+
+        # The center's own samples are of course unaffected either way.
+        center_block = pool.weight[:, window_days : 2 * window_days]
+        assert np.any(center_block > 0.0)
+
+
+# -- AC5: rescale sentinel (-1%) retains and corrects instead of excluding -
+
+
+class TestNeighborRescale:
+    """Given neighbor_fitting_cutoff = -1% (the rescale sentinel), when
+    the same deviating neighbor is processed, it is rescaled to the
+    center slot's median and retained, not excluded (ADR-011 §3)."""
+
+    def test_deviating_neighbor_is_rescaled_and_retained(self) -> None:
+        fc_by_offset, pv_by_offset = _deviating_neighbor_pool(smoothing_radius=1)
+        window_days = fc_by_offset[0].shape[1]
+
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=base_mod.RESCALE_SENTINEL,
+            recency_decay_max=0.0,
+        )
+
+        deviating_fc = pool.fc[:, 2 * window_days : 3 * window_days]
+        deviating_pv = pool.pv[:, 2 * window_days : 3 * window_days]
+        deviating_weight = pool.weight[:, 2 * window_days : 3 * window_days]
+
+        # Retained: nonzero weight, unlike the hard-exclusion case above.
+        assert np.any(deviating_weight > 0.0)
+
+        # Rescaled: the neighbor's ratio now sits at the *center's*
+        # median (~0.8), not its own original median (~0.3).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rescaled_ratio = np.where(deviating_fc > 0, deviating_pv / deviating_fc, np.nan)
+        center_fc = fc_by_offset[0]
+        center_pv = pv_by_offset[0]
+        center_median = np.median(center_pv / center_fc, axis=1, keepdims=True)
+
+        assert np.allclose(
+            np.nanmedian(rescaled_ratio, axis=1, keepdims=True), center_median, rtol=0.05
+        )
+
+
+# -- AC6: confidence is identical across all four methods -------------------
+
+
+class TestConfidenceMethodIndependence:
+    """Given confidence is computed for the same pool across all four
+    strategies, when compared, confidence is identical regardless of
+    which strategy produced the point estimate (ADR-001 §2)."""
+
+    def test_confidence_matches_across_all_strategies(self) -> None:
+        fc_by_offset, pv_by_offset = _hard_shading_edge_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+        fc_query = np.full(n_slots, 400.0)
+
+        confidences = []
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)
+            _adjusted, confidence = model.predict(fc_query)
+            confidences.append(confidence)
+
+        for confidence in confidences[1:]:
+            assert np.allclose(confidence, confidences[0])
+        # And it must equal the pool's own precomputed confidence exactly
+        # — every strategy reads it straight off the shared SamplePool.
+        for confidence in confidences:
+            assert np.array_equal(confidence, pool.confidence)
+
+
+# -- Cold start: documented pass-through fallback (not one of the 6 ACs, --
+# -- but directly follows from ADR-001's cold-start Consequences bullet) --
+
+
+class TestColdStartPassthrough:
+    """Given a pool with zero weight everywhere (no historical samples
+    yet), every strategy passes the raw forecast value through unmodified
+    rather than trusting a numerically-arbitrary regularized fit."""
+
+    def test_zero_weight_pool_passes_forecast_through(self) -> None:
+        n_slots = 2
+        window_days = 5
+        fc_by_offset = {o: np.full((n_slots, window_days), np.nan) for o in (-1, 0, 1)}
+        pv_by_offset = {o: np.full((n_slots, window_days), np.nan) for o in (-1, 0, 1)}
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        assert np.array_equal(pool.confidence, np.zeros(n_slots))
+
+        fc_query = np.array([123.0, 456.0])
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)
+            adjusted, confidence = model.predict(fc_query)
+            assert np.allclose(adjusted, fc_query)
+            assert np.array_equal(confidence, np.zeros(n_slots))
+
+
+class TestSmoothingRadiusZeroReproducesIndependentSlots:
+    """A smoothing_radius=0 pool contains only the center offset,
+    reproducing ADR-001 §3a's strictly-independent-slots behavior."""
+
+    def test_radius_zero_pool_has_only_center_columns(self) -> None:
+        n_slots, window_days = 2, 6
+        fc_by_offset = {0: np.full((n_slots, window_days), 300.0)}
+        pv_by_offset = {0: np.full((n_slots, window_days), 200.0)}
+
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+
+        assert pool.fc.shape == (n_slots, window_days)
+
+
+# -- AUDIT-0002/TASK-0030 item 1: predict_unclamped() called directly ------
+
+
+class TestPredictUnclampedPreservesRawValue:
+    """Given each of the four real strategies fit on the shared
+    clipping-ceiling fixture, when `predict_unclamped()` is called
+    directly at a query FC of 0.0 -- where `predict()`'s own
+    `clamp_to_forecast` step always clips to exactly `[0, 0]`, so any
+    genuinely nonzero model output is forced to `0.0` -- the raw,
+    unclamped value is preserved and visibly differs from `predict()`'s
+    clamped output (`TASK-0005-patch-2`/`TASK-0005-patch-3`).
+
+    Only incidental coverage of `predict_unclamped()` existed before
+    this test (via `test_coordinator_temperature_forecast.py`, a
+    different audit group's file) -- this proves `test_regression.py`
+    alone catches a strategy that silently clamps inside
+    `predict_unclamped` itself.
+    """
+
+    def test_unclamped_differs_from_clamped_at_zero_query_fc(self) -> None:
+        fc_by_offset, pv_by_offset = _clipping_ceiling_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+        fc_query = np.zeros(n_slots)
+
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)
+            raw, raw_confidence = model.predict_unclamped(fc_query)
+            clamped, clamped_confidence = model.predict(fc_query)
+
+            # predict() always clamps to exactly 0.0 here: safe_fc == 0
+            # forces np.clip's own [0, 0] range regardless of the raw value.
+            assert np.array_equal(clamped, np.zeros(n_slots)), (
+                f"{strategy.__name__}: expected predict() to clamp to 0.0 at FC=0"
+            )
+            # predict_unclamped() preserves the model's real raw value --
+            # nonzero here for every real strategy on this fixture -- proving
+            # it is genuinely unclamped, not a silent re-clamp of predict().
+            assert not np.array_equal(raw, clamped), (
+                f"{strategy.__name__}: predict_unclamped did not diverge "
+                "from predict at FC=0 -- fixture no longer exercises the clamp"
+            )
+            assert np.all(np.isfinite(raw))
+            # Confidence is untouched by clamping either way (only the
+            # adjusted-value half of the tuple is ever clamped).
+            assert np.array_equal(raw_confidence, clamped_confidence)
+
+
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES, ids=lambda mod: mod.__name__.split(".")[-1])
+class TestEveryStrategyHandlesTheSharedFixtures:
+    """Sanity: every strategy fits and predicts without error against
+    both shared fixtures, returning correctly-shaped, finite output."""
+
+    def test_hard_shading_edge_fixture(self, strategy: ModuleType) -> None:
+        fc_by_offset, pv_by_offset = _hard_shading_edge_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+        adjusted, confidence = strategy.fit(pool).predict(np.full(n_slots, 300.0))
+        assert np.all(np.isfinite(adjusted))
+        assert np.all(np.isfinite(confidence))
+
+    def test_clipping_ceiling_fixture(self, strategy: ModuleType) -> None:
+        fc_by_offset, pv_by_offset = _clipping_ceiling_pool()
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        n_slots = fc_by_offset[0].shape[0]
+        adjusted, confidence = strategy.fit(pool).predict(np.full(n_slots, 300.0))
+        assert np.all(np.isfinite(adjusted))
+        assert np.all(np.isfinite(confidence))
