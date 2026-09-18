@@ -1,13 +1,13 @@
 # Task: Config Flow Redesign — Paged Global Settings, Multi-Select Strings, Per-String Settings Loop, Reconfigure-Flow Migration
 
-- **Status:** todo
-- **Related ADRs:** \[ADR-010-Amendment (2026-09-17, this task — supersedes an
-  earlier, same-task sketch that only swapped `OptionsFlow` for
-  `async_step_reconfigure` without the paging/multi-select reshape), ADR-002 §1a
-  (unchanged, referenced — `entry.data`-only reads), ADR-000 §8 (unchanged,
-  referenced), ADR-003a/ADR-003b/ADR-003c/ADR-006/ADR-009/ADR-011/ADR-001 §4a
-  (unchanged — every field this task relocates keeps the exact meaning and
-  default those ADRs already gave it; only its page/step changes)\]
+- **Status:** done
+- **Related ADRs:** \[ADR-010 (rewritten in place, 2026-09-18, to present this
+  task's reshape as the single current Decision — no longer a same-task
+  amendment layered on an earlier, superseded sketch), ADR-002 §1a (unchanged,
+  referenced — `entry.data`-only reads), ADR-000 §8 (unchanged, referenced),
+  ADR-003a/ADR-003b/ADR-003c/ADR-006/ADR-009/ADR-011/ADR-001 §4a (unchanged —
+  every field this task relocates keeps the exact meaning and default those ADRs
+  already gave it; only its page/step changes)\]
 - **Dependencies:** [] (none — independent of `TASK-0034`/`TASK-0034-patch-1`;
   touches `config_flow.py` only, which neither of those touched)
 
@@ -192,4 +192,105 @@ that needs changing) for reconfigure.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker after implementation. -->
+- `custom_components/shady/config_flow.py` — full rewrite. `ShadyConfigFlow`
+  (unchanged base class/domain) gains `async_step_baseline`,
+  `async_step_strings`, `async_step_string_settings_hub`,
+  `async_step_string_settings_edit`, `async_step_regression_tuning`,
+  `async_step_advanced_optional`, `async_step_reconfigure`, `async_step_finish`;
+  `async_step_user` now delegates straight to `async_step_baseline`.
+  `ShadyOptionsFlow` and `async_get_options_flow` are removed outright — no stub
+  left behind. Flow state: `self._data: dict[str, Any]` (every global field,
+  flat, keyed by the same `CONF_*` constants `entry.data` itself uses — seeded
+  from `dict(reconfigure_entry.data)` minus `CONF_STRINGS` on reconfigure, empty
+  on first setup), `self._strings: dict[str, dict[str, Any]]` (same pattern for
+  per-string settings), `self._editing_entity_id: str | None`,
+  `self._reconfigure_entry: ConfigEntry | None`,
+  `self._candidates: list[BaselineCandidate]`. Schema-building functions
+  (module-level, not methods): `_baseline_schema`, `_strings_schema`,
+  `_hub_schema`, `_string_settings_edit_schema`, `_regression_tuning_schema`,
+  `_advanced_optional_schema` — each paired with a `_normalize_*`/`_build_*`
+  (submission → canonical dict) and a `_*_defaults` (canonical dict → form
+  defaults) function. Helpers: `_candidate_choices`/`_resolve_candidate_choice`/
+  `_find_candidate_choice` (baseline dropdown, reused for both the global step
+  and the per-string override), `_optional_float`/`_blank_if_none` (optional
+  numeric field round-trip), `_default_string_settings`, `_hub_choices`.
+- `custom_components/shady/const.py` — removed `CONF_STRING_ACTUAL_YIELD_ENTITY`
+  and `CONF_STRING_CONFIGURE_ADVANCED`. Added
+  `STRING_SETTINGS_HUB_DONE = "__done__"` (the hub dropdown's "Done" sentinel).
+  `CONF_STRING_NAME` is now `vol.Optional` (default `""`) wherever it's used in
+  `config_flow.py`. Every other `CONF_*` constant (global and per-string) is
+  unchanged in name, meaning, and default.
+- **`entry.data` shape** (the exact shape downstream code/tests must match):
+  every global field from `baseline`/`regression_tuning`/`advanced_optional` is
+  stored flat, keyed by its own `CONF_*` constant, exactly as before this task
+  (only which step collects it changed). `CONF_STRINGS`
+  (`entry.data["strings"]`) is now `dict[str, dict[str, Any]]` keyed by each
+  string's own `entity_id` — **not** a list. Each value dict has exactly these
+  keys: `name` (`str`, default `""`), `baseline_entity_id` (`str | None`),
+  `baseline_attribute` (`str | None`), `baseline_shape` (`str | None`),
+  `baseline_history_entity_id` (`str | None` — ADR-009 §1c Amendment/ADR-012 §2a
+  Amendment carry-through), `temperature_aware` (`bool`), `converter_limit_w`
+  (`float | None`), `temperature_source_entity_id` (`str | None`),
+  `temperature_coefficient_pct_per_c` (`float`, default `-0.4`),
+  `rated_dc_capacity_wp` (`float | None`). No `actual_yield_entity_id` field
+  anywhere inside this dict — the `entity_id` key it's stored under *is* that
+  value.
+- `custom_components/shady/coordinator.py` —
+  `_resolve_string(index, entity_id, raw)` (new `entity_id` parameter — no
+  longer reads `raw[CONF_STRING_ACTUAL_YIELD_ENTITY]`, uses the passed-in dict
+  key instead; `name` now `raw.get(CONF_STRING_NAME, "")`, not
+  `raw[CONF_STRING_NAME]`). `ShadyCoordinator.__init__`'s `self._strings`
+  construction now iterates `data.get(CONF_STRINGS, {}).items()` instead of
+  `enumerate(... , [])`. `_resolve_stale_forecast_solar_history_entities`
+  (`TASK-0034-patch-1`)'s rebuild-on-resolve logic updated for the dict shape
+  (`new_strings: dict[str, dict[str, Any]] | None`, iterates `.values()`,
+  reassigns `new_data[CONF_STRINGS] = new_strings` as a dict). No other
+  production file touches `CONF_STRINGS` (confirmed by full-codebase grep before
+  starting) — `sensor.py`/`button.py`/`select.py`/`diagnostics/*` needed zero
+  changes, fully isolated by the `_StringConfig` dataclass, which keeps its own
+  `actual_yield_entity_id` attribute name unchanged.
+- `custom_components/shady/translations/en.json` /
+  `custom_components/shady/translations/de.json` — full rewrite: `config.step`
+  now has `baseline`, `strings`, `string_settings_hub`, `string_settings_edit`,
+  `regression_tuning`, `advanced_optional` (each with `title`/`description`/
+  `data` labels for every real schema field), and `reconfigure` (a menu step —
+  `title`/`description`/`menu_options` for `baseline`/`strings`/
+  `regression_tuning`/`advanced_optional`/`finish`, no `data` block). The
+  `options` top-level section is removed entirely. `config.abort` now has one
+  key, `reconfigure_successful`, translated in both languages. `config.error`
+  stays `{}` (no validation-error UX exists).
+- `README.md` — Configuration section rewritten to describe the five-step linear
+  flow and the menu-driven Reconfigure entry point.
+- `tasks/adr-summary.md` — §6 (`ShadyConfigFlow` bullet) and §7 (Config flow
+  shape) updated to drop the "not yet implemented / `Status: todo`" framing now
+  that this is the shipped design.
+- `tests/test_config_flow.py` — full rewrite, 42 tests. Extends the file's own
+  hand-written `homeassistant` stub with `_get_reconfigure_entry`,
+  `async_update_reload_and_abort`, `async_show_menu`, a
+  `FakeConfigEntriesManager`
+  (`async_get_entry`/`async_update_entry`/`async_loaded_entries`), and a real
+  `_EntitySelector`/`_entity_selector_config` stand-in for
+  `homeassistant.helpers.selector`. Covers every Acceptance Criterion above:
+  linear step order, exact schema field sets per step, discard-on-removal
+  (including same-session re-add), reconfigure menu options/prefill/return-to-
+  menu/save-and-finish/abandon-leaves-entry-untouched, `ShadyOptionsFlow`
+  removal, no-`unique_id`-calls, no-lat-long-fields,
+  baseline-override-implies-temperature-aware, `baseline_history_entity_id`
+  carry-through (global and per-string), manual baseline shape, empty
+  rated-capacity → `None`, `recency_decay_max` round-trip.
+- `tests/test_translations.py` — full rewrite, 7 tests, against the new step set
+  and the `reconfigure` menu step; `options`-section assumption removed;
+  `config.abort` now asserted to contain exactly `reconfigure_successful` with a
+  real label (previously asserted empty).
+- `tests/test_coordinator.py`, `tests/test_coordinator_temperature_forecast.py`,
+  `tests/test_button.py`, `tests/test_init.py`,
+  `tests/test_sensor_aggregates.py`, `tests/test_sensor_forecast.py` — every
+  literal `CONF_STRINGS`/`strings=` fixture construction converted from a list
+  of dicts (each carrying its own `actual_yield_entity_id`) to a dict keyed by
+  that same entity_id, matching the new `entry.data` shape.
+- External dependencies added: none. `tasks/DEPENDENCIES.md` unchanged —
+  `homeassistant.helpers.selector` (`EntitySelector`/`EntitySelectorConfig`),
+  `async_show_menu`, `_get_reconfigure_entry`, and
+  `async_update_reload_and_abort` all ship with the `homeassistant` package
+  itself, same category as `aiohttp`/`homeassistant.helpers.device_registry`
+  already used elsewhere in this project.

@@ -1,9 +1,9 @@
 """Constants for the Shady integration.
 
 Config-entry data keys and defaults below mirror ADR-010's field list
-and step ordering exactly (§7 of `tasks/adr-summary.md`). Grouped in the
-same order ADR-010 presents them: "settings" (global) fields first, then
-per-string ("add_string"/"add_string_advanced") fields.
+exactly (§7 of `tasks/adr-summary.md`). Grouped in the same order ADR-010
+presents them: global (`baseline`/`regression_tuning`/`advanced_optional`)
+fields first, then per-string (`string_settings_edit`) fields.
 """
 
 from __future__ import annotations
@@ -38,6 +38,12 @@ DEFAULT_DIAGNOSTIC_MODE = "off"
 # "no override — use the global default" (ADR-010's `add_string` step).
 BASELINE_CANDIDATE_MANUAL = "__manual__"
 BASELINE_CANDIDATE_NONE = "__none__"
+
+# Sentinel used by the `string_settings_hub` step's dropdown (`TASK-0035`)
+# to mean "done editing strings, move on" — distinct from any real
+# entity_id, which is always domain-qualified (`sensor.foo`) and can
+# therefore never collide with this sentinel.
+STRING_SETTINGS_HUB_DONE = "__done__"
 
 # Sentinel used by a per-string "temperature source override" field to
 # mean "explicitly disable derating for this string", distinct from
@@ -82,13 +88,14 @@ DEFAULT_INTRADAY_CORRECTION_CUTOFF = 0.10
 DEFAULT_WINDOW_SLOTS = 24
 DEFAULT_RAMP_SLOTS = 12
 
-# --- "strings" list — one dict per configured string, ADR-010's
-# `add_string`/`add_string_advanced` steps. Stored under CONF_STRINGS on
-# the config entry (ADR-010 has no dedicated key name for this — the
-# Lead Agent assigns one here since it is needed to store the flow's
-# per-string result at all).
+# --- per-string settings, ADR-010's `string_settings_edit` step. Stored
+# under CONF_STRINGS on the config entry as a dict keyed by each string's
+# own `entity_id` (`TASK-0035`) — not a list: the entity_id *is* the
+# string's identity, resolved once in the "strings" multi-select step.
 CONF_STRINGS = "strings"
 
+# `CONF_STRING_NAME` is `vol.Optional` (`TASK-0035`) — a string's identity
+# is its `entity_id` (the `CONF_STRINGS` dict key below), not this label.
 CONF_STRING_NAME = "name"
 CONF_STRING_BASELINE_ENTITY_ID = "baseline_entity_id"
 CONF_STRING_BASELINE_ATTRIBUTE = "baseline_attribute"
@@ -99,8 +106,11 @@ CONF_STRING_BASELINE_SHAPE = "baseline_shape"
 # `CONF_STRING_BASELINE_*` trio's own convention.
 CONF_STRING_BASELINE_HISTORY_ENTITY_ID = "baseline_history_entity_id"
 CONF_STRING_TEMPERATURE_AWARE = "temperature_aware"
-CONF_STRING_ACTUAL_YIELD_ENTITY = "actual_yield_entity_id"
-CONF_STRING_CONFIGURE_ADVANCED = "configure_advanced"
+# No `CONF_STRING_ACTUAL_YIELD_ENTITY`/`CONF_STRING_CONFIGURE_ADVANCED` here
+# (`TASK-0035`, ADR-010): a string's actual-yield entity is the `CONF_STRINGS`
+# dict key itself, not a stored field — never duplicated inside its own
+# settings dict — and the "configure advanced corrections?" gate is gone,
+# every `string_settings_edit` field is always shown.
 CONF_STRING_CONVERTER_LIMIT_W = "converter_limit_w"
 CONF_STRING_TEMPERATURE_SOURCE = "temperature_source_entity_id"
 CONF_STRING_TEMPERATURE_COEFFICIENT = "temperature_coefficient_pct_per_c"

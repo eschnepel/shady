@@ -134,20 +134,19 @@ def _make_entry(**overrides: Any) -> Any:
         "intraday_correction_cutoff": 0.10,
         "window_slots": 24,
         "ramp_slots": 12,
-        CONF_STRINGS: [
-            {
+        CONF_STRINGS: {
+            _ACTUAL_YIELD_ENTITY: {
                 "name": "Dach Süd",
                 "baseline_entity_id": None,
                 "baseline_attribute": None,
                 "baseline_shape": None,
                 "temperature_aware": False,
-                "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                 "converter_limit_w": None,
                 "temperature_source_entity_id": None,
                 "temperature_coefficient_pct_per_c": -0.4,
                 "rated_dc_capacity_wp": None,
             }
-        ],
+        },
     }
     data.update(overrides)
     config_entries_mod = sys.modules["homeassistant.config_entries"]
@@ -188,20 +187,19 @@ def _make_temperature_aware_coordinator() -> tuple[Any, FakeHomeAssistant]:
     formula in isolation (`test_coordinator_temperature_forecast.py`),
     never through a real end-to-end fit/predict call."""
     entry = _make_entry(
-        strings=[
-            {
+        strings={
+            _ACTUAL_YIELD_ENTITY: {
                 "name": "Dach Süd",
                 "baseline_entity_id": None,
                 "baseline_attribute": None,
                 "baseline_shape": None,
                 "temperature_aware": False,
-                "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                 "converter_limit_w": None,
                 "temperature_source_entity_id": "weather.home",
                 "temperature_coefficient_pct_per_c": -0.4,
                 "rated_dc_capacity_wp": 5000.0,
             }
-        ],
+        },
     )
     coordinator, hass = _make_coordinator(entry)
     hass.states.set("weather.home", {"temperature": 15.0, "forecast": []})
@@ -433,20 +431,19 @@ class TestStringLevelBaselineOverrideRegistration:
         override_entity = "sensor.string_a_own_baseline"
         entry = _make_entry(
             baseline_entity_id=None,  # no global fallback configured at all
-            strings=[
-                {
+            strings={
+                _ACTUAL_YIELD_ENTITY: {
                     "name": "Dach Süd",
                     "baseline_entity_id": override_entity,
                     "baseline_attribute": "wh_period",
                     "baseline_shape": "sensor_dict",
                     "temperature_aware": False,
-                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                     "converter_limit_w": None,
                     "temperature_source_entity_id": None,
                     "temperature_coefficient_pct_per_c": -0.4,
                     "rated_dc_capacity_wp": None,
                 }
-            ],
+            },
         )
         hass = FakeHomeAssistant()
         hass.states.set(
@@ -709,30 +706,28 @@ class TestStringEnumeration:
         second_yield_entity = "sensor.string_b_yield"
         entry = _make_entry(
             **{
-                CONF_STRINGS: [
-                    {
+                CONF_STRINGS: {
+                    _ACTUAL_YIELD_ENTITY: {
                         "name": "Dach Süd",
                         "baseline_entity_id": None,
                         "baseline_attribute": None,
                         "baseline_shape": None,
-                        "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                         "converter_limit_w": None,
                         "temperature_source_entity_id": None,
                         "temperature_coefficient_pct_per_c": -0.4,
                         "rated_dc_capacity_wp": None,
                     },
-                    {
+                    second_yield_entity: {
                         "name": "Dach Nord",
                         "baseline_entity_id": None,
                         "baseline_attribute": None,
                         "baseline_shape": None,
-                        "actual_yield_entity_id": second_yield_entity,
                         "converter_limit_w": None,
                         "temperature_source_entity_id": None,
                         "temperature_coefficient_pct_per_c": -0.4,
                         "rated_dc_capacity_wp": None,
                     },
-                ]
+                }
             }
         )
         hass = FakeHomeAssistant()
@@ -765,30 +760,28 @@ def _push_forecast(coordinator: Any, string_index: int, timestamp: datetime, val
 def _make_two_string_entry(**overrides: Any) -> Any:
     return _make_entry(
         **{
-            CONF_STRINGS: [
-                {
+            CONF_STRINGS: {
+                _ACTUAL_YIELD_ENTITY: {
                     "name": "Dach Süd",
                     "baseline_entity_id": None,
                     "baseline_attribute": None,
                     "baseline_shape": None,
-                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                     "converter_limit_w": None,
                     "temperature_source_entity_id": None,
                     "temperature_coefficient_pct_per_c": -0.4,
                     "rated_dc_capacity_wp": None,
                 },
-                {
+                _SECOND_ACTUAL_YIELD_ENTITY: {
                     "name": "Dach Nord",
                     "baseline_entity_id": None,
                     "baseline_attribute": None,
                     "baseline_shape": None,
-                    "actual_yield_entity_id": _SECOND_ACTUAL_YIELD_ENTITY,
                     "converter_limit_w": None,
                     "temperature_source_entity_id": None,
                     "temperature_coefficient_pct_per_c": -0.4,
                     "rated_dc_capacity_wp": None,
                 },
-            ],
+            },
             **overrides,
         }
     )
@@ -1678,20 +1671,19 @@ class TestResolveStaleForecastSolarHistoryEntities:
 
     def test_resolves_and_persists_per_string_override(self) -> None:
         entry = _make_entry(
-            strings=[
-                {
+            strings={
+                _ACTUAL_YIELD_ENTITY: {
                     "name": "Dach Süd",
                     "baseline_entity_id": "fs_entry_2",
                     "baseline_attribute": "wh_period",
                     "baseline_shape": "forecast_solar",
                     "temperature_aware": False,
-                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                     "converter_limit_w": None,
                     "temperature_source_entity_id": None,
                     "temperature_coefficient_pct_per_c": -0.4,
                     "rated_dc_capacity_wp": None,
                 }
-            ],
+            },
         )
         hass = FakeHomeAssistant()
         hass.states.set(_ACTUAL_YIELD_ENTITY, {})
@@ -1709,7 +1701,7 @@ class TestResolveStaleForecastSolarHistoryEntities:
             _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
 
         assert provider.history_entity_id() == self._RESOLVED_ENTITY
-        persisted_string = coordinator.entry.data[CONF_STRINGS][0]
+        persisted_string = coordinator.entry.data[CONF_STRINGS][_ACTUAL_YIELD_ENTITY]
         assert persisted_string["baseline_history_entity_id"] == self._RESOLVED_ENTITY
         # The global baseline field must stay untouched — this fix is
         # scoped to whichever field(s) actually referenced this config
@@ -1792,20 +1784,19 @@ class TestResolveStaleForecastSolarHistoryEntities:
             baseline_entity_id="fs_entry_1",
             baseline_attribute="wh_period",
             baseline_shape="forecast_solar",
-            strings=[
-                {
+            strings={
+                _ACTUAL_YIELD_ENTITY: {
                     "name": "Dach Süd",
                     "baseline_entity_id": "fs_entry_2",
                     "baseline_attribute": "wh_period",
                     "baseline_shape": "forecast_solar",
                     "temperature_aware": False,
-                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                     "converter_limit_w": None,
                     "temperature_source_entity_id": None,
                     "temperature_coefficient_pct_per_c": -0.4,
                     "rated_dc_capacity_wp": None,
                 }
-            ],
+            },
         )
         hass = FakeHomeAssistant()
         hass.states.set(_ACTUAL_YIELD_ENTITY, {})
@@ -1999,7 +1990,7 @@ class TestFcSumFcDayArrayNoStrings:
 
     @staticmethod
     def _make_no_strings_coordinator() -> Any:
-        entry = _make_entry(**{CONF_STRINGS: []})
+        entry = _make_entry(**{CONF_STRINGS: {}})
         hass = FakeHomeAssistant()
         coordinator = ShadyCoordinator(hass, entry)
         coordinator._now = lambda: _NOW
@@ -2025,7 +2016,7 @@ class TestActualYieldListenersNoStrings:
     actual-yield entity itself is asserted absent here)."""
 
     def test_no_listener_registered_with_no_strings(self) -> None:
-        entry = _make_entry(**{CONF_STRINGS: []})
+        entry = _make_entry(**{CONF_STRINGS: {}})
         hass = FakeHomeAssistant()
         ShadyCoordinator(hass, entry)
         assert _ACTUAL_YIELD_ENTITY not in hass.states._listeners
@@ -2082,19 +2073,18 @@ class TestRecomputeStringEarlyReturns:
         # resolves non-`None` here but has nothing in
         # `_entity_providers` to recompute from.
         entry = _make_entry(
-            strings=[
-                {
+            strings={
+                _ACTUAL_YIELD_ENTITY: {
                     "name": "Dach Süd",
                     "baseline_entity_id": "sensor.orphan_baseline",
                     "baseline_attribute": None,
                     "baseline_shape": None,
-                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                     "converter_limit_w": None,
                     "temperature_source_entity_id": None,
                     "temperature_coefficient_pct_per_c": -0.4,
                     "rated_dc_capacity_wp": None,
                 }
-            ],
+            },
         )
         hass = FakeHomeAssistant()
         hass.states.set(_ACTUAL_YIELD_ENTITY, {})

@@ -1,53 +1,34 @@
-"""Tests for TASK-0019: `translations/en.json`/`de.json` content vs.
-`config_flow.py`'s actual schema keys (ADR-010, ADR-000).
+"""Tests for `translations/en.json`/`de.json` content vs. `config_flow.py`'s
+actual schema keys (ADR-010, `TASK-0035`).
 
 `config_flow.py` is HA-facing (see `test_config_flow.py`'s module
 docstring) so loading it needs the same small, hand-written, real
 (non-`Mock`) `homeassistant` stand-in that file already establishes —
-this file's own `ConfigFlow`/`OptionsFlow` stub classes are duplicated
-here rather than imported from it (genuinely narrower than what
-`test_config_flow.py` needs, matching this project's per-file
-self-contained-harness convention: each test file owns its load order
-rather than depending on another test file's module-level side
-effects); `_callback`/`FakeConfigEntry` are shared from `tests
-.support_ha` instead, since those two are identical to what every
-`FakeHomeAssistant`-based file already needs (see below).
-
-One cross-file subtlety worth understanding even though it no longer
-bites: five other test files (`test_button.py`, `test_coordinator.py`,
-`test_init.py`, `test_sensor_aggregates.py`, `test_sensor_forecast.py`)
-each call `tests.support_ha`'s shared `_install_ha_stub()` at *their*
-collection time, which re-fetches `sys.modules["homeassistant
-.config_entries"].ConfigEntry` *dynamically, at test-run time* (not a
-name bound at collection time) inside their own `_make_entry`/
-`_make_config_entry` helpers. Because pytest collects every test file
-(running all module-level code, including this file's) before running
-any test function, whichever `_install_ha_stub()` call happens to run
-*last* in file-collection order is the one every one of those five
-files' dynamic lookups actually gets at run time. Before `support_ha.py`
-existed, each of those five files independently defined its own
-textually-identical `FakeConfigEntry(entry_id, data)` copy, so "last one
-wins" was harmless only because every copy happened to match — a
-fragile invariant five separate definitions had to keep matching by
-hand. Now that every one of them (this file included, via the import
-below) shares the single `FakeConfigEntry` class `support_ha.py`
-defines once, "last one wins" is no longer even a meaningful question:
-every installer assigns the exact same class object, so collection
-order can't produce a mismatch — there is only one definition to
-possibly disagree with.
+this file's own `ConfigFlow` stub class is duplicated here rather than
+imported from it (genuinely narrower than what `test_config_flow.py`
+needs, matching this project's per-file self-contained-harness
+convention: each test file owns its load order rather than depending on
+another test file's module-level side effects); `_callback`/
+`FakeConfigEntry` are shared from `tests.support_ha` instead, since those
+two are identical to what every `FakeHomeAssistant`-based file already
+needs.
 
 This file does not re-drive the flow end to end (that is
-`test_config_flow.py`'s job) — it only calls the three private
-schema-building functions directly with empty `candidates`/`defaults`
-(explicitly documented as fine for this purpose in this task's
-"Consumed Interfaces") to read back each step's real field-key set, and
-compares that against the translation files' `data` labels. The fourth
-step, `add_another`, has no dedicated schema-building function — its
-single `"add_another"` field is built inline, identically, in both
-`ShadyConfigFlow.async_step_add_another` and
-`ShadyOptionsFlow.async_step_add_another` — so it is checked directly
-as a hard-coded one-key set rather than one this file can read back
-from a function call.
+`test_config_flow.py`'s job) — it only calls the schema-building
+functions directly with empty `candidates`/`defaults`/`strings` (fine for
+this purpose: every field these functions build always specifies its own
+`default=`, so an empty input dict never changes *which* fields exist,
+only what their defaults happen to be) to read back each step's real
+field-key set, and compares that against the translation files' `data`
+labels. There is one exception: `reconfigure` is a *menu* step (no
+`data` block at all, real HA's `async_show_menu` convention) — checked
+separately, against its `menu_options` instead.
+
+`ShadyOptionsFlow` no longer exists (`TASK-0035`, ADR-010) — there is no
+`options` translation section any more; every step, including the ones a
+reconfigure session reaches, lives under the one `config` section, since
+`async_step_reconfigure` dispatches to the exact same `async_step_*`
+methods `async_step_user`'s linear sequence does.
 """
 
 from __future__ import annotations
@@ -74,26 +55,45 @@ class _ConfigFlow(_FlowHandlerBase):
         cls._domain = domain  # type: ignore[attr-defined]
 
 
-class _OptionsFlow(_FlowHandlerBase):
-    pass
+class _EntitySelector:
+    """Real (non-Mock) stand-in for `homeassistant.helpers.selector.
+    EntitySelector`. `voluptuous.Schema` requires every value to be
+    callable at *compile* time (not just when actually validating a
+    submission) — this file never submits a value through it, but
+    `vol.Schema(...)` still needs `__call__` to exist to compile at
+    all, so a passthrough is enough."""
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        self.config = config or {}
+
+    def __call__(self, value: Any) -> Any:
+        return value
 
 
 def _install_ha_stub() -> None:
     ha = ModuleType("homeassistant")
     ha_core = ModuleType("homeassistant.core")
     ha_config_entries = ModuleType("homeassistant.config_entries")
+    ha_helpers = ModuleType("homeassistant.helpers")
+    ha_helpers.__path__ = []  # mark as a package
+    ha_helpers_selector = ModuleType("homeassistant.helpers.selector")
 
     ha_core.callback = _callback  # type: ignore[attr-defined]
     ha_config_entries.ConfigFlow = _ConfigFlow  # type: ignore[attr-defined]
-    ha_config_entries.OptionsFlow = _OptionsFlow  # type: ignore[attr-defined]
     ha_config_entries.ConfigEntry = FakeConfigEntry  # type: ignore[attr-defined]
+    ha_helpers_selector.EntitySelector = _EntitySelector  # type: ignore[attr-defined]
+    ha_helpers_selector.EntitySelectorConfig = lambda **kw: dict(kw)  # type: ignore[attr-defined]
+    ha_helpers.selector = ha_helpers_selector  # type: ignore[attr-defined]
 
     ha.core = ha_core  # type: ignore[attr-defined]
     ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
+    ha.helpers = ha_helpers  # type: ignore[attr-defined]
 
     sys.modules["homeassistant"] = ha
     sys.modules["homeassistant.core"] = ha_core
     sys.modules["homeassistant.config_entries"] = ha_config_entries
+    sys.modules["homeassistant.helpers"] = ha_helpers
+    sys.modules["homeassistant.helpers.selector"] = ha_helpers_selector
     # `homeassistant.data_entry_flow` deliberately not stubbed:
     # `config_flow.py` only imports `FlowResult` from it under `if
     # TYPE_CHECKING:`, and with `from __future__ import annotations`
@@ -115,29 +115,37 @@ _load("providers/discovery.py", "shady.providers.discovery")
 _load("const.py", "shady.const")
 _flow_mod = _load("config_flow.py", "shady.config_flow")
 
-# The three schema-building functions this task's "Consumed Interfaces"
-# names — an empty candidates list / empty defaults dict is explicitly
-# documented there as fine for reading back `vol.Schema(...).schema
-# .keys()`.
-_SETTINGS_KEYS = frozenset(str(k) for k in _flow_mod._settings_schema([], {}).schema)
-_ADD_STRING_KEYS = frozenset(str(k) for k in _flow_mod._add_string_schema([], {}).schema)
-_ADD_STRING_ADVANCED_KEYS = frozenset(
-    str(k) for k in _flow_mod._add_string_advanced_schema({}).schema
+# Every schema-building function this task's "Consumed Interfaces" names
+# — an empty `candidates` list / empty `defaults` dict is fine for
+# reading back `vol.Schema(...).schema.keys()` (see module docstring).
+_BASELINE_KEYS = frozenset(str(k) for k in _flow_mod._baseline_schema([], {}).schema)
+_STRINGS_KEYS = frozenset(str(k) for k in _flow_mod._strings_schema([]).schema)
+_STRING_SETTINGS_HUB_KEYS = frozenset(str(k) for k in _flow_mod._hub_schema({}).schema)
+_STRING_SETTINGS_EDIT_KEYS = frozenset(
+    str(k) for k in _flow_mod._string_settings_edit_schema([], {}).schema
 )
-# No schema-building function exists for this step (built inline,
-# identically, in both flow classes) — see module docstring.
-_ADD_ANOTHER_KEYS = frozenset({"add_another"})
+_REGRESSION_TUNING_KEYS = frozenset(str(k) for k in _flow_mod._regression_tuning_schema({}).schema)
+_ADVANCED_OPTIONAL_KEYS = frozenset(str(k) for k in _flow_mod._advanced_optional_schema({}).schema)
 
+# Every `data`-bearing step. `reconfigure` is deliberately excluded here
+# — it is a menu step with no `data` block at all, checked separately
+# below against its own `menu_options`.
 _STEP_KEYS: dict[str, frozenset[str]] = {
-    "settings": _SETTINGS_KEYS,
-    "add_string": _ADD_STRING_KEYS,
-    "add_string_advanced": _ADD_STRING_ADVANCED_KEYS,
-    "add_another": _ADD_ANOTHER_KEYS,
+    "baseline": _BASELINE_KEYS,
+    "strings": _STRINGS_KEYS,
+    "string_settings_hub": _STRING_SETTINGS_HUB_KEYS,
+    "string_settings_edit": _STRING_SETTINGS_EDIT_KEYS,
+    "regression_tuning": _REGRESSION_TUNING_KEYS,
+    "advanced_optional": _ADVANCED_OPTIONAL_KEYS,
 }
+
+_MENU_STEP_ID = "reconfigure"
+_MENU_OPTIONS = frozenset(
+    {"baseline", "strings", "regression_tuning", "advanced_optional", "finish"}
+)
 
 _TRANSLATIONS_DIR = _SHADY_DIR / "translations"
 _LANGUAGES = ("en", "de")
-_SECTIONS = ("config", "options")
 
 
 def _load_translation(language: str) -> dict[str, Any]:
@@ -153,23 +161,38 @@ _TRANSLATIONS: dict[str, dict[str, Any]] = {
 
 
 def test_every_schema_key_has_a_translation_label() -> None:
-    """Every real field key `config_flow.py`'s schemas define must have
-    a non-empty label in both `config.step.<id>.data` and
-    `options.step.<id>.data`, in both languages (the durable,
-    future-proof version of this task's cross-check — a manual reading
-    of the JSON files is not durable against a later field rename or
-    addition, this test is)."""
+    """Every real field key each `data`-bearing step's schema defines
+    must have a non-empty label in `config.step.<id>.data`, in both
+    languages (the durable, future-proof version of this task's
+    cross-check — a manual reading of the JSON files is not durable
+    against a later field rename or addition, this test is)."""
     missing: list[str] = []
     for language in _LANGUAGES:
         translation = _TRANSLATIONS[language]
-        for section in _SECTIONS:
-            for step_id, keys in _STEP_KEYS.items():
-                data = translation[section]["step"][step_id]["data"]
-                for key in keys:
-                    label = data.get(key)
-                    if not isinstance(label, str) or not label.strip():
-                        missing.append(f"{language}.json: {section}.step.{step_id}.data.{key}")
+        for step_id, keys in _STEP_KEYS.items():
+            data = translation["config"]["step"][step_id]["data"]
+            for key in keys:
+                label = data.get(key)
+                if not isinstance(label, str) or not label.strip():
+                    missing.append(f"{language}.json: config.step.{step_id}.data.{key}")
     assert not missing, "Missing/empty translation label(s):\n" + "\n".join(missing)
+
+
+def test_reconfigure_menu_options_have_translation_labels() -> None:
+    """The `reconfigure` menu step's `menu_options` match exactly the
+    five documented sections, each with a non-empty label, in both
+    languages."""
+    for language in _LANGUAGES:
+        menu_options = _TRANSLATIONS[language]["config"]["step"][_MENU_STEP_ID]["menu_options"]
+        assert set(menu_options) == _MENU_OPTIONS, (
+            f"{language}.json: config.step.{_MENU_STEP_ID}.menu_options "
+            f"key set mismatch: {sorted(menu_options)}"
+        )
+        for option, label in menu_options.items():
+            assert isinstance(label, str) and label.strip(), (
+                f"{language}.json: config.step.{_MENU_STEP_ID}.menu_options.{option} "
+                "is missing/empty"
+            )
 
 
 def _flatten_keys(data: Any, prefix: str = "") -> set[str]:
@@ -191,11 +214,9 @@ def test_en_and_de_have_identical_key_sets() -> None:
     ever iterates schema-derived keys, in one direction): directly
     compares the two translation files' own flattened key sets for
     equality, both directions. Catches a key added to one language file
-    that isn't tied to a real schema field at all — a leftover, a
-    typo'd duplicate, a future non-schema string — which the
-    schema-driven check above cannot see either way. This is the same
-    manual comparison `AUDIT-0010` performed by hand; this test makes it
-    durable."""
+    that isn't tied to a real schema field at all — a leftover, a typo'd
+    duplicate, a future non-schema string — which the schema-driven
+    check above cannot see either way."""
     en_keys = _flatten_keys(_TRANSLATIONS["en"])
     de_keys = _flatten_keys(_TRANSLATIONS["de"])
     only_in_en = en_keys - de_keys
@@ -205,53 +226,58 @@ def test_en_and_de_have_identical_key_sets() -> None:
 
 
 def test_every_step_has_a_real_title_and_description() -> None:
-    """Every `config.step.*`/`options.step.*` entry must have a real,
-    non-placeholder `title` and `description` — no literal "Placeholder"
-    or "to be defined" wording left over from the Phase-0 stub content
-    this task replaces."""
+    """Every `config.step.*` entry — the `data`-bearing steps and the
+    `reconfigure` menu step alike — must have a real, non-placeholder
+    `title` and `description`."""
     for language in _LANGUAGES:
         translation = _TRANSLATIONS[language]
-        for section in _SECTIONS:
-            for step_id in _STEP_KEYS:
-                step = translation[section]["step"][step_id]
-                for field in ("title", "description"):
-                    value = step.get(field)
-                    assert isinstance(value, str) and value.strip(), (
-                        f"{language}.json: {section}.step.{step_id}.{field} is missing/empty"
-                    )
+        for step_id in (*_STEP_KEYS, _MENU_STEP_ID):
+            step = translation["config"]["step"][step_id]
+            for field in ("title", "description"):
+                value = step.get(field)
+                assert isinstance(value, str) and value.strip(), (
+                    f"{language}.json: config.step.{step_id}.{field} is missing/empty"
+                )
 
 
 def test_no_leftover_placeholder_wording() -> None:
     """No literal "Placeholder" or "to be defined" wording remains
-    anywhere in either translation file (English wording specifically,
-    since the original placeholder text used those exact English words
-    in both files — see this task's Goal)."""
+    anywhere in either translation file."""
     for language in _LANGUAGES:
         raw = json.dumps(_TRANSLATIONS[language])
         assert "Placeholder" not in raw
         assert "to be defined" not in raw
 
 
-def test_config_and_options_error_sections_are_untouched() -> None:
-    """`config_flow.py` never passes `errors=` to `async_show_form`
-    today (no `vol.Invalid`-driven error path exists) — this task does
-    not invent error-key translations for a validation UX that does not
-    exist in the code yet; `config.error`/`config.abort`/`options.error`
-    stay empty."""
+def test_no_options_section_and_error_section_is_untouched() -> None:
+    """`ShadyOptionsFlow` no longer exists (`TASK-0035`) — there is no
+    `options` translation section any more. `config_flow.py` never
+    passes `errors=` to `async_show_form` (no `vol.Invalid`-driven error
+    path exists), so `config.error` stays empty; `config.abort` is not
+    empty any more, though — `async_update_reload_and_abort` always
+    produces `reason="reconfigure_successful"`, which needs exactly one
+    real translated string."""
     for language in _LANGUAGES:
         translation = _TRANSLATIONS[language]
+        assert "options" not in translation
         assert translation["config"]["error"] == {}
-        assert translation["config"]["abort"] == {}
-        assert translation["options"]["error"] == {}
+        abort = translation["config"]["abort"]
+        assert set(abort) == {"reconfigure_successful"}
+        assert (
+            isinstance(abort["reconfigure_successful"], str)
+            and abort["reconfigure_successful"].strip()
+        )
 
 
-def test_add_string_advanced_wording_does_not_imply_conditional_visibility() -> None:
-    """`_add_string_advanced_schema`'s own docstring is explicit: all
-    four fields are always shown together; which of them actually
-    applies is resolved downstream from the *stored* data, not by
-    dynamically hiding fields in this static form. This task's wording
-    must not contradict that by implying a field appears/disappears —
-    phrases like "only shown if" or "only visible when" would."""
+def test_string_settings_edit_wording_does_not_imply_conditional_visibility() -> None:
+    """`_string_settings_edit_schema`'s own docstring is explicit: every
+    field is always shown together; which of them actually applies is
+    resolved downstream from the *stored* data, not by dynamically
+    hiding fields in this static form (ADR-010's `string_settings_edit`
+    note: no separate "configure advanced corrections?" gate). This
+    task's wording must not contradict that by implying a field
+    appears/disappears — phrases like "only shown if" or "only visible
+    when" would."""
     for language in _LANGUAGES:
         raw = json.dumps(_TRANSLATIONS[language]).lower()
         assert "only shown" not in raw

@@ -183,19 +183,18 @@ def _make_entry(**overrides: Any) -> Any:
         "intraday_correction_cutoff": 0.10,
         "window_slots": 24,
         "ramp_slots": 12,
-        CONF_STRINGS: [
-            {
+        CONF_STRINGS: {
+            _ACTUAL_YIELD_ENTITY: {
                 "name": "Dach Süd",
                 "baseline_entity_id": None,
                 "baseline_attribute": None,
                 "baseline_shape": None,
-                "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
                 "converter_limit_w": None,
                 "temperature_source_entity_id": None,
                 "temperature_coefficient_pct_per_c": -0.4,
                 "rated_dc_capacity_wp": None,
             }
-        ],
+        },
     }
     data.update(overrides)
     config_entries_mod = sys.modules["homeassistant.config_entries"]
@@ -268,19 +267,18 @@ class TestServicePersistsAcrossPartialUnload:
         second_yield_entity = "sensor.string_b_yield"
         entry_b = _make_entry(
             **{
-                CONF_STRINGS: [
-                    {
+                CONF_STRINGS: {
+                    second_yield_entity: {
                         "name": "Dach Nord",
                         "baseline_entity_id": None,
                         "baseline_attribute": None,
                         "baseline_shape": None,
-                        "actual_yield_entity_id": second_yield_entity,
                         "converter_limit_w": None,
                         "temperature_source_entity_id": None,
                         "temperature_coefficient_pct_per_c": -0.4,
                         "rated_dc_capacity_wp": None,
                     }
-                ]
+                }
             }
         )
         hass.states.set(second_yield_entity, {})
@@ -501,19 +499,18 @@ class TestServiceRegistration:
         second_yield_entity = "sensor.string_b_yield"
         entry_b = _make_entry(
             **{
-                CONF_STRINGS: [
-                    {
+                CONF_STRINGS: {
+                    second_yield_entity: {
                         "name": "Dach Nord",
                         "baseline_entity_id": None,
                         "baseline_attribute": None,
                         "baseline_shape": None,
-                        "actual_yield_entity_id": second_yield_entity,
                         "converter_limit_w": None,
                         "temperature_source_entity_id": None,
                         "temperature_coefficient_pct_per_c": -0.4,
                         "rated_dc_capacity_wp": None,
                     }
-                ]
+                }
             }
         )
         hass.states.set(second_yield_entity, {})

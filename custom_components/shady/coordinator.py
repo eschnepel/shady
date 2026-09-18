@@ -174,7 +174,6 @@ from .const import (
     CONF_RECENCY_DECAY_MAX,
     CONF_REGRESSION_METHOD,
     CONF_SMOOTHING_RADIUS,
-    CONF_STRING_ACTUAL_YIELD_ENTITY,
     CONF_STRING_BASELINE_ATTRIBUTE,
     CONF_STRING_BASELINE_ENTITY_ID,
     CONF_STRING_BASELINE_HISTORY_ENTITY_ID,
@@ -356,11 +355,14 @@ class _TemperatureResolution:
     tier: Literal["weather", "cell", "ambient"]
 
 
-def _resolve_string(index: int, raw: dict[str, Any]) -> _StringConfig:
+def _resolve_string(index: int, entity_id: str, raw: dict[str, Any]) -> _StringConfig:
+    """`entity_id` is the `CONF_STRINGS` dict key (`TASK-0035`) — a
+    string's identity, never itself duplicated as a field inside `raw`.
+    """
     return _StringConfig(
         index=index,
-        name=raw[CONF_STRING_NAME],
-        actual_yield_entity_id=raw[CONF_STRING_ACTUAL_YIELD_ENTITY],
+        name=raw.get(CONF_STRING_NAME, ""),
+        actual_yield_entity_id=entity_id,
         baseline_entity_id=raw.get(CONF_STRING_BASELINE_ENTITY_ID),
         baseline_attribute=raw.get(CONF_STRING_BASELINE_ATTRIBUTE),
         baseline_shape=raw.get(CONF_STRING_BASELINE_SHAPE),
@@ -431,7 +433,8 @@ class ShadyCoordinator:
         )
 
         self._strings: list[_StringConfig] = [
-            _resolve_string(index, raw) for index, raw in enumerate(data.get(CONF_STRINGS, []))
+            _resolve_string(index, entity_id, raw)
+            for index, (entity_id, raw) in enumerate(data.get(CONF_STRINGS, {}).items())
         ]
 
         # sensor_id -> Provider, for both `_fetch_fn`'s cache-miss
@@ -1762,7 +1765,9 @@ class ShadyCoordinator:
         on every ordinary restart.
         """
         new_data: dict[str, Any] | None = None
-        new_strings: list[dict[str, Any]] | None = None
+        # `entity_id -> settings dict` (`TASK-0035`), not a list — same
+        # shape as `entry.data[CONF_STRINGS]` itself.
+        new_strings: dict[str, dict[str, Any]] | None = None
 
         for entity_id, provider in self._entity_providers.items():
             if not (isinstance(provider, BaselineProvider) and provider.shape == "forecast_solar"):
@@ -1781,7 +1786,10 @@ class ShadyCoordinator:
             provider.set_history_entity_id(resolved)
             if new_data is None:
                 new_data = dict(self.entry.data)
-                new_strings = [dict(s) for s in new_data.get(CONF_STRINGS, [])]
+                new_strings = {
+                    string_entity_id: dict(string_data)
+                    for string_entity_id, string_data in new_data.get(CONF_STRINGS, {}).items()
+                }
             assert new_strings is not None
 
             if (
@@ -1789,7 +1797,7 @@ class ShadyCoordinator:
                 and new_data.get(CONF_BASELINE_HISTORY_ENTITY_ID) is None
             ):
                 new_data[CONF_BASELINE_HISTORY_ENTITY_ID] = resolved
-            for string_data in new_strings:
+            for string_data in new_strings.values():
                 if (
                     string_data.get(CONF_STRING_BASELINE_ENTITY_ID) == entity_id
                     and string_data.get(CONF_STRING_BASELINE_HISTORY_ENTITY_ID) is None

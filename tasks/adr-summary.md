@@ -403,20 +403,16 @@ wired directly into `cache.py`'s `fetch_fn`.
 - **`ShadyRecalculateButton`** (ADR-002 §1) — manual recalibration trigger, same
   code path as the midnight schedule.
 - **`ShadyConfigFlow`** (ADR-010) — see §7. `ShadyOptionsFlow` is removed
-  (2026-09-17 Amendment, `TASK-0035`, **not yet implemented — `Status: todo`**):
-  it silently discarded every reconfiguration (wrote to `entry.options`, which
-  nothing ever read — not a race, a standing bug since initial release).
-  Reconfiguration is now `ShadyConfigFlow.async_step_reconfigure`, sharing the
-  same step methods as initial setup rather than a second, parallel
-  implementation.
+  (2026-09-17, `TASK-0035`): it silently discarded every reconfiguration (wrote
+  to `entry.options`, which nothing ever read — not a race, a standing bug since
+  initial release). Reconfiguration is now
+  `ShadyConfigFlow.async_step_reconfigure`, sharing the same step methods as
+  initial setup rather than a second, parallel implementation.
 
 ## 7 — Config flow shape (`ADR-010` is the single source of truth)
 
-**Not yet implemented (`TASK-0035`, `Status: todo`) — described here as the
-target design, current shipped flow is the three-step
-`settings`/`add_string`(+`add_string_advanced`)/`add_another` loop this
-replaces.** Five steps, linear for first setup: **`baseline`** (global default
-baseline candidate + manual fallback, `temperature_aware`) → **`strings`** (one
+Five steps, linear for first setup: **`baseline`** (global default baseline
+candidate + manual fallback, `temperature_aware`) → **`strings`** (one
 multi-select entity selector, `sensor` domain, `power`/`energy` device_class —
 every entity picked *is* a string, identified by its own `entity_id`; no
 separate "add a string" step) →
@@ -438,9 +434,10 @@ regardless. `async_step_reconfigure` instead opens on an `async_show_menu`
 Finish"), pre-filled from the existing entry, each section returning to this
 same menu rather than proceeding linearly, finishing via
 `async_update_reload_and_abort` (updates `entry.data` directly and reloads) —
-see ADR-010's amendment for the full rationale and why `ShadyOptionsFlow` had to
-go. No migration from the old `CONF_STRINGS` shape — deliberate, exactly one
-installation exists as of this amendment.
+see ADR-010 for the full rationale and why `ShadyOptionsFlow` had to go. No
+migration from the old `CONF_STRINGS` shape (list-of-dicts, each with its own
+`name`/`actual_yield_entity_id`) — deliberate, exactly one installation existed
+as of this change.
 
 ## 8 — Intraday deviation correction (ADR-006)
 

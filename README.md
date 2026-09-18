@@ -110,16 +110,24 @@ for Shady — just as valid as pointing Shady at your raw PV sensors directly.
 
 Setup is entirely through the Home Assistant UI — no YAML:
 
-1. **Global settings** — baseline forecast source, training window, regression
-   method, and other defaults that apply to every string (all changeable later
-   from the integration's Options).
-1. **Add a string** — one PV string per step: its actual-yield sensor, an
-   optional per-string baseline override, and optional advanced corrections
-   (clipping, temperature derating) if you want them for that string.
-1. Repeat step 2 for each string, then finish setup.
+1. **Baseline** — default baseline forecast source (and whether it already
+   accounts for temperature effects), used by every string unless it overrides
+   it.
+1. **Strings** — pick every PV-string sensor in one entity picker; each one
+   picked *is* a string.
+1. **Per-string settings** — for each string just picked, its optional name, an
+   optional baseline override, and optional advanced corrections (clipping,
+   temperature derating) if you want them for that string.
+1. **Regression tuning** and **Advanced & optional settings** — everything else
+   that applies to every string, with sensible defaults throughout.
 
 Every setting has a sensible default; you can start with just your strings'
 actual-yield sensors and refine from there.
+
+To change anything later, go to **Settings → Devices & Services → Shady →
+Reconfigure**. Reconfigure opens on a menu of the same sections above — pick the
+one you want to change, submit it, and you're back at the menu to pick another
+or select **Save & Finish**.
 
 ## Entities created
 

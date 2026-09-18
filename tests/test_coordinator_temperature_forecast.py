@@ -89,7 +89,6 @@ def _string(**overrides: Any) -> dict[str, Any]:
         "baseline_attribute": None,
         "baseline_shape": None,
         "temperature_aware": False,
-        "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
         "converter_limit_w": None,
         "temperature_source_entity_id": None,
         "temperature_coefficient_pct_per_c": -0.4,
@@ -131,7 +130,7 @@ class TestResolveTemperatureEntity:
     def test_weather_domain_default_resolves_to_weather_tier(self) -> None:
         entry = _make_entry(
             default_temperature_source="weather.home",
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         resolution = coordinator._resolve_temperature_entity(coordinator._strings[0])
@@ -140,7 +139,7 @@ class TestResolveTemperatureEntity:
     def test_weather_domain_per_string_override_also_resolves_to_weather_tier(self) -> None:
         entry = _make_entry(
             default_temperature_source=None,
-            strings=[_string(temperature_source_entity_id="weather.balcony")],
+            strings={_ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id="weather.balcony")},
         )
         coordinator, _hass = _make_coordinator(entry)
         resolution = coordinator._resolve_temperature_entity(coordinator._strings[0])
@@ -150,7 +149,9 @@ class TestResolveTemperatureEntity:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source="sensor.ambient_wrong_one",
-            strings=[_string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)],
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)
+            },
         )
         coordinator, _hass = _make_coordinator(entry)
         resolution = coordinator._resolve_temperature_entity(coordinator._strings[0])
@@ -163,7 +164,7 @@ class TestResolveTemperatureEntity:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         resolution = coordinator._resolve_temperature_entity(coordinator._strings[0])
@@ -176,7 +177,7 @@ class TestResolveTemperatureEntity:
         entry = _make_entry(
             weather_forecast_temperature_entity=None,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         assert coordinator._resolve_temperature_entity(coordinator._strings[0]) is None
@@ -184,7 +185,9 @@ class TestResolveTemperatureEntity:
     def test_per_string_sensor_override_with_no_predictor_also_resolves_to_none(self) -> None:
         entry = _make_entry(
             weather_forecast_temperature_entity=None,
-            strings=[_string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)],
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)
+            },
         )
         coordinator, _hass = _make_coordinator(entry)
         assert coordinator._resolve_temperature_entity(coordinator._strings[0]) is None
@@ -193,7 +196,7 @@ class TestResolveTemperatureEntity:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string(temperature_source_entity_id="none")],
+            strings={_ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id="none")},
         )
         coordinator, _hass = _make_coordinator(entry)
         # The per-string sentinel explicitly disables derating for this
@@ -205,7 +208,7 @@ class TestResolveTemperatureEntity:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=None,
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         assert coordinator._resolve_temperature_entity(coordinator._strings[0]) is None
@@ -224,7 +227,8 @@ class TestPredictorProviderRegisteredGenerically:
 
     def test_predictor_registered_as_a_weather_tier_temperature_provider(self) -> None:
         entry = _make_entry(
-            weather_forecast_temperature_entity=_PREDICTOR_ENTITY, strings=[_string()]
+            weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         provider = coordinator._entity_providers.get(_PREDICTOR_ENTITY)
@@ -233,7 +237,8 @@ class TestPredictorProviderRegisteredGenerically:
 
     def test_predictor_gets_a_state_change_listener_with_no_new_listener_code(self) -> None:
         entry = _make_entry(
-            weather_forecast_temperature_entity=_PREDICTOR_ENTITY, strings=[_string()]
+            weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         _coordinator, hass = _make_coordinator(entry)
         # `_register_provider_listeners` (ADR-012 §4) is fully generic —
@@ -249,7 +254,8 @@ class TestPredictorProviderRegisteredGenerically:
         # mechanism this task leans on for "no new coordinator code"
         # actually produces data, not just registers without crashing.
         entry = _make_entry(
-            weather_forecast_temperature_entity=_PREDICTOR_ENTITY, strings=[_string()]
+            weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, hass = _make_coordinator(entry)
         hass.states.set(_PREDICTOR_ENTITY, _weather_forecast_state({10: 12.5, 20: 13.0}))
@@ -263,7 +269,9 @@ class TestPredictorProviderRegisteredGenerically:
         assert values[_DAY_START + timedelta(minutes=100)] == 13.0
 
     def test_not_registered_at_all_when_unconfigured(self) -> None:
-        entry = _make_entry(weather_forecast_temperature_entity=None, strings=[_string()])
+        entry = _make_entry(
+            weather_forecast_temperature_entity=None, strings={_ACTUAL_YIELD_ENTITY: _string()}
+        )
         coordinator, _hass = _make_coordinator(entry)
         assert _PREDICTOR_ENTITY not in coordinator._entity_providers
 
@@ -277,7 +285,7 @@ class TestPredictorProviderRegisteredGenerically:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=_PREDICTOR_ENTITY,
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         assert list(coordinator._entity_providers).count(_PREDICTOR_ENTITY) == 1
@@ -291,7 +299,7 @@ class TestFitTemperatureString:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source="weather.home",
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         assert coordinator._fit_temperature_string(coordinator._strings[0], _NOW) is None
@@ -300,7 +308,7 @@ class TestFitTemperatureString:
         entry = _make_entry(
             weather_forecast_temperature_entity=None,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, _hass = _make_coordinator(entry)
         assert coordinator._fit_temperature_string(coordinator._strings[0], _NOW) is None
@@ -308,7 +316,9 @@ class TestFitTemperatureString:
     def test_cell_tier_produces_a_fitted_model(self) -> None:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
-            strings=[_string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)],
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)
+            },
         )
         coordinator, _hass = _make_coordinator(entry)
         model = coordinator._fit_temperature_string(coordinator._strings[0], _NOW)
@@ -329,7 +339,9 @@ class TestFitTemperatureString:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             window_days=5,
-            strings=[_string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)],
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)
+            },
         )
         coordinator, _hass = _make_coordinator(entry)
         slot = 100
@@ -367,7 +379,7 @@ class TestPredictTargetSlotTemperature:
         entry = _make_entry(
             default_temperature_source="weather.home",
             max_uplift_c=25,
-            strings=[_string(rated_dc_capacity_wp=2000.0)],
+            strings={_ACTUAL_YIELD_ENTITY: _string(rated_dc_capacity_wp=2000.0)},
         )
         coordinator, hass = _make_coordinator(entry)
         hass.states.set("weather.home", _weather_forecast_state({0: 5.0, 200: 15.0}))
@@ -395,7 +407,9 @@ class TestPredictTargetSlotTemperature:
         assert np.allclose(result[200], expected[200])
 
     def test_weather_tier_none_without_rated_capacity(self) -> None:
-        entry = _make_entry(default_temperature_source="weather.home", strings=[_string()])
+        entry = _make_entry(
+            default_temperature_source="weather.home", strings={_ACTUAL_YIELD_ENTITY: _string()}
+        )
         coordinator, hass = _make_coordinator(entry)
         hass.states.set("weather.home", _weather_forecast_state({0: 5.0}))
         string = coordinator._strings[0]
@@ -411,11 +425,11 @@ class TestPredictTargetSlotTemperature:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             max_uplift_c=25,
-            strings=[
-                _string(
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(
                     temperature_source_entity_id=_CELL_SENSOR_ENTITY, rated_dc_capacity_wp=2000.0
                 )
-            ],
+            },
         )
         coordinator, hass = _make_coordinator(entry)
         # The cell sensor itself never gets a live state -> guaranteed
@@ -447,7 +461,7 @@ class TestPredictTargetSlotTemperature:
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
             max_uplift_c=25,
-            strings=[_string(rated_dc_capacity_wp=2000.0)],
+            strings={_ACTUAL_YIELD_ENTITY: _string(rated_dc_capacity_wp=2000.0)},
         )
         coordinator, hass = _make_coordinator(entry)
         # Same cold-start-guarantee trick: the ambient sensor never gets
@@ -482,7 +496,7 @@ class TestPredictTargetSlotTemperature:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string()],
+            strings={_ACTUAL_YIELD_ENTITY: _string()},
         )
         coordinator, hass = _make_coordinator(entry)
         hass.states.set(_PREDICTOR_ENTITY, _weather_forecast_state({0: 8.0}))
@@ -504,7 +518,9 @@ class TestPredictTargetSlotTemperature:
         # been fit yet -> graceful skip, not a KeyError.
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
-            strings=[_string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)],
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(temperature_source_entity_id=_CELL_SENSOR_ENTITY)
+            },
         )
         coordinator, _hass = _make_coordinator(entry)
         string = coordinator._strings[0]
@@ -539,7 +555,9 @@ class TestApplyTrainingCorrectionsTierDispatch:
 
     @staticmethod
     def _fixture(rated_dc_capacity_wp: float | None) -> tuple[Any, Any]:
-        entry = _make_entry(strings=[_string(rated_dc_capacity_wp=rated_dc_capacity_wp)])
+        entry = _make_entry(
+            strings={_ACTUAL_YIELD_ENTITY: _string(rated_dc_capacity_wp=rated_dc_capacity_wp)}
+        )
         coordinator, _hass = _make_coordinator(entry)
         return coordinator, coordinator._strings[0]
 
@@ -657,7 +675,9 @@ class TestNoPredictorSkipsBothSidesEndToEnd:
         entry = _make_entry(
             weather_forecast_temperature_entity=None,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string(rated_dc_capacity_wp=2000.0, **string_overrides)],
+            strings={
+                _ACTUAL_YIELD_ENTITY: _string(rated_dc_capacity_wp=2000.0, **string_overrides)
+            },
         )
         hass = FakeHomeAssistant()
         hass.states.set(
@@ -703,7 +723,7 @@ class TestRefitCachesBothShadingAndTemperatureModelsEndToEnd:
         entry = _make_entry(
             weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
             default_temperature_source=_AMBIENT_SENSOR_ENTITY,
-            strings=[_string(rated_dc_capacity_wp=2000.0)],
+            strings={_ACTUAL_YIELD_ENTITY: _string(rated_dc_capacity_wp=2000.0)},
         )
         hass = FakeHomeAssistant()
         hass.states.set(
