@@ -204,7 +204,7 @@ from .diagnostics.base import DiagnosticMode, DiagnosticResult
 from .diagnostics.compare_regressions import CompareRegressionsMode
 from .forecast_adjust import clamp_output, reverse_transformed_forecast
 from .providers.base import Provider
-from .providers.discovery import BaselineProvider
+from .providers.discovery import BaselineProvider, resolve_forecast_solar_history_entity
 from .providers.temperature import TemperatureProvider, TemperatureTier
 from .regression.base import FittedModel
 from .yield_correction import uplift_ambient_to_cell
@@ -824,6 +824,12 @@ class ShadyCoordinator:
             # startup independent of the fit's age, so still worth an
             # awaited, non-racy refresh here.
             await self._refresh_forecast_solar_providers()
+        # One-time self-heal (`_resolve_stale_forecast_solar_history_
+        # entities`'s own docstring) for a `forecast_solar` baseline's
+        # `history_entity_id`, before the backfill just below — so a
+        # successful retry already benefits this same startup's
+        # catch-up, not just the next one.
+        self._resolve_stale_forecast_solar_history_entities()
         # One-time catch-up (`_backfill_elapsed_today_slots`'s own
         # docstring) for today's already-elapsed slots — a restart's
         # in-memory forecast cache starts out empty, so this is the one
@@ -1715,6 +1721,92 @@ class ShadyCoordinator:
                 values[index] = value
                 fc_by_index[index] = float(fc_array[slot])
         return values, fc_by_index
+
+    # -- startup self-heal for a frozen `history_entity_id` (ADR-009 §1c
+    # further Amendment, `TASK-0034-patch-1`) -----------------------------
+    #
+    # Resolution of a `forecast_solar`-shaped baseline's companion
+    # history entity happens exactly once, ever: at config/options-flow
+    # submission time (`config_flow.py`), whose result is then persisted
+    # into this config entry's own stored data and simply re-read
+    # verbatim by `__init__` on every restart (ADR-002 §1a: construction
+    # itself never touches `hass`). If Forecast.Solar's own companion
+    # sensor wasn't yet in the entity registry at that one moment —
+    # exactly the startup-ordering race `resolve_forecast_solar_history_
+    # entity` already anticipates and tolerates with a graceful `None`,
+    # just without ever retrying it — that `None` is what got persisted,
+    # and stays persisted forever, regardless of the sensor existing
+    # (with plenty of recorder history) by the time any later restart
+    # actually runs. `async_startup` is the first point after
+    # construction with both `hass` access and ADR-002 §1a's own
+    # readiness gate already passed (`missing_required_entities()`), so
+    # it is the right place for a one-shot, best-effort retry —
+    # mirroring `_refresh_forecast_solar_providers`'s own "awaited,
+    # non-racy retry" pattern for the forward forecast, just for the
+    # history entity instead. A still-failed retry is silently left for
+    # the next restart to try again (ADR-000 §8) — never an error.
+
+    def _resolve_stale_forecast_solar_history_entities(self) -> None:
+        """Best-effort, in-place retry of every `forecast_solar`-shaped
+        provider whose `history_entity_id` is currently unresolved. A
+        successful retry is both applied to the live `BaselineProvider`
+        instance (`set_history_entity_id`, so this same startup's own
+        `_backfill_elapsed_today_slots` can already use it) and persisted
+        back into this config entry's stored data (self-healing the
+        original discovery-time `None`, global or per-string override
+        alike, whichever field(s) actually referenced this config entry)
+        so future restarts no longer need to retry it at all. A single
+        `async_update_entry` call covers every provider resolved this
+        pass — not one call each — and is skipped entirely if nothing
+        needed it, to avoid a no-op write (and any update-listener churn)
+        on every ordinary restart.
+        """
+        new_data: dict[str, Any] | None = None
+        new_strings: list[dict[str, Any]] | None = None
+
+        for entity_id, provider in self._entity_providers.items():
+            if not (isinstance(provider, BaselineProvider) and provider.shape == "forecast_solar"):
+                continue
+            if provider.history_entity_id() is not None:
+                continue
+            resolved = resolve_forecast_solar_history_entity(self.hass, entity_id)
+            if resolved is None:
+                _LOGGER.debug(
+                    "Startup retry: Forecast.Solar config entry %s still has no"
+                    " resolvable history entity — will try again next restart",
+                    entity_id,
+                )
+                continue
+
+            provider.set_history_entity_id(resolved)
+            if new_data is None:
+                new_data = dict(self.entry.data)
+                new_strings = [dict(s) for s in new_data.get(CONF_STRINGS, [])]
+            assert new_strings is not None
+
+            if (
+                new_data.get(CONF_BASELINE_ENTITY_ID) == entity_id
+                and new_data.get(CONF_BASELINE_HISTORY_ENTITY_ID) is None
+            ):
+                new_data[CONF_BASELINE_HISTORY_ENTITY_ID] = resolved
+            for string_data in new_strings:
+                if (
+                    string_data.get(CONF_STRING_BASELINE_ENTITY_ID) == entity_id
+                    and string_data.get(CONF_STRING_BASELINE_HISTORY_ENTITY_ID) is None
+                ):
+                    string_data[CONF_STRING_BASELINE_HISTORY_ENTITY_ID] = resolved
+            _LOGGER.info(
+                "Startup retry: resolved Forecast.Solar config entry %s's history"
+                " entity to %s (persisted — no longer needs retrying on future"
+                " restarts)",
+                entity_id,
+                resolved,
+            )
+
+        if new_data is not None:
+            assert new_strings is not None
+            new_data[CONF_STRINGS] = new_strings
+            self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
     # -- startup catch-up for today's already-elapsed slots (ADR-002 §1a) -
     #

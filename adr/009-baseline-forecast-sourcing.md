@@ -17,7 +17,11 @@ resolves a linked, recorder-backed `history_entity_id` at discovery time —
 closing the "baseline side of the training pool has no real history" cold-start
 bug §1a/§1b's own push-only sourcing otherwise leaves in place indefinitely
 across restarts (see `shady-baseline-history-fix.md`, the bug report this
-amendment implements).
+amendment implements). **Further §1c Amendment below (2026-09-17,
+`TASK-0034-patch-1`):** the discovery-time resolution above could still silently
+freeze at `None` forever if it lost a one-time startup race against
+Forecast.Solar's own companion-sensor registration — `async_startup` now retries
+it once, self-healing the persisted config entry data on success.
 
 ______________________________________________________________________
 
@@ -274,6 +278,56 @@ recorder backfill available this cycle," the same graceful, non-blocking
 degradation an ordinary recorder-retention shortfall already produces (see
 Acceptance Criterion 4 in `shady-baseline-history-fix.md`), not a setup failure
 to retry over.
+
+**Further Amendment (2026-09-17, §1c): a discovery-time `None` no longer stays
+`None` forever.** A real-world gap surfaced in the paragraph just above: "not a
+setup failure to retry over" was true as far as it went, but nothing ever _did_
+retry it, and the one place this resolution result gets produced —
+`config_flow.py`, at setup/options-flow submission time — is also the one place
+it gets **persisted**, into this config entry's own stored data
+(`CONF_BASELINE_HISTORY_ENTITY_ID`/`CONF_STRING_BASELINE_HISTORY_ENTITY_ID`).
+`coordinator.py`'s `__init__` never touches `hass` at all (ADR-002 §1a), so it
+just reads that stored value back, verbatim, on every subsequent restart. If
+Forecast.Solar's companion sensor genuinely wasn't registered yet at that one
+past moment, the persisted `None` is what every future restart inherits —
+regardless of the sensor now existing, fully registered, with a full recorder
+history, by the time any later restart's discovery would have found it. A real
+deployment hit exactly this: `discover_baseline_candidates` correctly matched
+the shape at flow-submission time, but the one-time race left
+`history_entity_id` frozen at `None`, and every startup since silently fell
+through to the ordinary live-value `fetch()` path — "no historical data," even
+though the entity plainly had some (`TASK-0034-patch-1`).
+
+The fix is a one-shot, best-effort retry at `async_startup` — `coordinator.py`'s
+`_resolve_stale_forecast_solar_history_entities`, called immediately before
+`_backfill_elapsed_today_slots` so a same-session recovery already unblocks that
+same run's own backfill, not just the next restart's. `async_startup` is the
+first point after construction with both `hass` access and ADR-002 §1a's own
+readiness gate (`missing_required_entities()`) already passed, mirroring
+`_refresh_forecast_solar_providers`'s existing "awaited, non-racy retry" pattern
+for the *forward* forecast — this amendment gives the *history* entity the same
+treatment, not a new pattern. For every `forecast_solar`-shaped provider whose
+`history_entity_id()` is still `None`, it re-runs the identical
+`resolve_forecast_solar_history_entity` lookup (now a public function — see
+below); a successful retry updates the live `BaselineProvider` in place
+(`set_history_entity_id`) **and** self-heals the persisted config entry data via
+one `hass.config_entries.async_update_entry` call covering every provider
+resolved that pass, so future restarts no longer need to retry it at all. A
+still-failed retry changes nothing and is silently left for the next restart
+(ADR-000 §8) — never an error, and logged no louder than debug, since the
+condition is expected to resolve itself given enough restarts and isn't
+actionable by the user in the moment.
+
+`resolve_forecast_solar_history_entity` (`providers/discovery.py`) is now public
+rather than `_`-prefixed — it has a second, legitimate cross-module caller
+(`coordinator.py`) as of this amendment, and duplicating its lookup logic there,
+or routing through the much heavier `discover_baseline_candidates` just to
+re-resolve one already-known config entry, would both violate the "no
+second/bespoke path" principle `tasks/adr-summary.md`'s exclusions already apply
+to recorder access. This does **not** change §4's module-boundary reasoning
+below — `coordinator.py` was already the module with `hass`-access timing gated
+by ADR-002 §1a; it is simply now the caller of an existing, unchanged read-only
+entity-registry lookup, not a new one.
 
 ### 2 — Normalization onto one canonical series
 

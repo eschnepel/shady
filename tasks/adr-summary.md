@@ -93,7 +93,16 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   state). `coordinator.py`'s `_fetch_fn` routes a resolved `history_entity_id`
   to a new, recorder-backed `_fetch_provider_history_statistics` method instead
   of `provider.fetch()` — mirrors `_fetch_actual_yield_statistics` (§2 below is
-  `cache.py`'s design; the recorder-read pattern itself is ADR-012 §2/§2a)
+  `cache.py`'s design; the recorder-read pattern itself is ADR-012 §2/§2a) never
+  a second, bespoke recorder-read path. **2026-09-17 (ADR-009 §1c further
+  Amendment, `TASK-0034-patch-1`):** that discovery-time resolution is one-shot
+  and gets persisted into config entry data — if it lost a one-time race against
+  Forecast.Solar's own companion-sensor registration, `None` was what got
+  persisted, forever, regardless of the sensor existing by any later restart.
+  `coordinator.py`'s `async_startup` now retries once
+  (`_resolve_stale_forecast_solar_history_entities`, before that same run's own
+  backfill) and self-heals the persisted `None` on success — never a new,
+  ongoing poll, just closing the one gap a one-time-only resolution left open.
   rather than sharing or modifying it. `forward()`/the live push path (ADR-012
   §4b) is unaffected.
 - **`yield_correction.py`** — optional per-string clipping exclusion (ADR-003a)
@@ -393,22 +402,45 @@ wired directly into `cache.py`'s `fetch_fn`.
   (restart-persisted, midnight reset), `ShadyFcEnergyIntegralSensor` (same).
 - **`ShadyRecalculateButton`** (ADR-002 §1) — manual recalibration trigger, same
   code path as the midnight schedule.
-- **`ShadyConfigFlow` / `ShadyOptionsFlow`** (ADR-010) — see §7.
+- **`ShadyConfigFlow`** (ADR-010) — see §7. `ShadyOptionsFlow` is removed
+  (2026-09-17 Amendment, `TASK-0035`, **not yet implemented — `Status: todo`**):
+  it silently discarded every reconfiguration (wrote to `entry.options`, which
+  nothing ever read — not a race, a standing bug since initial release).
+  Reconfiguration is now `ShadyConfigFlow.async_step_reconfigure`, sharing the
+  same step methods as initial setup rather than a second, parallel
+  implementation.
 
 ## 7 — Config flow shape (`ADR-010` is the single source of truth)
 
-Three-step flow: **`settings`** (global, first) → **`add_string`** (repeated:
-name, optional baseline override, actual-yield entity, "configure advanced?") →
-optional **`add_string_advanced`** (per string: inverter limit,
-temperature-source override, temp coefficient, rated DC capacity) →
-**`add_another`** loop. Full field list lives in ADR-010; key global defaults:
-`window_days=28`, `regression_method=wls2`, `smoothing_radius=1`,
-`neighbor_fitting_cutoff=0.25`, `recency_decay_max=0.5`,
-`clipping_threshold=0.98`, `max_uplift_c=25`,
+**Not yet implemented (`TASK-0035`, `Status: todo`) — described here as the
+target design, current shipped flow is the three-step
+`settings`/`add_string`(+`add_string_advanced`)/`add_another` loop this
+replaces.** Five steps, linear for first setup: **`baseline`** (global default
+baseline candidate + manual fallback, `temperature_aware`) → **`strings`** (one
+multi-select entity selector, `sensor` domain, `power`/`energy` device_class —
+every entity picked *is* a string, identified by its own `entity_id`; no
+separate "add a string" step) →
+**`string_settings_hub`**/**`string_settings_edit`** loop (one page per string,
+entered only for strings actually picked above: optional name, optional baseline
+override, temperature-source override, converter limit, temp coefficient, rated
+DC capacity — no "configure advanced?" gate, since each string already has its
+own page) → **`regression_tuning`** (`window_days=28`, `regression_method=wls2`,
+`smoothing_radius=1`, `neighbor_fitting_cutoff=0.25`, `recency_decay_max=0.5`,
+`clipping_threshold=0.98`) → **`advanced_optional`** (default temperature
+source, `max_uplift_c=25`, weather-forecast temperature entity,
 `temperature_regression_method=wls2`, `intraday_correction_mode=off`,
-`intraday_correction_cutoff=0.10`, `window_slots=24`, `ramp_slots=12`. **No
-latitude/longitude/elevation field anywhere.** Options flow mirrors this for
-post-setup editing.
+`intraday_correction_cutoff=0.10`, `window_slots=24`, `ramp_slots=12`) →
+`async_create_entry`. **No latitude/longitude/elevation field anywhere.**
+Removing an entity from `strings` discards that string's settings from the
+in-progress result — nothing persists unless the flow reaches its final step
+regardless. `async_step_reconfigure` instead opens on an `async_show_menu`
+("Baseline"/"Strings"/"Regression Tuning"/"Advanced & Optional Settings"/"Save &
+Finish"), pre-filled from the existing entry, each section returning to this
+same menu rather than proceeding linearly, finishing via
+`async_update_reload_and_abort` (updates `entry.data` directly and reloads) —
+see ADR-010's amendment for the full rationale and why `ShadyOptionsFlow` had to
+go. No migration from the old `CONF_STRINGS` shape — deliberate, exactly one
+installation exists as of this amendment.
 
 ## 8 — Intraday deviation correction (ADR-006)
 

@@ -27,7 +27,7 @@ from tests.support import _load, _run
 class FakeEntityRegistryEntry:
     """A real (non-Mock) stand-in for one `homeassistant.helpers.
     entity_registry.RegistryEntry` — just the four attributes
-    `_resolve_forecast_solar_history_entity` (ADR-009 §1c Amendment,
+    `resolve_forecast_solar_history_entity` (ADR-009 §1c Amendment,
     `TASK-0034`) reads. `entity_id` deliberately carries no
     config-entry-scoping prefix or suffix by default (`sensor.
     power_production_now`, confirmed against a live deployment), matching
@@ -52,7 +52,7 @@ class FakeEntityRegistry:
     """A real (non-Mock) stand-in for `homeassistant.helpers.
     entity_registry.EntityRegistry` — holds entries queried through the
     module-level `async_entries_for_config_entry(registry, config_entry_id)`
-    below, the one function `_resolve_forecast_solar_history_entity`
+    below, the one function `resolve_forecast_solar_history_entity`
     (ADR-009 §1c Amendment) calls."""
 
     def __init__(self, entries: list[FakeEntityRegistryEntry] | None = None) -> None:
@@ -575,18 +575,18 @@ class TestForecastSolarHistoryEntityResolution:
             [FakeEntityRegistryEntry("sensor.power_production_now", "fs_entry_1")]
         )
         hass = FakeHomeAssistant([], entity_registry=registry)
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved == "sensor.power_production_now"
 
     def test_no_matching_entry_resolves_to_none(self) -> None:
         registry = FakeEntityRegistry([])
         hass = FakeHomeAssistant([], entity_registry=registry)
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved is None
 
     def test_registry_unavailable_resolves_to_none(self) -> None:
         hass = FakeHomeAssistant([])  # no `.entity_registry` attribute at all
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved is None
 
     def test_wrong_domain_entry_is_not_matched(self) -> None:
@@ -598,7 +598,7 @@ class TestForecastSolarHistoryEntityResolution:
             ]
         )
         hass = FakeHomeAssistant([], entity_registry=registry)
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved is None
 
     def test_wrong_translation_key_is_not_matched(self) -> None:
@@ -616,7 +616,7 @@ class TestForecastSolarHistoryEntityResolution:
             ]
         )
         hass = FakeHomeAssistant([], entity_registry=registry)
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved is None
 
     def test_wrong_config_entry_id_is_not_matched(self) -> None:
@@ -624,7 +624,7 @@ class TestForecastSolarHistoryEntityResolution:
             [FakeEntityRegistryEntry("sensor.power_production_now", "fs_entry_OTHER")]
         )
         hass = FakeHomeAssistant([], entity_registry=registry)
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved is None
 
     def test_renamed_entity_id_still_resolves(self) -> None:
@@ -635,7 +635,7 @@ class TestForecastSolarHistoryEntityResolution:
             [FakeEntityRegistryEntry("sensor.my_renamed_pv_sensor", "fs_entry_1")]
         )
         hass = FakeHomeAssistant([], entity_registry=registry)
-        resolved = _discovery_mod._resolve_forecast_solar_history_entity(hass, "fs_entry_1")
+        resolved = _discovery_mod.resolve_forecast_solar_history_entity(hass, "fs_entry_1")
         assert resolved == "sensor.my_renamed_pv_sensor"
 
     def test_build_forecast_solar_candidate_carries_history_entity_id(self) -> None:
@@ -772,3 +772,31 @@ class TestBaselineProviderHistoryEntityId:
         start = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
         end = datetime(2026, 1, 1, 10, 5, tzinfo=UTC)
         assert provider.fetch(start, end) == [500.0]
+
+    def test_set_history_entity_id_updates_a_none_default(self) -> None:
+        """`set_history_entity_id` (`TASK-0034-patch-1`) — the one
+        post-construction mutation this field ever undergoes, used by
+        `coordinator.py`'s startup self-heal retry when a discovery-time
+        resolution that returned `None` succeeds on a later retry."""
+        hass = FakeHomeAssistant([])
+        provider = BaselineProvider(hass, "fs_entry_1", "wh_period", "forecast_solar")
+        assert provider.history_entity_id() is None
+
+        provider.set_history_entity_id("sensor.power_production_now")
+
+        assert provider.history_entity_id() == "sensor.power_production_now"
+
+    def test_set_history_entity_id_can_replace_an_already_resolved_value(self) -> None:
+        """Not restricted to the `None` → resolved direction only — the
+        setter itself is a plain assignment; it is
+        `coordinator.py`'s own `provider.history_entity_id() is not
+        None: continue` guard, not this method, that keeps an
+        already-resolved provider from ever being retried in practice."""
+        hass = FakeHomeAssistant([])
+        provider = BaselineProvider(
+            hass, "fs_entry_1", "wh_period", "forecast_solar", "sensor.power_production_now"
+        )
+
+        provider.set_history_entity_id("sensor.power_production_now_renamed")
+
+        assert provider.history_entity_id() == "sensor.power_production_now_renamed"

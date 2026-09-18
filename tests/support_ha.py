@@ -171,6 +171,11 @@ class FakeConfigEntries:
         self.forwarded: list[tuple[Any, list[str]]] = []
         self.unloaded: list[tuple[Any, list[str]]] = []
         self.reload_calls: list[str] = []
+        # Every `async_update_entry` call, in order — `(entry, new_data)`
+        # — for `TASK-0034-patch-1`'s self-heal assertions ("exactly one
+        # call, covering every resolved provider" vs "no call when
+        # nothing needed one").
+        self.update_calls: list[tuple[Any, dict[str, Any] | None]] = []
         # entry_id -> registered config entry object, for
         # `coordinator.py`'s `_baseline_missing`'s `forecast_solar`-shaped
         # branch (`async_get_entry`, ADR-009 Amendment) — a plain
@@ -197,6 +202,21 @@ class FakeConfigEntries:
 
     def async_get_entry(self, entry_id: str) -> Any | None:
         return self._entries.get(entry_id)
+
+    def async_update_entry(self, entry: Any, *, data: dict[str, Any] | None = None) -> bool:
+        """Real (non-`Mock`) stand-in for `ConfigEntries.async_update_entry`
+        — `coordinator.py`'s `_resolve_stale_forecast_solar_history_
+        entities` (`TASK-0034-patch-1`) self-healing a frozen
+        `history_entity_id` back into this config entry's own stored
+        `data`. Mutates `entry.data` in place (matching real HA's own
+        "new `data` replaces old" semantics) and records the call for
+        assertions on how many times/with what this was invoked — no
+        update-listener dispatch, since nothing in this project ever
+        registers one (`__init__.py` deliberately doesn't)."""
+        self.update_calls.append((entry, data))
+        if data is not None:
+            entry.data = data
+        return True
 
 
 class FakeServices:

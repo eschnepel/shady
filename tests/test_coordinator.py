@@ -1621,7 +1621,264 @@ class TestFetchProviderHistoryStatistics:
         assert result == [321.0]
 
 
-class TestNumericStateMissingEntity:
+class TestResolveStaleForecastSolarHistoryEntities:
+    """`_resolve_stale_forecast_solar_history_entities` (ADR-009 §1c
+    further Amendment, `TASK-0034-patch-1`) — the startup self-heal for
+    a `forecast_solar`-shaped baseline whose `history_entity_id`
+    resolved to `None` at config/options-flow submission time (a
+    startup-ordering race caught then, at the one point that result
+    gets permanently persisted) and was never retried since. Every test
+    here monkeypatches the coordinator module's imported
+    `resolve_forecast_solar_history_entity` directly, matching this
+    file's existing `statistics_during_period` monkeypatch convention —
+    the entity-registry matching semantics that function itself
+    implements are already fully covered by
+    `test_providers_discovery.py`'s own resolution tests; these tests
+    are about the coordinator-level orchestration around it."""
+
+    _RESOLVED_ENTITY = "sensor.power_production_now"
+
+    @staticmethod
+    def _construct(entry: Any, hass: FakeHomeAssistant) -> Any:
+        async def _do() -> Any:
+            # Construction itself schedules an immediate Forecast.Solar
+            # poll task for a `forecast_solar`-shaped provider — needs a
+            # running loop to attach to (mirrors
+            # `TestBaselineMissingForecastSolarShape` above).
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        return _run(_do())
+
+    def test_resolves_and_persists_global_baseline(self) -> None:
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = self._construct(entry, hass)
+        provider = coordinator._entity_providers["fs_entry_1"]
+        assert provider.history_entity_id() is None  # sanity: starts unresolved
+
+        original = _coordinator_mod.resolve_forecast_solar_history_entity
+        _coordinator_mod.resolve_forecast_solar_history_entity = (  # type: ignore[attr-defined]
+            lambda hass, config_entry_id: self._RESOLVED_ENTITY
+        )
+        try:
+            coordinator._resolve_stale_forecast_solar_history_entities()
+        finally:
+            _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
+
+        assert provider.history_entity_id() == self._RESOLVED_ENTITY
+        assert coordinator.entry.data["baseline_history_entity_id"] == self._RESOLVED_ENTITY
+        assert len(hass.config_entries.update_calls) == 1
+
+    def test_resolves_and_persists_per_string_override(self) -> None:
+        entry = _make_entry(
+            strings=[
+                {
+                    "name": "Dach Süd",
+                    "baseline_entity_id": "fs_entry_2",
+                    "baseline_attribute": "wh_period",
+                    "baseline_shape": "forecast_solar",
+                    "temperature_aware": False,
+                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                    "converter_limit_w": None,
+                    "temperature_source_entity_id": None,
+                    "temperature_coefficient_pct_per_c": -0.4,
+                    "rated_dc_capacity_wp": None,
+                }
+            ],
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = self._construct(entry, hass)
+        provider = coordinator._entity_providers["fs_entry_2"]
+        assert provider.history_entity_id() is None
+
+        original = _coordinator_mod.resolve_forecast_solar_history_entity
+        _coordinator_mod.resolve_forecast_solar_history_entity = (  # type: ignore[attr-defined]
+            lambda hass, config_entry_id: self._RESOLVED_ENTITY
+        )
+        try:
+            coordinator._resolve_stale_forecast_solar_history_entities()
+        finally:
+            _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
+
+        assert provider.history_entity_id() == self._RESOLVED_ENTITY
+        persisted_string = coordinator.entry.data[CONF_STRINGS][0]
+        assert persisted_string["baseline_history_entity_id"] == self._RESOLVED_ENTITY
+        # The global baseline field must stay untouched — this fix is
+        # scoped to whichever field(s) actually referenced this config
+        # entry, never a blanket write.
+        assert coordinator.entry.data.get("baseline_history_entity_id") is None
+
+    def test_still_unresolved_leaves_provider_and_config_untouched(self) -> None:
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = self._construct(entry, hass)
+        provider = coordinator._entity_providers["fs_entry_1"]
+
+        original = _coordinator_mod.resolve_forecast_solar_history_entity
+        _coordinator_mod.resolve_forecast_solar_history_entity = (  # type: ignore[attr-defined]
+            lambda hass, config_entry_id: None
+        )
+        try:
+            coordinator._resolve_stale_forecast_solar_history_entities()  # must not raise
+        finally:
+            _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
+
+        assert provider.history_entity_id() is None
+        assert hass.config_entries.update_calls == []  # no write for a still-failed retry
+
+    def test_already_resolved_provider_is_never_retried(self) -> None:
+        """A provider whose `history_entity_id` was already resolved
+        (at flow-submission time, or by an earlier retry) is never
+        re-scanned — the entity registry is only worth querying when
+        there is actually a gap to fill."""
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+            baseline_history_entity_id=self._RESOLVED_ENTITY,
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = self._construct(entry, hass)
+        provider = coordinator._entity_providers["fs_entry_1"]
+        assert provider.history_entity_id() == self._RESOLVED_ENTITY
+
+        calls: list[str] = []
+        original = _coordinator_mod.resolve_forecast_solar_history_entity
+
+        def _spy(hass: Any, config_entry_id: str) -> str:
+            calls.append(config_entry_id)
+            return "sensor.should_never_be_used"
+
+        _coordinator_mod.resolve_forecast_solar_history_entity = _spy  # type: ignore[attr-defined]
+        try:
+            coordinator._resolve_stale_forecast_solar_history_entities()
+        finally:
+            _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
+
+        assert calls == []  # never even queried
+        assert provider.history_entity_id() == self._RESOLVED_ENTITY  # unchanged
+        assert hass.config_entries.update_calls == []
+
+    def test_non_forecast_solar_provider_is_unaffected(self) -> None:
+        """The default fixture's global baseline (`sensor_dict`) has no
+        `history_entity_id()` concept at all — this must be a silent
+        no-op for it, not an `AttributeError`."""
+        coordinator, hass = _make_coordinator()
+
+        coordinator._resolve_stale_forecast_solar_history_entities()  # must not raise
+
+        assert hass.config_entries.update_calls == []
+
+    def test_one_update_entry_call_covers_every_resolved_provider(self) -> None:
+        """Two distinct `forecast_solar` config entries both unresolved
+        — a global baseline and a per-string override — resolve in the
+        same pass but persist via exactly one `async_update_entry` call,
+        not one per provider."""
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+            strings=[
+                {
+                    "name": "Dach Süd",
+                    "baseline_entity_id": "fs_entry_2",
+                    "baseline_attribute": "wh_period",
+                    "baseline_shape": "forecast_solar",
+                    "temperature_aware": False,
+                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                    "converter_limit_w": None,
+                    "temperature_source_entity_id": None,
+                    "temperature_coefficient_pct_per_c": -0.4,
+                    "rated_dc_capacity_wp": None,
+                }
+            ],
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = self._construct(entry, hass)
+
+        resolved_by_entry = {
+            "fs_entry_1": "sensor.power_production_now_1",
+            "fs_entry_2": self._RESOLVED_ENTITY,
+        }
+        original = _coordinator_mod.resolve_forecast_solar_history_entity
+        _coordinator_mod.resolve_forecast_solar_history_entity = (  # type: ignore[attr-defined]
+            lambda hass, config_entry_id: resolved_by_entry[config_entry_id]
+        )
+        try:
+            coordinator._resolve_stale_forecast_solar_history_entities()
+        finally:
+            _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
+
+        assert (
+            coordinator._entity_providers["fs_entry_1"].history_entity_id()
+            == "sensor.power_production_now_1"
+        )
+        assert (
+            coordinator._entity_providers["fs_entry_2"].history_entity_id() == self._RESOLVED_ENTITY
+        )
+        assert len(hass.config_entries.update_calls) == 1
+
+    def test_async_startup_self_heals_in_time_for_this_runs_own_backfill(self) -> None:
+        """End-to-end: the exact race report this patch fixes. A
+        `forecast_solar` baseline's `history_entity_id` was persisted as
+        `None` from a past discovery-time race; by the time
+        `async_startup` actually runs, Forecast.Solar's companion sensor
+        is available with real recorder history — `_resolve_stale_
+        forecast_solar_history_entities` (called before `_backfill_
+        elapsed_today_slots`, `async_startup`'s own ordering) must
+        already unblock this *same* run's backfill, not just the next
+        restart's."""
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.config_entries.register_entry("fs_entry_1")
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        hass.statistics[self._RESOLVED_ENTITY] = {
+            today_start: 111.0,
+            today_start + timedelta(minutes=5): 222.0,
+        }
+        coordinator = self._construct(entry, hass)
+        coordinator._now = lambda: _NOW
+        borrowed_model = _fit_a_real_model()
+        coordinator.cache.set_model("shading", 0, borrowed_model)
+        coordinator._last_fit_at = _NOW  # skip async_refit, isolate the self-heal + backfill
+
+        original = _coordinator_mod.resolve_forecast_solar_history_entity
+        _coordinator_mod.resolve_forecast_solar_history_entity = (  # type: ignore[attr-defined]
+            lambda hass, config_entry_id: self._RESOLVED_ENTITY
+        )
+        try:
+            _run(coordinator.async_startup(_NOW))
+        finally:
+            _coordinator_mod.resolve_forecast_solar_history_entity = original  # type: ignore[attr-defined]
+
+        assert (
+            coordinator._entity_providers["fs_entry_1"].history_entity_id() == self._RESOLVED_ENTITY
+        )
+        pushed = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        now_index = Cache.index_for(_NOW)
+        elapsed = {index: value for index, value in pushed.items() if index < now_index}
+        assert elapsed  # this same run's backfill actually found historical data
+
     """`_numeric_state` (ADR-005 §1) returns `None`, not a `KeyError`/
     `AttributeError`, for an entity that does not currently exist."""
 

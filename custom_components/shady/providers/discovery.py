@@ -54,7 +54,7 @@ try:
     # pulls this module in as a dependency without needing that logic
     # itself (e.g. `tests/test_coordinator.py`, `tests/test_config_
     # flow.py`) — both cases degrade to `_entity_registry = None` below,
-    # which `_resolve_forecast_solar_history_entity` already treats as
+    # which `resolve_forecast_solar_history_entity` already treats as
     # "no history entity resolvable this cycle" (ADR-000 §8), not an
     # error. This one guarded import is the sole exception to this
     # module's otherwise-zero runtime `homeassistant` dependency (see the
@@ -163,7 +163,7 @@ class BaselineCandidate:
     # `TASK-0034`) — a linked, recorder-backed history entity_id, only
     # ever set for a `forecast_solar` candidate whose companion "power
     # production now" sensor was resolved via the entity registry at
-    # discovery time (`_resolve_forecast_solar_history_entity`). `None`
+    # discovery time (`resolve_forecast_solar_history_entity`). `None`
     # for every other shape (deliberately never auto-linked — see that
     # amendment's own "why only forecast_solar" section) and for a
     # `forecast_solar` candidate whose companion sensor wasn't found
@@ -246,7 +246,7 @@ def _build_forecast_solar_candidate(
 _FORECAST_SOLAR_HISTORY_TRANSLATION_KEY = "power_production_now"
 
 
-def _resolve_forecast_solar_history_entity(hass: HomeAssistant, config_entry_id: str) -> str | None:
+def resolve_forecast_solar_history_entity(hass: HomeAssistant, config_entry_id: str) -> str | None:
     """Resolve a Forecast.Solar config entry's own companion
     `power_production_now` sensor's *current* `entity_id`, via the entity
     registry's own `(config_entry_id, domain, translation_key)` index —
@@ -268,6 +268,21 @@ def _resolve_forecast_solar_history_entity(hass: HomeAssistant, config_entry_id:
     same family ADR-002 §1a already accepts for other entities), or the
     entity was removed — all "no history available (yet)" outcomes, not
     errors (ADR-000 §8).
+
+    **Public, not module-private** (`ADR-009 §1c` further Amendment,
+    `TASK-0034-patch-1`): originally a `_`-prefixed helper used only by
+    `_scan_forecast_solar_domain` below, one call site. `coordinator.py`'s
+    `async_startup` now has a second, legitimate need for exactly this
+    same lookup — retrying a `forecast_solar`-shaped provider whose
+    `history_entity_id` was resolved as `None` at config/options-flow
+    submission time (a startup-ordering race caught *then*, at the one
+    point that result gets permanently persisted, never retried since).
+    Reusing this function directly, rather than duplicating its lookup
+    logic in `coordinator.py` or routing through the much heavier
+    `discover_baseline_candidates` (which would rescan every baseline
+    shape across every domain just to re-resolve one already-known
+    config entry), is the same "no second/bespoke path" principle
+    `tasks/adr-summary.md`'s exclusions already apply to recorder access.
     """
     if _entity_registry is None:
         return None
@@ -418,7 +433,7 @@ async def _scan_forecast_solar_domain(hass: HomeAssistant) -> list[BaselineCandi
         raw = await _sample_forecast_solar(hass, entry.entry_id)
         if not normalize_candidate_series("forecast_solar", raw):
             continue
-        history_entity_id = _resolve_forecast_solar_history_entity(hass, entry.entry_id)
+        history_entity_id = resolve_forecast_solar_history_entity(hass, entry.entry_id)
         found.append(_build_forecast_solar_candidate(entry.entry_id, history_entity_id))
     return found
 
@@ -545,6 +560,21 @@ class BaselineProvider(Provider):
         `_PUSH_SOURCED_SHAPES` currently has.
         """
         return self._history_entity_id
+
+    def set_history_entity_id(self, history_entity_id: str) -> None:
+        """Update this instance's linked history entity_id after
+        construction (ADR-009 §1c further Amendment, `TASK-0034-patch-1`)
+        — the one mutation this otherwise-immutable-after-construction
+        field ever undergoes, and only ever in one direction: `None` →
+        resolved. Called exclusively by `coordinator.py`'s `async_startup`
+        self-heal retry, immediately after a same-session
+        `resolve_forecast_solar_history_entity` re-resolution succeeds
+        where the original discovery-time attempt (persisted into config
+        entry data at the time) did not. Never called with `None` — a
+        still-failed retry leaves the instance exactly as constructed,
+        to be retried again next restart.
+        """
+        self._history_entity_id = history_entity_id
 
     @property
     def shape(self) -> BaselineShape:
