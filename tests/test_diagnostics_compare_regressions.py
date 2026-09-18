@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from tests import test_coordinator as tc
+from tests.support_ha import FakeHomeAssistant
 
 # `test_coordinator.py`'s own harness already file-path-loaded
 # `aggregation.py` into `sys.modules["shady.aggregation"]` — reuse that
@@ -54,7 +55,7 @@ def _make_two_string_setup(**entry_overrides: Any) -> tuple[Any, Any]:
     entry = tc._make_two_string_entry(
         window_days=_WINDOW_DAYS, smoothing_radius=0, **entry_overrides
     )
-    hass = tc.FakeHomeAssistant()
+    hass = FakeHomeAssistant()
     hass.states.set(
         tc._BASELINE_ENTITY,
         {

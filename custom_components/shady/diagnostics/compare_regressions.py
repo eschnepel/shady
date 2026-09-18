@@ -59,7 +59,14 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from ..coordinator import DiagnosedSlot, RegressionSettings, StringComputationConfig
+    # Same reasoning as base.py's own ShadyCoordinatorLike import: this module
+    # never constructs a DiagnosedSlot/RegressionSettings/
+    # StringComputationConfig, only reads attributes off instances
+    # coordinator.py already built -- attribute access needs no import of
+    # the class that built the instance, so these three names are only
+    # ever used as annotations here, already deferred by `from __future__
+    # import annotations` above.
+    from ..coordinator_like import DiagnosedSlot, RegressionSettings, StringComputationConfig
 
 
 def _to_float_array(values: list[float | None | str]) -> NDArray[np.float64]:

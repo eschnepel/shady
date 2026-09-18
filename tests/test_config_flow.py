@@ -17,25 +17,14 @@ additional thing an HA-facing module needs: real classes to subclass.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
+from tests.support import _load
+from tests.support_ha import _callback
 
 
 class FlowResult(dict):  # type: ignore[type-arg]
@@ -78,14 +67,6 @@ class ConfigFlow(_FlowHandlerBase):
 class OptionsFlow(_FlowHandlerBase):
     """Real (non-Mock) stand-in for `homeassistant.config_entries.
     OptionsFlow`."""
-
-
-def _callback(func: Any) -> Any:
-    """Real (non-Mock) stand-in for `homeassistant.core.callback` — a
-    plain identity decorator is a faithful stand-in for our purposes
-    (ADR-000 §2 already documents this decorator as pure mypy-noise
-    surface, nothing behavioral we need to reproduce here)."""
-    return func
 
 
 class FakeConfigEntry:
@@ -518,6 +499,92 @@ class TestManualBaselineShape:
         series = _normalize_mod.normalize_candidate_series(stored_shape, raw_payload)
         assert series != []
         assert all(isinstance(value, float) for _timestamp, value in series)
+
+
+class TestBaselineHistoryEntityIdFlowsThrough:
+    """A discovered candidate carrying a `history_entity_id` (ADR-009
+    §1c Amendment / ADR-012 §2a Amendment, `TASK-0034` — only ever
+    non-`None` for a `forecast_solar` candidate, never a real discovery
+    outcome in this file's own `FakeHomeAssistant`, which models no
+    `.config_entries` scan — see `TestForecastSolarHistoryEntityResolution`
+    in `tests/test_providers_discovery.py` for that) flows into both the
+    `settings` step's and the `add_string` step's stored data under the
+    new config keys, exactly alongside `entity_id`/`attribute`/`shape`;
+    a candidate without one (every other fixture/test in this file)
+    stores `None`, unchanged from before this amendment.
+    """
+
+    _HISTORY_ENTITY = "sensor.power_production_now"
+
+    def _forecast_solar_candidate(self) -> Any:
+        return _discovery_mod.BaselineCandidate(
+            entity_id="fs_entry_1",
+            attribute="wh_period",
+            shape="forecast_solar",
+            score=_discovery_mod._FORECAST_SOLAR_SCORE,
+            label="Forecast.Solar production estimate",
+            history_entity_id=self._HISTORY_ENTITY,
+        )
+
+    def test_settings_step_stores_history_entity_id_from_candidate(self) -> None:
+        hass = FakeHomeAssistant([])
+        flow = ShadyConfigFlow()
+        flow.hass = hass
+        # Pre-populating `_candidates` (non-empty) skips the real
+        # discovery call entirely (`async_step_settings`'s own `if not
+        # self._candidates: ...` guard) — this `hass` models no
+        # `.config_entries` at all, so real `forecast_solar` discovery
+        # is not exercisable here regardless.
+        flow._candidates = [self._forecast_solar_candidate()]
+
+        settings_form = flow_call(flow.async_step_settings, None)
+        defaults = _defaults_from_schema(settings_form["data_schema"])
+        defaults["baseline_candidate"] = "0"  # the one synthetic candidate
+        add_string_form = flow_call(flow.async_step_settings, defaults)
+        add_string_defaults = _defaults_from_schema(add_string_form["data_schema"])
+        add_string_defaults["name"] = "Dach Süd"
+        add_string_defaults["actual_yield_entity_id"] = "sensor.string_a_yield"
+        add_string_defaults["configure_advanced"] = False
+        result = flow_call(flow.async_step_add_string, add_string_defaults)
+        add_another_defaults = _defaults_from_schema(result["data_schema"])
+        add_another_defaults["add_another"] = False
+        final = flow_call(flow.async_step_add_another, add_another_defaults)
+
+        assert final["data"]["baseline_entity_id"] == "fs_entry_1"
+        assert final["data"]["baseline_history_entity_id"] == self._HISTORY_ENTITY
+
+    def test_candidate_without_history_entity_stores_none(self) -> None:
+        hass = FakeHomeAssistant([_FORECAST_SOLAR_LIKE])
+        data = _finish_minimal_flow(hass)
+        assert data["baseline_entity_id"] == "sensor.forecast_solar_estimate"
+        assert data["baseline_history_entity_id"] is None
+
+    def test_manual_entry_stores_none(self) -> None:
+        hass = FakeHomeAssistant([])
+        data = _finish_minimal_flow(hass)
+        assert data["baseline_entity_id"] is None
+        assert data["baseline_history_entity_id"] is None
+
+    def test_add_string_baseline_override_stores_history_entity_id(self) -> None:
+        hass = FakeHomeAssistant([])
+        flow = ShadyConfigFlow()
+        flow.hass = hass
+        flow._candidates = [self._forecast_solar_candidate()]
+        _accept_settings_defaults(flow)
+        add_string_form = flow_call(flow.async_step_add_string, None)
+        defaults = _defaults_from_schema(add_string_form["data_schema"])
+        defaults["name"] = "Dach Süd"
+        defaults["actual_yield_entity_id"] = "sensor.string_a_yield"
+        defaults["baseline_override"] = "0"  # the one synthetic candidate
+        defaults["configure_advanced"] = False
+        result = flow_call(flow.async_step_add_string, defaults)
+        add_another_defaults = _defaults_from_schema(result["data_schema"])
+        add_another_defaults["add_another"] = False
+        final = flow_call(flow.async_step_add_another, add_another_defaults)
+
+        strings = final["data"][CONF_STRINGS]
+        assert strings[0]["baseline_entity_id"] == "fs_entry_1"
+        assert strings[0]["baseline_history_entity_id"] == self._HISTORY_ENTITY
 
 
 class TestRecencyDecayMax:

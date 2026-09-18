@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components.button import ButtonEntity
 
 from .const import DOMAIN
+from .device import device_info
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -56,6 +57,7 @@ class ShadyRecalculateButton(ButtonEntity):  # type: ignore[misc]
     def __init__(self, coordinator: ShadyCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_recalculate_{entry.entry_id}"
+        self._attr_device_info = device_info(entry)
 
     async def async_press(self) -> None:
         try:

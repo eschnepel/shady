@@ -32,11 +32,18 @@ VALUE_KEY_ALIASES: tuple[str, ...] = (
 )
 
 # The shape kinds ADR-009 §1 recognizes: two `sensor.*` shapes, two
-# `weather.*` shapes (each a distinct, differently-labeled proxy baseline).
-BaselineShape = Literal["sensor_dict", "sensor_list", "weather_sunshine", "weather_cloud"]
+# `weather.*` shapes (each a distinct, differently-labeled proxy
+# baseline), and `forecast_solar` (ADR-009 Amendment, "Forecast.Solar
+# polling sourcing" — a direct Wh series, like `sensor_dict`, but
+# sourced from that integration's own `forecast_solar.get_forecast`
+# service rather than a state attribute).
+BaselineShape = Literal[
+    "sensor_dict", "sensor_list", "weather_sunshine", "weather_cloud", "forecast_solar"
+]
 
 CLOUD_COVERAGE_KEYS: tuple[str, ...] = ("cloud_coverage", "cloud_coverage_total")
 SUNSHINE_DURATION_KEY = "sunshine_duration"
+FORECAST_SOLAR_WH_PERIOD_KEY = "wh_period"
 
 
 def parse_timestamp(raw: Any) -> datetime | None:
@@ -167,4 +174,12 @@ def normalize_candidate_series(shape: BaselineShape, raw: Any) -> list[tuple[dat
             if series is not None:
                 return [(timestamp, invert_cloud_coverage(value)) for timestamp, value in series]
         return []
+    if shape == "forecast_solar":
+        # The `forecast_solar.get_forecast` service's response is a flat
+        # `{"watts": {...}, "wh_period": {...}}` dict (ADR-009 Amendment,
+        # "Forecast.Solar polling sourcing") — only the energy-per-slot
+        # `wh_period` map is used as the baseline series, the same
+        # `{timestamp: number}` shape `sensor_dict` already resolves.
+        wh_period = raw.get(FORECAST_SOLAR_WH_PERIOD_KEY) if isinstance(raw, Mapping) else None
+        return resolve_dict_series(wh_period) or []
     return []

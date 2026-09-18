@@ -49,6 +49,13 @@ TEMPERATURE_SOURCE_NONE = "none"
 CONF_BASELINE_ENTITY_ID = "baseline_entity_id"
 CONF_BASELINE_ATTRIBUTE = "baseline_attribute"
 CONF_BASELINE_SHAPE = "baseline_shape"
+# ADR-009 §1c Amendment / ADR-012 §2a Amendment (2026-09-15, `TASK-0034`):
+# a `forecast_solar`-shaped baseline candidate's linked, recorder-backed
+# history entity_id — never user-entered, always derived alongside
+# `entity_id`/`attribute`/`shape` from the confirmed `BaselineCandidate`.
+# `None` for every other shape. Not a distinct config-flow form field (see
+# `config_flow.py`'s `_normalize_settings`/`_build_current_string`).
+CONF_BASELINE_HISTORY_ENTITY_ID = "baseline_history_entity_id"
 CONF_TEMPERATURE_AWARE = "temperature_aware"
 CONF_WINDOW_DAYS = "window_days"
 CONF_REGRESSION_METHOD = "regression_method"
@@ -86,6 +93,11 @@ CONF_STRING_NAME = "name"
 CONF_STRING_BASELINE_ENTITY_ID = "baseline_entity_id"
 CONF_STRING_BASELINE_ATTRIBUTE = "baseline_attribute"
 CONF_STRING_BASELINE_SHAPE = "baseline_shape"
+# Per-string override counterpart of `CONF_BASELINE_HISTORY_ENTITY_ID` above
+# (ADR-009 §1c Amendment / ADR-012 §2a Amendment, `TASK-0034`) — same key
+# string, different (per-string) dict namespace, matching the existing
+# `CONF_STRING_BASELINE_*` trio's own convention.
+CONF_STRING_BASELINE_HISTORY_ENTITY_ID = "baseline_history_entity_id"
 CONF_STRING_TEMPERATURE_AWARE = "temperature_aware"
 CONF_STRING_ACTUAL_YIELD_ENTITY = "actual_yield_entity_id"
 CONF_STRING_CONFIGURE_ADVANCED = "configure_advanced"

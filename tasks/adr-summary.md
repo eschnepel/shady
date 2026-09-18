@@ -52,7 +52,9 @@ ______________________________________________________________________
 
 Dependencies point **upward only** (pure logic never imports HA-facing code or
 `homeassistant.*`, except `providers/discovery.py` and
-`providers/temperature.py`, which read `hass.states` only — no writes):
+`providers/temperature.py`, which read `hass.states`/`hass.config_entries`/
+`hass.services`/the entity registry only — no writes, no recorder access, which
+stays `coordinator.py`'s alone; ADR-009 §4/§1c-Amendment, ADR-012 §2a/§5):
 
 ```
 providers/ (discovery.py, normalize.py, base.py, temperature.py)
@@ -61,7 +63,7 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
       → forecast_adjust.py  -- (reverse edge back into yield_correction.py, ADR-003b §1b)
         → string_computation.py  -- also reads regression/, forecast_adjust.py, yield_correction.py directly (ADR-014)
           → aggregation.py
-            → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014); as of 2026-09-01, also holds a TYPE_CHECKING-only construction-time reference BACK to coordinator.py (ADR-004 §5) -- diagnostics/ is no longer in the zero-mocking tier
+            → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014); as of 2026-09-01, DiagnosticMode holds a construction-time coordinator reference, typed since 2026-09-13 as a local ShadyCoordinatorLike Protocol (ADR-004 §1a) rather than an import of coordinator.py itself, TYPE_CHECKING-guarded or otherwise -- diagnostics/ is no longer in the zero-mocking tier; that Protocol plus RegressionSettings/StringComputationConfig/DiagnosedSlot (moved from coordinator.py 2026-09-13 -- they exist only to cross this boundary, and don't map 1:1 onto string_computation.py/regression/base.py despite the names) live in coordinator_like.py, next to coordinator.py itself (split out of diagnostics/base.py 2026-09-14, then moved out of diagnostics/ entirely the same day -- what it describes is ShadyCoordinator's own shape, diagnostics/ just being its one consumer so far)
             → cache.py
               → coordinator.py  -- reads diagnostics/ via a per-instance mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014); passes itself into each DiagnosticMode at construction (ADR-004 §5, 2026-09-01)
                 → sensor.py / config_flow.py / select.py / button.py
@@ -77,7 +79,23 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   class + two HA-agnostic helpers (ADR-012 §1/§1a). `temperature.py`:
   temperature-source resolution (ADR-003b §1a, ADR-012). Pure-ish tier;
   zero-mocking tested except `discovery.py`/`temperature.py` (real `hass`
-  fixture).
+  fixture). **2026-09-15 (ADR-009 §1c/ADR-012 §2a Amendment, `TASK-0034`):** a
+  `forecast_solar`-shaped `BaselineCandidate`/`BaselineProvider` now also
+  carries an optional `history_entity_id` — that config entry's own companion
+  "power production now" sensor, resolved via the entity registry at discovery
+  time (never by name-guessing) — giving that shape's cold-start training pool a
+  genuine recorder-backed history source instead of relying solely on Shady's
+  own future-looking pushes aging into the past. Every other shape leaves
+  `history_entity_id` unset (`None`); see ADR-009 §1c for why (a linked entity
+  is only safe when it demonstrably shares the same physical quantity,
+  continuously sampled — true for Forecast.Solar's own companion sensor, not
+  assumed true for a third-party `sensor_dict`/ `sensor_list` candidate's own
+  state). `coordinator.py`'s `_fetch_fn` routes a resolved `history_entity_id`
+  to a new, recorder-backed `_fetch_provider_history_statistics` method instead
+  of `provider.fetch()` — mirrors `_fetch_actual_yield_statistics` (§2 below is
+  `cache.py`'s design; the recorder-read pattern itself is ADR-012 §2/§2a)
+  rather than sharing or modifying it. `forward()`/the live push path (ADR-012
+  §4b) is unaffected.
 - **`yield_correction.py`** — optional per-string clipping exclusion (ADR-003a)
   \+ temperature derating (ADR-003b), no-op if unconfigured. Called forward
   (training prep) by `string_computation.py` and in reverse (prediction
@@ -114,15 +132,23 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   cache, ADR-004 §5, 2026-09-03) and `sensor_ids()` (required, ADR-004 §5,
   2026-09-03 — every `(sensor_id, name)` pair the mode will ever produce,
   without calling `compute()`). **As of the 2026-09-01 amendment, no longer
-  pure:** every `DiagnosticMode` is constructed with the owning
-  `ShadyCoordinator` (`self._coordinator`), and reaches its public interface
-  directly (`cache`, `strings()`, …) for whatever a mode needs —
-  `coordinator.py` no longer pre-builds a mode's full input context, only
+  pure:** every `DiagnosticMode` is constructed with a coordinator reference
+  (`self._coordinator`, typed as the `ShadyCoordinatorLike` Protocol below since
+  2026-09-13 — in practice the owning `ShadyCoordinator`), and reaches its
+  public interface directly (`cache`, `strings()`, …) for whatever a mode needs
+  — `coordinator.py` no longer pre-builds a mode's full input context, only
   persists whatever `extra_fit()` returns. Still reuses `aggregation.py`'s
   accuracy function unmodified — see ADR-013 (Proposed, not scheduled) for two
   further modes sketched to confirm this base class doesn't need to change again
   for a whole-day scope (ADR-013's own 2026-09-01 note confirms the
-  cadence-getter/coordinator-access change doesn't affect that conclusion).
+  cadence-getter/coordinator-access change doesn't affect that conclusion). **As
+  of 2026-09-13:** `DiagnosticMode.__init__` takes `ShadyCoordinatorLike`, a
+  `Protocol` in `base.py` declaring exactly the 7 members a mode calls, not
+  `ShadyCoordinator` by name — resolves a CodeQL `py/unsafe-cyclic-import`
+  finding on the prior `TYPE_CHECKING`-guarded `ShadyCoordinator` import (that
+  query flags any module-level import regardless of a `TYPE_CHECKING` guard, so
+  the guard didn't suppress it); `ShadyCoordinator` satisfies the Protocol
+  structurally, unchanged itself.
 - **`cache.py`** — pure, no `hass` import, injected `fetch_fn`. Index-
   addressable time-series store (generic over `sensor_id`) + fitted-model cache
   (`get_model`/`set_model`/`invalidate_models`, explicit validity tracking,
@@ -131,28 +157,32 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 - **`coordinator.py`** — the only module that holds a `Cache` instance and calls
   its instance methods (`diagnostics/compare_regressions.py` separately imports
   the plain module-level constant `SLOTS_PER_DAY` from `cache.py`, not the
-  `Cache` class). Exposes its `Cache` instance via a read-only `cache` property
-  (getter, no setter, TASK-0023) — reassignment raises `AttributeError`, method
-  calls on the returned object are unrestricted. Six of `sensor.py`'s nine
-  entity classes reach it via `coordinator.py` wrapper methods (`pv_sum()`,
-  `fc_sum()`, etc.); three (`ShadyForecastSensor`,
-  `ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`) are a reviewed
-  exception calling `coordinator.cache.<method>(...)` directly (TASK-0011,
-  confirmed by `AUDIT-0009`/ADR-000 §3-Amendment). Registers all scheduling
-  triggers + one generic push listener per `forward()`-implementing provider;
-  reads raw data from `cache.py`/ `providers/` and hands off to
-  `string_computation.py` (ADR-014) for the actual fit/correction/predict
-  computation — no longer performs that computation itself as of ADR-014
-  (previously `_apply_training_corrections` + inlined build-pool/fit/
-  reverse-transform sequences); pushes results to sensors. Exposes
-  `missing_required_entities()` for `__init__.py`'s startup-ordering guard
-  (ADR-002 §1a). Also holds `_diagnostic_modes` (mirrors
-  `string_computation.py`'s `REGRESSION_STRATEGIES` dict in shape, but is a
-  **per-instance** attribute built in `__init__` as of the 2026-09-01 amendment
-  — each `DiagnosticMode` is now constructed with `self`, so a module-level
-  constant no longer works), dispatching to the select-chosen `DiagnosticMode`'s
-  `extra_fit()` at the recalibration trigger and caching whatever it returns
-  (ADR-004 §5).
+  `Cache` class; `coordinator_like.py`'s `ShadyCoordinatorLike` Protocol imports
+  `Cache` `TYPE_CHECKING`-only, for its `cache` property's annotation — real at
+  no point, since `test_diagnostics_base.py` file-path-loads `base.py` in
+  isolation, which transitively reaches `coordinator_like.py`'s own
+  `ShadyCoordinatorLike` reference, and a real import there would break that
+  load). Exposes its `Cache` instance via a read-only `cache` property (getter,
+  no setter, TASK-0023) — reassignment raises `AttributeError`, method calls on
+  the returned object are unrestricted. Six of `sensor.py`'s nine entity classes
+  reach it via `coordinator.py` wrapper methods (`pv_sum()`, `fc_sum()`, etc.);
+  three (`ShadyForecastSensor`, `ShadyPvEnergyIntegralSensor`,
+  `ShadyFcEnergyIntegralSensor`) are a reviewed exception calling
+  `coordinator.cache.<method>(...)` directly (TASK-0011, confirmed by
+  `AUDIT-0009`/ADR-000 §3-Amendment). Registers all scheduling triggers + one
+  generic push listener per `forward()`-implementing provider; reads raw data
+  from `cache.py`/ `providers/` and hands off to `string_computation.py`
+  (ADR-014) for the actual fit/correction/predict computation — no longer
+  performs that computation itself as of ADR-014 (previously
+  `_apply_training_corrections` + inlined build-pool/fit/ reverse-transform
+  sequences); pushes results to sensors. Exposes `missing_required_entities()`
+  for `__init__.py`'s startup-ordering guard (ADR-002 §1a). Also holds
+  `_diagnostic_modes` (mirrors `string_computation.py`'s `REGRESSION_STRATEGIES`
+  dict in shape, but is a **per-instance** attribute built in `__init__` as of
+  the 2026-09-01 amendment — each `DiagnosticMode` is now constructed with
+  `self`, so a module-level constant no longer works), dispatching to the
+  select-chosen `DiagnosticMode`'s `extra_fit()` at the recalibration trigger
+  and caching whatever it returns (ADR-004 §5).
 - **`sensor.py`/`config_flow.py`/`select.py`/`button.py`** — thin HA entity
   glue, all classes prefixed `Shady`. `select.py`'s `ShadyDiagnosticModeSelect`
   replaces the original `switch.py` as of ADR-004's 2026-08-30 amendment.
@@ -177,6 +207,11 @@ the same way `coordinator.py` itself is: the hand-written, real (non-`Mock`)
 (e.g. `0 <= corrected_output <= min(FC, inverter_limit)`) asserted explicitly,
 every scenario. `providers/discovery.py` and `providers/temperature.py` are the
 only pure-tier exceptions — tested against a real `hass` fixture.
+`test_diagnostics_base.py` is a partial exception within `diagnostics/`'s own
+non-zero-mocking tier: it still file-path-loads `base.py` in isolation (a
+minimal hand-written stand-in duck-typed against `ShadyCoordinatorLike`, not the
+full `hass`-stub convention), since it exercises only `DiagnosticMode`'s shared
+base-class shape, never a concrete mode's actual coordinator calls.
 
 ## 3 — Core domain model (ADR-001, ADR-002, ADR-011)
 
@@ -418,7 +453,12 @@ canonical: correction → **one** final output clamp
 - **No** naive per-slot `numpy` calls in `regression/` — explicitly rejected by
   benchmark (ADR-008 §1); batched only.
 - **No** second/bespoke recorder-read path outside `cache.py`'s injected
-  `fetch_fn` — `coordinator.py` never calls `statistics_during_period` directly.
+  `fetch_fn`'s own dispatch (`coordinator.py`'s `_fetch_fn`) — every
+  `statistics_during_period` call (`_fetch_actual_yield_statistics`, and, as of
+  ADR-012 §2a/`TASK-0034`, `_fetch_provider_history_statistics` for a baseline's
+  linked `history_entity_id`) is reachable only from that one dispatch method,
+  never called directly from `sensor.py`/`button.py`/a `Provider`, or anywhere
+  else outside it.
 
 ## 10 — Non-functional requirements
 

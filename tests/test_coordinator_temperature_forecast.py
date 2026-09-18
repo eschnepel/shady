@@ -47,6 +47,8 @@ from typing import Any
 import numpy as np
 
 from tests import test_coordinator as tc
+from tests.support import _run
+from tests.support_ha import FakeHomeAssistant
 
 Cache = tc.Cache
 _NOW = tc._NOW
@@ -54,8 +56,6 @@ _YESTERDAY = tc._YESTERDAY
 _BASELINE_ENTITY = tc._BASELINE_ENTITY
 _ACTUAL_YIELD_ENTITY = tc._ACTUAL_YIELD_ENTITY
 _make_entry = tc._make_entry
-_run = tc._run
-FakeHomeAssistant = tc.FakeHomeAssistant
 hass_pushed_values = tc.hass_pushed_values
 _synthetic_wh_period = tc._synthetic_wh_period
 _seed_actual_yield_statistics = tc._seed_actual_yield_statistics
@@ -682,3 +682,43 @@ class TestNoPredictorSkipsBothSidesEndToEnd:
         # And it must be a genuinely non-trivial result (not both
         # accidentally empty), or this equality would be vacuous.
         assert len(with_unresolvable_ambient) > 0
+
+
+# -- end-to-end: _refit_sync caches both models for a resolved predictor ----
+
+
+class TestRefitCachesBothShadingAndTemperatureModelsEndToEnd:
+    """Given a string resolving to the `ambient` tier with a global
+    `weather_forecast_temperature_entity` predictor configured, When a
+    full `async_refit` runs, Then `_refit_sync` caches *both* this
+    string's shading model (every string, always) and its own
+    per-slot temperature-forecast model (ADR-003c §2, `TASK-0014`) —
+    every other end-to-end refit test in this module leaves at least
+    one of `default_temperature_source`/`weather_forecast_temperature_
+    entity` unset, so `_fit_temperature_string` always returns `None`
+    there and this second `cache.set_model("temperature", ...)` call
+    site never actually runs."""
+
+    def test_both_models_are_cached_after_one_refit(self) -> None:
+        entry = _make_entry(
+            weather_forecast_temperature_entity=_PREDICTOR_ENTITY,
+            default_temperature_source=_AMBIENT_SENSOR_ENTITY,
+            strings=[_string(rated_dc_capacity_wp=2000.0)],
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(
+            _BASELINE_ENTITY,
+            {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=1))},
+        )
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.states.set(_PREDICTOR_ENTITY, _weather_forecast_state({0: 8.0, 150: 30.0}))
+        _seed_actual_yield_statistics(hass, _YESTERDAY, _YESTERDAY + timedelta(days=1))
+        coordinator, _hass = _make_coordinator(entry, hass)
+
+        assert coordinator.cache.get_model("shading", 0) is None
+        assert coordinator.cache.get_model("temperature", 0) is None
+
+        _run(coordinator.async_refit(_NOW))
+
+        assert coordinator.cache.get_model("shading", 0) is not None
+        assert coordinator.cache.get_model("temperature", 0) is not None

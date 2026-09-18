@@ -7,17 +7,27 @@ recompute with no debounce (ADR-002 §2/§3), and the one generic
 provider-push loop shared by every `forward()`-overriding provider
 (ADR-012 §4).
 
-**Recorder access runs off the event loop.** `cache.py`'s `fetch_fn` is
-a plain synchronous callable (ADR-007a §4) — for the actual-yield
-entity (the only source read via the recorder's `statistics_during_period`
-rather than a `Provider`, per `adr-summary.md` §4) that means blocking
-I/O. `async_refit`/`async_startup` therefore dispatch the entire
-cache-touching body via `hass.async_add_executor_job`, never awaiting
-partway through — see the module docstring in `cache.py` and ADR-007a
-§4 for why `fetch_fn` itself has no async awareness at all. Push and
-recompute never touch the recorder (`BaselineProvider`/`TemperatureProvider`
-only read `hass.states`, an in-memory, non-blocking lookup) and so run
-directly on the event loop.
+**Recorder access runs off the event loop, on the recorder's own
+executor.** `cache.py`'s `fetch_fn` is a plain synchronous callable
+(ADR-007a §4) — for the actual-yield entity (the only source read via
+the recorder's `statistics_during_period` rather than a `Provider`,
+per `adr-summary.md` §4) that means blocking I/O. `async_refit`/
+`async_startup` (via `async_refit`) and `_async_intraday_tick`
+therefore dispatch their entire cache-touching body via
+`homeassistant.components.recorder.get_instance(hass)
+.async_add_executor_job` — the recorder's own dedicated single-worker
+executor, not the generic `hass.async_add_executor_job` (Home
+Assistant logs a warning for custom integrations that touch the
+recorder from the generic executor) — never awaiting partway through.
+See the module docstring in `cache.py` and ADR-007a §4 for why
+`fetch_fn` itself has no async awareness at all. Push and
+recompute never touch the recorder — `BaselineProvider`/`TemperatureProvider`
+read `hass.states` (an in-memory, non-blocking lookup) directly for most
+shapes, and the two ADR-009 Amendment sourcing paths (weather forecast
+subscription, §4a; Forecast.Solar polling, §4b) instead await `hass.
+services.async_call`, itself only ever reading another integration's
+already-cached in-memory estimate, never blocking I/O of its own — so
+this all still runs directly on the event loop.
 
 **Temperature derating scope (ADR-003b §1/§1a, ADR-003c):** all three
 tiers are implemented. `weather` (a `weather.*`-domain resolved source)
@@ -51,8 +61,9 @@ actual-yield state-change listener; actual-yield entities are not
 `Provider`s, so they cannot reuse `_register_provider_listeners`).
 `_accumulate_energy` itself is deliberately **hass-free** — it only
 touches `self.cache` — because `_refit_sync` runs inside
-`hass.async_add_executor_job`'s executor thread, not on the event loop;
-it is therefore safe to call from there directly. Persisting the
+`get_instance(hass).async_add_executor_job`'s executor thread, not on
+the event loop; it is therefore safe to call from there directly.
+Persisting the
 updated totals to `Store` is done differently depending on whether the
 trigger point already has an `await` of its own to attach to:
 `async_refit` and `_async_recompute` are themselves coroutines, already
@@ -91,20 +102,23 @@ Ramping's single multiply or Blending's two-sided crossfade
 the *one* final output clamp (`forecast_adjust.clamp_output`),
 canonically ordered per ADR-006 §1b. Like the energy-integral tick,
 `_async_intraday_tick` dispatches the actual work via
-`hass.async_add_executor_job` — `_intraday_energy_window` reads the
-actual-yield entity's recorder-backed history, the same blocking-I/O
-concern as `_fetch_actual_yield_statistics`.
+`get_instance(hass).async_add_executor_job` — `_intraday_energy_window`
+reads the actual-yield entity's recorder-backed history, the same
+blocking-I/O concern as `_fetch_actual_yield_statistics`.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
@@ -113,6 +127,26 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.storage import Store
 from numpy.typing import NDArray
+
+try:
+    # `weather`'s own entity-component data key (ADR-012 §4a) — real HA
+    # always provides this; only absent from the hand-written
+    # `homeassistant` stub tree `tests/test_coordinator.py` builds (per
+    # that module's own docstring convention), which does not (yet)
+    # stub `homeassistant.components.weather`. Falling back to `None`
+    # keeps that stub tree importable without a matching addition —
+    # `_register_weather_forecast_subscriptions` below already treats a
+    # missing/`None` component as "nothing to subscribe to". Annotated
+    # `Any` (rather than the real `HassKey[EntityComponent[WeatherEntity]]`
+    # `DATA_COMPONENT` resolves to when the import succeeds) so the
+    # `except` branch's `None` fallback type-checks against real HA
+    # too, without this module needing to import `EntityComponent`/
+    # `WeatherEntity` themselves just to spell that annotation out.
+    from homeassistant.components.weather.const import DATA_COMPONENT as _WEATHER_DATA_COMPONENT
+
+    WEATHER_DATA_COMPONENT: Any = _WEATHER_DATA_COMPONENT
+except ImportError:  # pragma: no cover - see comment above
+    WEATHER_DATA_COMPONENT = None
 
 from . import string_computation
 from .aggregation import (
@@ -128,6 +162,7 @@ from .cache import SLOT_DURATION, SLOTS_PER_DAY, Cache, EnergyKind, IntradayBasi
 from .const import (
     CONF_BASELINE_ATTRIBUTE,
     CONF_BASELINE_ENTITY_ID,
+    CONF_BASELINE_HISTORY_ENTITY_ID,
     CONF_BASELINE_SHAPE,
     CONF_CLIPPING_THRESHOLD,
     CONF_DEFAULT_TEMPERATURE_SOURCE,
@@ -142,6 +177,7 @@ from .const import (
     CONF_STRING_ACTUAL_YIELD_ENTITY,
     CONF_STRING_BASELINE_ATTRIBUTE,
     CONF_STRING_BASELINE_ENTITY_ID,
+    CONF_STRING_BASELINE_HISTORY_ENTITY_ID,
     CONF_STRING_BASELINE_SHAPE,
     CONF_STRING_CONVERTER_LIMIT_W,
     CONF_STRING_NAME,
@@ -163,6 +199,7 @@ from .const import (
     DOMAIN,
     TEMPERATURE_SOURCE_NONE,
 )
+from .coordinator_like import DiagnosedSlot, RegressionSettings, StringComputationConfig
 from .diagnostics.base import DiagnosticMode, DiagnosticResult
 from .diagnostics.compare_regressions import CompareRegressionsMode
 from .forecast_adjust import clamp_output, reverse_transformed_forecast
@@ -190,6 +227,14 @@ _LAST_SLOT_OF_DAY = timedelta(hours=23, minutes=55)
 # incompatible on-disk schema change.
 _ENERGY_STORE_VERSION = 1
 
+# Diagnostic logging for the recalibration/recompute pipeline (fit +
+# forecast-recompute junctions) — this module previously had no logger
+# at all, so a failure in one string's fit/recompute silently aborted
+# every other string's too, with nothing surfaced anywhere a user could
+# find it (`button.py`'s own broad `except Exception` catch only ever
+# logs the *outermost* failure, never which string/step actually broke).
+_LOGGER = logging.getLogger(__name__)
+
 
 def _domain(entity_id: str) -> str:
     return entity_id.split(".", 1)[0]
@@ -205,6 +250,39 @@ def _tomorrow_end(now: datetime) -> datetime:
     tomorrow — "remainder of today + all of tomorrow"."""
     today_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
     return today_start + timedelta(days=2)
+
+
+def _forward_fill_by_day(
+    series: list[tuple[datetime, float]], start: datetime, end: datetime
+) -> dict[date, dict[int, float]]:
+    """Hold each raw baseline sample's value forward across every
+    5-minute slot from its own timestamp up to (not including) the next
+    sample's timestamp — a step function, since a baseline provider
+    commonly reports on a coarser grid than `FC`'s own 5-minute slot grid
+    (ADR-009 §1a: "always hourly", "coarser than baseline FC's own
+    5-minute slot grid"). Without this, only the exact slot each raw
+    sample happens to land on would ever be filled, leaving every other
+    slot in between permanently `None` — including a legitimate `0`
+    raw reading, which must fill its whole span the same as any other
+    value, not be mistaken for "nothing pushed yet".
+
+    `series` need not be sorted or pre-restricted to `[start, end)` —
+    only samples whose own resulting span overlaps `[start, end)`
+    actually contribute any slot. The last sample's span runs through
+    `end` itself.
+    """
+    ordered = sorted(series, key=lambda pair: pair[0])
+    by_day: dict[date, dict[int, float]] = {}
+    for position, (timestamp, value) in enumerate(ordered):
+        span_start = max(timestamp, start)
+        next_timestamp = ordered[position + 1][0] if position + 1 < len(ordered) else end
+        span_end = min(next_timestamp, end)
+        if span_end <= span_start:
+            continue
+        for index in range(Cache.index_for(span_start), Cache.index_for(span_end)):
+            slot_timestamp = Cache.timestamp_for(index)
+            by_day.setdefault(slot_timestamp.date(), {})[_slot_of_day(slot_timestamp)] = value
+    return by_day
 
 
 def _split_by_offset(
@@ -240,6 +318,12 @@ class _StringConfig:
     baseline_entity_id: str | None
     baseline_attribute: str | None
     baseline_shape: BaselineShape | None
+    # ADR-009 §1c Amendment / ADR-012 §2a Amendment (`TASK-0034`) — carried
+    # through alongside the three fields above, from `CONF_STRING_
+    # BASELINE_HISTORY_ENTITY_ID`; `None` for every override except a
+    # `forecast_solar`-shaped one whose companion history entity was
+    # resolved at discovery time.
+    baseline_history_entity_id: str | None
     converter_limit_w: float | None
     temperature_source_entity_id: str | None
     temperature_coefficient_pct_per_c: float
@@ -272,63 +356,6 @@ class _TemperatureResolution:
     tier: Literal["weather", "cell", "ambient"]
 
 
-@dataclass(frozen=True)
-class RegressionSettings:
-    """Global scalars `string_computation.py`'s `apply_training_
-    corrections`/`fit_string_model` need (ADR-004 §5, second Amendment)
-    — the same five values `_fit_string` already resolves for the
-    default-method 288-slot sweep, exposed read-only so a
-    `DiagnosticMode` can call those same pure functions itself without
-    reaching into this module's private state. Generic, not
-    diagnostics-specific — reusable by ADR-013's sketched future modes.
-    """
-
-    smoothing_radius: int
-    neighbor_fitting_cutoff: float
-    recency_decay_max: float
-    clipping_threshold: float
-    max_uplift_c: float
-
-
-@dataclass(frozen=True)
-class StringComputationConfig:
-    """One configured string's remaining per-string inputs to
-    `string_computation.py`'s functions (ADR-004 §5, second Amendment)
-    — everything `_fit_string`/`_provider_already_corrects`/`_resolve_
-    temperature_entity` already resolve internally, exposed read-only.
-    `baseline_entity_id`/`temperature_entity_id`/`temperature_tier` are
-    `None` when unconfigured/unresolved, exactly as `_fit_string`
-    already treats them (a `None` `baseline_entity_id` means this
-    string cannot be fit/diagnosed at all — no baseline forecast to
-    compare against)."""
-
-    baseline_entity_id: str | None
-    actual_yield_entity_id: str
-    temperature_entity_id: str | None
-    temperature_tier: Literal["weather", "cell", "ambient"] | None
-    converter_limit_w: float | None
-    coefficient_per_c: float
-    provider_already_corrects: bool
-    rated_dc_capacity_wp: float | None
-
-
-@dataclass(frozen=True)
-class DiagnosedSlot:
-    """Which slot is currently "the diagnosed slot" (ADR-004 §2/§2a) —
-    resolved from the pin if one is set, else "the last complete slot"
-    as of `now` (auto-tracking). `index` is the absolute slot index
-    (`Cache.index_for` convention); `slot_of_day` is `index`'s 0-287
-    time-of-day component (`get_pinned_slot_pool`'s own argument);
-    `is_elapsed` is whether this slot's own actual/PV value can exist
-    yet — `False` only for a manually-pinned slot still in the future
-    (§2a's one exception to "selected actual"/accuracy being shown).
-    """
-
-    index: int
-    slot_of_day: int
-    is_elapsed: bool
-
-
 def _resolve_string(index: int, raw: dict[str, Any]) -> _StringConfig:
     return _StringConfig(
         index=index,
@@ -337,6 +364,7 @@ def _resolve_string(index: int, raw: dict[str, Any]) -> _StringConfig:
         baseline_entity_id=raw.get(CONF_STRING_BASELINE_ENTITY_ID),
         baseline_attribute=raw.get(CONF_STRING_BASELINE_ATTRIBUTE),
         baseline_shape=raw.get(CONF_STRING_BASELINE_SHAPE),
+        baseline_history_entity_id=raw.get(CONF_STRING_BASELINE_HISTORY_ENTITY_ID),
         converter_limit_w=raw.get(CONF_STRING_CONVERTER_LIMIT_W),
         temperature_source_entity_id=raw.get(CONF_STRING_TEMPERATURE_SOURCE),
         temperature_coefficient_pct_per_c=raw.get(
@@ -395,6 +423,12 @@ class ShadyCoordinator:
         self._global_baseline_entity_id: str | None = data.get(CONF_BASELINE_ENTITY_ID)
         self._global_baseline_attribute: str | None = data.get(CONF_BASELINE_ATTRIBUTE)
         self._global_baseline_shape: BaselineShape | None = data.get(CONF_BASELINE_SHAPE)
+        # ADR-009 §1c Amendment / ADR-012 §2a Amendment (`TASK-0034`) —
+        # same static-config-only construction as the three fields above
+        # (ADR-002 §1a: no `hass` access at construction time).
+        self._global_baseline_history_entity_id: str | None = data.get(
+            CONF_BASELINE_HISTORY_ENTITY_ID
+        )
 
         self._strings: list[_StringConfig] = [
             _resolve_string(index, raw) for index, raw in enumerate(data.get(CONF_STRINGS, []))
@@ -415,6 +449,7 @@ class ShadyCoordinator:
                 self._global_baseline_entity_id,
                 self._global_baseline_attribute,
                 self._global_baseline_shape,
+                self._global_baseline_history_entity_id,
             )
         if self._weather_forecast_temperature_entity_id is not None:
             # ADR-003c §3/§7, TASK-0014: registered once, globally, up
@@ -436,7 +471,10 @@ class ShadyCoordinator:
             if string.has_baseline_override:
                 assert string.baseline_entity_id is not None
                 self._ensure_baseline_provider(
-                    string.baseline_entity_id, string.baseline_attribute, string.baseline_shape
+                    string.baseline_entity_id,
+                    string.baseline_attribute,
+                    string.baseline_shape,
+                    string.baseline_history_entity_id,
                 )
             baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
             if baseline_entity_id is not None:
@@ -514,6 +552,8 @@ class ShadyCoordinator:
 
         self._register_schedule()
         self._register_provider_listeners()
+        self._register_weather_forecast_subscriptions()
+        self._register_forecast_solar_polls()
         self._register_actual_yield_listeners()
         # Always registered (unlike pre-ADR-004 TASK-0013, which only
         # registered this when `intraday_correction_mode != "off"`):
@@ -533,11 +573,17 @@ class ShadyCoordinator:
     # -- construction helpers --------------------------------------------
 
     def _ensure_baseline_provider(
-        self, entity_id: str, attribute: str | None, shape: BaselineShape | None
+        self,
+        entity_id: str,
+        attribute: str | None,
+        shape: BaselineShape | None,
+        history_entity_id: str | None = None,
     ) -> None:
         if entity_id in self._entity_providers or attribute is None or shape is None:
             return
-        self._entity_providers[entity_id] = BaselineProvider(self.hass, entity_id, attribute, shape)
+        self._entity_providers[entity_id] = BaselineProvider(
+            self.hass, entity_id, attribute, shape, history_entity_id
+        )
 
     def _ensure_temperature_provider(self, entity_id: str, tier: TemperatureTier) -> None:
         if entity_id in self._entity_providers:
@@ -592,6 +638,18 @@ class ShadyCoordinator:
     def _fetch_fn(self, sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
         provider = self._entity_providers.get(sensor_id)
         if provider is not None:
+            # ADR-012 §1/§2a Amendment (`TASK-0034`): a generic check
+            # against every provider's optional `history_entity_id()`
+            # hook, never an `isinstance` branch against a specific
+            # concrete provider — see ADR-012 §2a for why. Only a
+            # `forecast_solar`-shaped `BaselineProvider` with a resolved
+            # companion sensor returns non-`None` today; every other
+            # provider's base-class default (`None`) leaves this branch
+            # a no-op and falls through to `provider.fetch()` exactly as
+            # before this amendment.
+            history_entity_id = provider.history_entity_id()
+            if history_entity_id is not None:
+                return self._fetch_provider_history_statistics(history_entity_id, start, end)
             return provider.fetch(start, end)
         if sensor_id in self._actual_yield_entity_ids:
             return self._fetch_actual_yield_statistics(sensor_id, start, end)
@@ -614,6 +672,43 @@ class ShadyCoordinator:
             self.hass, start, end, {entity_id}, _STATISTICS_PERIOD, None, {"mean"}
         )
         rows = raw.get(entity_id, [])
+        by_start: dict[datetime, float] = {}
+        for row in rows:
+            row_start = row["start"]
+            if not isinstance(row_start, datetime):
+                row_start = datetime.fromtimestamp(float(row_start), tz=UTC)
+            mean = row.get("mean")
+            if mean is not None:
+                by_start[row_start] = float(mean)
+        slot_count = int((end - start) / SLOT_DURATION)
+        return [by_start.get(start + i * SLOT_DURATION) for i in range(slot_count)]
+
+    def _fetch_provider_history_statistics(
+        self, history_entity_id: str, start: datetime, end: datetime
+    ) -> list[float | None | str]:
+        """Recorder-backed backfill for a provider's linked history
+        entity (ADR-012 §2a Amendment, "recorder-backed baseline
+        history", `TASK-0034`) — the same `statistics_during_period`
+        pattern `_fetch_actual_yield_statistics` above already
+        establishes, deliberately **mirrored**, not shared or otherwise
+        modified (that method stays untouched — this amendment's own
+        explicit scope). Queried against `history_entity_id` — a real,
+        continuously-recorded companion entity (ADR-009 §1c) — never
+        against `sensor_id`/the provider's own `entity_id`, since a
+        `_PUSH_SOURCED_SHAPES` baseline's own `sensor_id` (a config
+        entry id, for `forecast_solar`) has no recorder history of its
+        own to query. Named generically, not `_fetch_baseline_
+        statistics`: `_fetch_fn`'s dispatch above is generic over every
+        `Provider.history_entity_id()` override, not `BaselineProvider`
+        specifically (ADR-012 §2a), so a future, unrelated provider that
+        resolves its own linked history entity reuses this same method
+        rather than a copy of it. Must only be called off the event
+        loop — see the module docstring.
+        """
+        raw = statistics_during_period(
+            self.hass, start, end, {history_entity_id}, _STATISTICS_PERIOD, None, {"mean"}
+        )
+        rows = raw.get(history_entity_id, [])
         by_start: dict[datetime, float] = {}
         for row in rows:
             row_start = row["start"]
@@ -669,6 +764,32 @@ class ShadyCoordinator:
 
     # -- startup ordering (ADR-002 §1a, consumed by TASK-0016) ----------
 
+    def _baseline_missing(self, baseline_entity_id: str) -> bool:
+        """Existence/readiness check for a resolved baseline `entity_id`
+        (ADR-002 §1a), shape-aware since ADR-009 Amendment ("Forecast.
+        Solar polling sourcing"): a `forecast_solar`-shaped baseline
+        stores that integration's own config entry `entry_id` in this
+        field, not a real HA entity_id (`BaselineProvider`'s own
+        docstring), so readiness is checked via `hass.config_entries`
+        instead of `hass.states` — and, critically, requires the entry
+        to actually be `ConfigEntryState.LOADED`, not merely present:
+        `hass.config_entries.async_get_entry` returns a non-`None` entry
+        the moment Home Assistant has *begun* setting it up, well before
+        that setup (and therefore its `forecast_solar.get_forecast`
+        service) is actually ready to serve calls — treating mere
+        presence as "ready" let this safety net wave through a still-
+        loading Forecast.Solar entry, so the same startup race ADR-002
+        §1a exists to catch could still slip past it and only surface
+        later as an unexplained "no forward series" recompute skip.
+        Every other shape is unaffected and keeps the original
+        `hass.states.get(...) is None` check.
+        """
+        provider = self._entity_providers.get(baseline_entity_id)
+        if isinstance(provider, BaselineProvider) and provider.shape == "forecast_solar":
+            entry = self.hass.config_entries.async_get_entry(baseline_entity_id)
+            return entry is None or entry.state != ConfigEntryState.LOADED
+        return self.hass.states.get(baseline_entity_id) is None
+
     def missing_required_entities(self) -> list[str]:
         """Every required entity (per-string actual-yield; per-string
         resolved baseline, if configured) currently absent from
@@ -679,7 +800,7 @@ class ShadyCoordinator:
             if self.hass.states.get(string.actual_yield_entity_id) is None:
                 missing.append(string.actual_yield_entity_id)
             baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
-            if baseline_entity_id is not None and self.hass.states.get(baseline_entity_id) is None:
+            if baseline_entity_id is not None and self._baseline_missing(baseline_entity_id):
                 missing.append(baseline_entity_id)
         return missing
 
@@ -694,6 +815,22 @@ class ShadyCoordinator:
         resolved_now = now if now is not None else self._now()
         if self._last_fit_at is None or (resolved_now - self._last_fit_at) > timedelta(hours=24):
             await self.async_refit(resolved_now)
+        else:
+            # A recent-enough fit already exists, so `async_refit` won't
+            # run this time — but a `forecast_solar`-shaped baseline's
+            # own construction-time poll (`_register_forecast_solar_
+            # polls`'s fire-and-forget "immediate first sample") can
+            # just as easily have raced against Home Assistant's own
+            # startup independent of the fit's age, so still worth an
+            # awaited, non-racy refresh here.
+            await self._refresh_forecast_solar_providers()
+        # One-time catch-up (`_backfill_elapsed_today_slots`'s own
+        # docstring) for today's already-elapsed slots — a restart's
+        # in-memory forecast cache starts out empty, so this is the one
+        # point in the whole startup path that already knows a model
+        # exists (or doesn't) and it's worth trying regardless of which
+        # branch above ran.
+        self._backfill_elapsed_today_slots(resolved_now)
 
     def shutdown(self) -> None:
         """Cancel every registered listener/schedule (TASK-0016's
@@ -715,11 +852,19 @@ class ShadyCoordinator:
     async def async_refit(self, now: datetime | None = None) -> None:
         """The single refit routine both the midnight schedule and the
         manual button (`button.py`, TASK-0011) call (ADR-002 §1/§5).
-        Dispatched via `hass.async_add_executor_job` — see module
-        docstring.
+        Dispatched via `get_instance(self.hass).async_add_executor_job`
+        — the recorder's own dedicated executor, not the generic
+        `hass.async_add_executor_job` — since this body's recorder read
+        (`_fetch_actual_yield_statistics`) is database access; see
+        module docstring.
         """
         resolved_now = now if now is not None else self._now()
-        await self.hass.async_add_executor_job(self._refit_sync, resolved_now)
+        # An awaited, non-racy Forecast.Solar refresh ahead of every
+        # fit/recompute (`_refresh_forecast_solar_providers`'s own
+        # docstring) — must run on the event loop, before dispatching to
+        # the recorder executor below, since it awaits a service call.
+        await self._refresh_forecast_solar_providers()
+        await get_instance(self.hass).async_add_executor_job(self._refit_sync, resolved_now)
         # Already a coroutine, already being awaited by every caller
         # (the manual button, `_handle_midnight`'s own
         # `hass.async_create_task(self.async_refit(now))`) — awaited
@@ -731,10 +876,30 @@ class ShadyCoordinator:
 
     def _refit_sync(self, now: datetime) -> None:
         self.cache.invalidate_models()
+        _LOGGER.info("Refitting %d configured string(s) at %s", len(self._strings), now)
         for string in self._strings:
-            model = self._fit_string(string, now)
-            if model is not None:
-                self.cache.set_model("shading", string.index, model)
+            try:
+                model = self._fit_string(string, now)
+            except Exception as exc:
+                _LOGGER.exception(
+                    "Shading model fit failed for string %d (%s) — leaving it"
+                    " unmodeled, not aborting the remaining strings",
+                    string.index,
+                    string.name,
+                    exc_info=exc,
+                )
+                continue
+            if model is None:
+                _LOGGER.info(
+                    "Shading model fit produced nothing for string %d (%s) —"
+                    " no resolvable baseline entity/provider yet",
+                    string.index,
+                    string.name,
+                )
+                continue
+            self.cache.set_model("shading", string.index, model)
+            _LOGGER.info("Shading model fitted for string %d (%s)", string.index, string.name)
+            try:
                 temperature_model = self._fit_temperature_string(string, now)
                 if temperature_model is not None:
                     self.cache.set_model("temperature", string.index, temperature_model)
@@ -747,6 +912,13 @@ class ShadyCoordinator:
                 # too (TASK-0014) — to whatever baseline/predictor data
                 # is currently cached (TASK-0010-patch-1).
                 self._recompute_string(string, now)
+            except Exception as exc:
+                _LOGGER.exception(
+                    "Post-fit temperature fit/recompute failed for string %d (%s)",
+                    string.index,
+                    string.name,
+                    exc_info=exc,
+                )
         self._last_fit_at = now
         # ADR-005 §2/§6: recalibration completion is a recompute
         # trigger, exactly like a baseline-entity update — accumulate
@@ -1312,6 +1484,11 @@ class ShadyCoordinator:
         self.hass.async_create_task(self._async_persist_energy_state())
 
     async def _async_recompute(self, strings: list[_StringConfig], now: datetime) -> None:
+        _LOGGER.info(
+            "Baseline-update-triggered recompute for %d string(s) at %s",
+            len(strings),
+            now,
+        )
         for string in strings:
             self._recompute_string(string, now)
         self._accumulate_fc_energy(now)
@@ -1322,27 +1499,87 @@ class ShadyCoordinator:
         await self._async_persist_energy_state()
 
     def _recompute_string(self, string: _StringConfig, now: datetime) -> None:
+        try:
+            self._recompute_string_unguarded(string, now)
+        except Exception as exc:
+            _LOGGER.exception(
+                "Forecast recompute failed for string %d (%s) at %s — leaving its"
+                " previously-pushed forecast untouched, not aborting other strings",
+                string.index,
+                string.name,
+                now,
+                exc_info=exc,
+            )
+
+    def _recompute_string_unguarded(self, string: _StringConfig, now: datetime) -> None:
         model = self.cache.get_model("shading", string.index)
         if model is None:
+            _LOGGER.debug(
+                "Skipping recompute for string %d (%s): no fitted shading model yet",
+                string.index,
+                string.name,
+            )
             return
         baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
         if baseline_entity_id is None:
+            _LOGGER.debug(
+                "Skipping recompute for string %d (%s): no baseline entity configured",
+                string.index,
+                string.name,
+            )
             return
         provider = self._entity_providers.get(baseline_entity_id)
         if not isinstance(provider, BaselineProvider):
+            _LOGGER.warning(
+                "Skipping recompute for string %d (%s): baseline entity %s has no"
+                " registered BaselineProvider",
+                string.index,
+                string.name,
+                baseline_entity_id,
+            )
             return
         raw_series = provider.forward(now)
         if not raw_series:
+            _LOGGER.info(
+                "Skipping recompute for string %d (%s): baseline provider %s"
+                " returned no forward series",
+                string.index,
+                string.name,
+                baseline_entity_id,
+            )
             return
 
         horizon_end = _tomorrow_end(now)
-        series = [(ts, value) for ts, value in raw_series if now <= ts < horizon_end]
+        series = [(ts, value) for ts, value in raw_series if ts < horizon_end]
         if not series:
+            _LOGGER.info(
+                "Skipping recompute for string %d (%s): every one of %d raw sample(s)"
+                " from %s falls outside the recompute horizon (before %s or at/after %s)",
+                string.index,
+                string.name,
+                len(raw_series),
+                baseline_entity_id,
+                now,
+                horizon_end,
+            )
             return
 
-        by_day: dict[date, dict[int, float]] = {}
-        for ts, value in series:
-            by_day.setdefault(ts.date(), {})[_slot_of_day(ts)] = value
+        # ADR-009 §1a: a raw baseline sample commonly reports on a
+        # coarser grid than `FC`'s own 5-minute slots (e.g. an hourly
+        # weather forecast) — hold each sample's value forward across
+        # every 5-minute slot until the next sample's own timestamp,
+        # rather than only ever filling the one exact slot each sample
+        # happens to land on.
+        by_day = _forward_fill_by_day(series, now, horizon_end)
+        filled_slot_count = sum(len(slot_values) for slot_values in by_day.values())
+        _LOGGER.debug(
+            "String %d (%s): %d raw sample(s) forward-filled into %d slot(s) across %d day(s)",
+            string.index,
+            string.name,
+            len(series),
+            filled_slot_count,
+            len(by_day),
+        )
 
         # ADR-006 §1a/§1b's `fc_value(t)`: the reverse-transformed,
         # still-unclamped prediction for every future slot across every
@@ -1357,6 +1594,13 @@ class ShadyCoordinator:
             fc_by_index.update(day_fc)
 
         if not values_by_index:
+            _LOGGER.warning(
+                "String %d (%s): forward-filled %d slot(s) but the fitted model"
+                " produced no usable prediction for any of them",
+                string.index,
+                string.name,
+                filled_slot_count,
+            )
             return
 
         if self._intraday_correction_mode == "off":
@@ -1365,9 +1609,23 @@ class ShadyCoordinator:
             pushed = self._apply_intraday_reset(string, now, values_by_index, fc_by_index)
 
         if not pushed:
+            _LOGGER.warning(
+                "String %d (%s): %d predicted slot(s) but nothing survived the"
+                " output clamp/intraday-correction step",
+                string.index,
+                string.name,
+                len(values_by_index),
+            )
             return
         not_before_index = Cache.index_for(now) + 1
         self.cache.push(self.forecast_sensor_id(string.index), pushed, not_before_index)
+        _LOGGER.info(
+            "String %d (%s): pushed %d forecast slot(s) at/after %s",
+            string.index,
+            string.name,
+            len(pushed),
+            now,
+        )
 
     def _predict_day_basis(
         self, string: _StringConfig, day: date, slot_values: dict[int, float], now: datetime
@@ -1379,14 +1637,50 @@ class ShadyCoordinator:
         `_recompute_string` can insert its own intraday-correction step
         ahead of that clamp. Returns `(reverse_transformed_by_index,
         raw_fc_by_index)`, both restricted to slots at/after `now`
-        (already-past slots are never recomputed, ADR-002 §3) — the raw
-        `fc` values are carried alongside since `forecast_adjust
-        .clamp_output`'s per-slot upper bound needs them, whether the
-        clamp happens immediately (`_clamp_basis`) or later, after an
-        intraday correction/crossfade (`_compute_intraday_output`).
+        (already-past slots are never *re*computed here, ADR-002 §3 —
+        `_backfill_elapsed_today_slots_for_string`'s own `_predict_day_
+        basis_before` is the one deliberate exception, for slots that
+        were never computed *at all* this run, not a recompute of
+        already-settled ones) — the raw `fc` values are carried
+        alongside since `forecast_adjust.clamp_output`'s per-slot upper
+        bound needs them, whether the clamp happens immediately
+        (`_clamp_basis`) or later, after an intraday correction/
+        crossfade (`_compute_intraday_output`).
+        """
+        now_index = Cache.index_for(now)
+        return self._predict_day_slots(string, day, slot_values, lambda index: index >= now_index)
+
+    def _predict_day_basis_before(
+        self, string: _StringConfig, day: date, slot_values: dict[int, float], before_index: int
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        """The mirror image of `_predict_day_basis`, for
+        `_backfill_elapsed_today_slots_for_string`'s own startup catch-up
+        (ADR-002 §1a) alone — restricted to slots strictly *before*
+        `before_index` instead of at/after `now`. Never called from the
+        normal recompute path (`_recompute_string`), which has no
+        legitimate reason to touch an already-elapsed slot (ADR-002
+        §3) — this one exists only for slots that were never computed
+        at all this run, immediately after a restart.
+        """
+        return self._predict_day_slots(string, day, slot_values, lambda index: index < before_index)
+
+    def _predict_day_slots(
+        self,
+        string: _StringConfig,
+        day: date,
+        slot_values: dict[int, float],
+        index_filter: Callable[[int], bool],
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        """The shared prediction core `_predict_day_basis`/
+        `_predict_day_basis_before` both build on: steps 1-2 of the
+        ADR-006 §1b pipeline (`forecast_adjust.reverse_transformed_
+        forecast`) for one day of one string, restricted to whichever
+        absolute slot indices `index_filter` accepts. Returns
+        `(reverse_transformed_by_index, raw_fc_by_index)` — see
+        `_predict_day_basis`'s own docstring for the rest.
         """
         model = self.cache.get_model("shading", string.index)
-        assert model is not None  # guaranteed by _recompute_string's own check above
+        assert model is not None  # guaranteed by both callers' own checks above
         day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
         fc_array = np.full(SLOTS_PER_DAY, np.nan, dtype=np.float64)
         for slot, value in slot_values.items():
@@ -1410,18 +1704,112 @@ class ShadyCoordinator:
             provider_already_corrects=provider_already_corrects,
         )
 
-        now_index = Cache.index_for(now)
         values: dict[int, float] = {}
         fc_by_index: dict[int, float] = {}
         for slot in slot_values:
             index = Cache.index_for(day_start) + slot
-            if index < now_index:
+            if not index_filter(index):
                 continue
             value = float(reverse_transformed[slot])
             if not np.isnan(value):
                 values[index] = value
                 fc_by_index[index] = float(fc_array[slot])
         return values, fc_by_index
+
+    # -- startup catch-up for today's already-elapsed slots (ADR-002 §1a) -
+    #
+    # `_recompute_string` deliberately only ever fills slots at/after
+    # "now" (ADR-002 §3: "already-past slots are never recomputed") —
+    # under continuous operation that's never a problem, since a slot
+    # was always written well before its own timestamp elapsed. A
+    # restart breaks that assumption: the in-memory forecast cache
+    # (ADR-007a §2/§3 push semantics) starts out empty, so every slot
+    # between midnight and the moment the coordinator actually starts
+    # has simply never been computed at all this run — not "already
+    # settled", just missing. This one-time backfill closes that gap,
+    # using the already-fitted model against the baseline's own
+    # recorded *historical* values for that span (`provider.fetch`,
+    # never `forward()`).
+
+    def _backfill_elapsed_today_slots(self, now: datetime) -> None:
+        today_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+        if now <= today_start:
+            _LOGGER.debug("No elapsed slots yet today (%s) — nothing to backfill", now)
+            return
+        for string in self._strings:
+            try:
+                self._backfill_elapsed_today_slots_for_string(string, today_start, now)
+            except Exception as exc:
+                _LOGGER.exception(
+                    "Startup backfill of today's elapsed slots failed for string"
+                    " %d (%s) — leaving them as-is, not aborting the remaining strings",
+                    string.index,
+                    string.name,
+                    exc_info=exc,
+                )
+
+    def _backfill_elapsed_today_slots_for_string(
+        self, string: _StringConfig, today_start: datetime, now: datetime
+    ) -> None:
+        model = self.cache.get_model("shading", string.index)
+        if model is None:
+            _LOGGER.debug(
+                "Skipping startup backfill for string %d (%s): no fitted shading model yet",
+                string.index,
+                string.name,
+            )
+            return
+        baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
+        if baseline_entity_id is None:
+            return
+        provider = self._entity_providers.get(baseline_entity_id)
+        if not isinstance(provider, BaselineProvider):
+            return
+
+        raw = self.cache.get_time_range([baseline_entity_id], today_start, now, on_invalid="raw")[
+            baseline_entity_id
+        ]
+        slot_values = {slot: value for slot, value in enumerate(raw) if isinstance(value, float)}
+        if not slot_values:
+            _LOGGER.info(
+                "Startup backfill for string %d (%s): baseline provider %s has no"
+                " historical data for %s-%s",
+                string.index,
+                string.name,
+                baseline_entity_id,
+                today_start,
+                now,
+            )
+            return
+
+        now_index = Cache.index_for(now)
+        values, fc_by_index = self._predict_day_basis_before(
+            string, today_start.date(), slot_values, now_index
+        )
+        if not values:
+            _LOGGER.warning(
+                "Startup backfill for string %d (%s): %d historical slot(s) but the"
+                " fitted model produced no usable prediction for any of them",
+                string.index,
+                string.name,
+                len(slot_values),
+            )
+            return
+
+        # A plain clamp, not `_apply_intraday_reset` — these slots are
+        # already-elapsed history being filled in retroactively, not a
+        # live value subject to Ramping/Blending's own ongoing ramp.
+        pushed = self._clamp_basis(values, fc_by_index, string.converter_limit_w)
+        if not pushed:
+            return
+        today_start_index = Cache.index_for(today_start)
+        self.cache.push(self.forecast_sensor_id(string.index), pushed, today_start_index)
+        _LOGGER.info(
+            "Startup backfill for string %d (%s): filled %d of today's elapsed slot(s)",
+            string.index,
+            string.name,
+            len(pushed),
+        )
 
     def _predict_target_slot_temperature(
         self,
@@ -1688,12 +2076,14 @@ class ShadyCoordinator:
         access via `cache.py`'s injected `fetch_fn` is blocking I/O) —
         `_intraday_energy_window` reads the actual-yield entity's
         recorder-backed history, mirroring `async_refit`'s own
-        `hass.async_add_executor_job` pattern exactly. `cache.py`'s
+        `get_instance(self.hass).async_add_executor_job` pattern
+        exactly — the recorder's own dedicated executor, not the
+        generic `hass.async_add_executor_job`. `cache.py`'s
         `get_pinned_slot_pool` (`_diagnostics_tick_sync`, ADR-004 §4)
         shares the same recorder-backed-fetch concern while
         auto-tracking a not-yet-cached slot, so it rides this same
         executor-thread dispatch rather than a second one."""
-        await self.hass.async_add_executor_job(self._intraday_tick_sync, now)
+        await get_instance(self.hass).async_add_executor_job(self._intraday_tick_sync, now)
 
     def _intraday_tick_sync(self, now: datetime) -> None:
         for string in self._strings:
@@ -1804,13 +2194,28 @@ class ShadyCoordinator:
 
         @callback  # type: ignore[untyped-decorator]
         def _handle(_event: Any) -> None:
-            now = self._now()
-            self._push_provider_series(entity_id, now)
-            strings = self._baseline_entity_strings.get(entity_id)
-            if strings:
-                self.hass.async_create_task(self._async_recompute(strings, now))
+            self._handle_provider_update(entity_id)
 
         return _handle  # type: ignore[no-any-return]
+
+    def _handle_provider_update(self, entity_id: str) -> None:
+        """Push a provider's current `forward()` series and, if any
+        string resolves its baseline to this entity, trigger a recompute
+        — shared by both the state-change listener above and the weather
+        forecast subscription listener below (§4a), so neither
+        reimplements "push, then maybe recompute".
+        """
+        now = self._now()
+        _LOGGER.debug("Provider update for %s at %s", entity_id, now)
+        self._push_provider_series(entity_id, now)
+        strings = self._baseline_entity_strings.get(entity_id)
+        if strings:
+            self.hass.async_create_task(self._async_recompute(strings, now))
+        else:
+            _LOGGER.debug(
+                "No string resolves its baseline to %s — push only, no recompute",
+                entity_id,
+            )
 
     def _push_provider_series(self, entity_id: str, now: datetime) -> None:
         provider = self._entity_providers.get(entity_id)
@@ -1818,9 +2223,194 @@ class ShadyCoordinator:
             return
         series = provider.forward(now)
         if not series:
+            _LOGGER.info("Provider %s returned no forward series to push", entity_id)
             return
         values = {Cache.index_for(ts): value for ts, value in series}
         if not values:
             return
         not_before_index = Cache.index_for(now) + 1
         self.cache.push(entity_id, values, not_before_index)
+        _LOGGER.debug("Pushed %d raw sample(s) for %s", len(values), entity_id)
+
+    # -- weather forecast subscription push (ADR-012 §4a) ----------------
+    #
+    # A `BaselineProvider` resolved against a `weather_sunshine`/
+    # `weather_cloud` candidate has nothing left to read via
+    # `async_track_state_change_event` above — HA 2024.4 removed the
+    # `forecast` state attribute `_read_raw_attribute()` used to poll on
+    # every state change. Its live series instead arrives by subscribing
+    # to the `weather` domain's own `WeatherEntity.async_subscribe_
+    # forecast` push API (the same one HA's frontend uses), one
+    # subscription per such provider, registered here rather than folded
+    # into `_register_provider_listeners` above since it needs a
+    # different HA primitive entirely (an entity-instance method, not an
+    # event listener) — `_handle_provider_update` is still the shared
+    # "push, then maybe recompute" tail both paths converge on.
+
+    def _register_weather_forecast_subscriptions(self) -> None:
+        if WEATHER_DATA_COMPONENT is None:
+            return
+        # `getattr` rather than `self.hass.data` directly: real HA's
+        # `HomeAssistant` always has `.data`, but the coordinator test
+        # suite's `FakeHomeAssistant` stand-ins (ADR-000 §6's own
+        # zero-mocking convention) implement only the `hass` surface
+        # each test file actually exercises, and predate this method.
+        hass_data = getattr(self.hass, "data", None)
+        if hass_data is None:
+            return
+        weather_component = hass_data.get(WEATHER_DATA_COMPONENT)
+        if weather_component is None:
+            return
+        for entity_id, provider in self._entity_providers.items():
+            if not isinstance(provider, BaselineProvider):
+                continue
+            forecast_type = provider.forecast_type
+            if forecast_type is None:
+                continue  # a sensor.*-sourced instance has nothing to subscribe to
+            entity = weather_component.get_entity(entity_id)
+            if entity is None:
+                continue
+            unsub = entity.async_subscribe_forecast(
+                forecast_type, self._make_forecast_listener(entity_id, provider)
+            )
+            self._unsub.append(unsub)
+            # Request an immediate first value rather than waiting for
+            # this entity's own next scheduled forecast refresh — the
+            # same courtesy HA's own websocket subscription handler
+            # extends its caller (`weather/websocket_api.py`'s
+            # `ws_subscribe_forecast`).
+            self.hass.async_create_task(entity.async_update_listeners({forecast_type}))
+
+    def _make_forecast_listener(
+        self, entity_id: str, provider: BaselineProvider
+    ) -> Callable[[Any], None]:
+        @callback  # type: ignore[untyped-decorator]
+        def _handle(forecast: Any) -> None:
+            provider.update_live_forecast(forecast)
+            self._handle_provider_update(entity_id)
+
+        return _handle  # type: ignore[no-any-return]
+
+    # -- Forecast.Solar polling push (ADR-012 §4b) ------------------------
+    #
+    # A `BaselineProvider` resolved against a `forecast_solar` candidate
+    # (ADR-009 Amendment) has no attribute or subscription API to read at
+    # all — that integration's own sensors expose nothing forecast-shaped
+    # any more, and (unlike `weather.*`) it offers no push/subscription
+    # equivalent, only the request/response `forecast_solar.get_forecast`
+    # service. `_register_forecast_solar_polls` is therefore a genuine
+    # poll, on a fixed hourly interval — matching this integration's own
+    # update cadence, and the same "always hourly" preference ADR-009 §1a
+    # already applies to weather sourcing — rather than a subscription;
+    # `_handle_provider_update` is still the shared "push, then maybe
+    # recompute" tail every provider-update path converges on.
+
+    _FORECAST_SOLAR_POLL_INTERVAL = timedelta(hours=1)
+
+    def _forecast_solar_provider_ids(self) -> list[str]:
+        """Every currently-registered `forecast_solar`-shaped baseline
+        provider's own config-entry id (`BaselineProvider`'s docstring)
+        — the shared filter `_register_forecast_solar_polls` and
+        `_refresh_forecast_solar_providers` both need, kept in one place
+        rather than duplicated.
+        """
+        return [
+            entity_id
+            for entity_id, provider in self._entity_providers.items()
+            if isinstance(provider, BaselineProvider) and provider.shape == "forecast_solar"
+        ]
+
+    def _register_forecast_solar_polls(self) -> None:
+        for entity_id in self._forecast_solar_provider_ids():
+            self._unsub.append(
+                async_track_time_interval(
+                    self.hass,
+                    self._make_forecast_solar_poll(entity_id),
+                    self._FORECAST_SOLAR_POLL_INTERVAL,
+                )
+            )
+            # Immediate first sample rather than waiting a full hour for
+            # the first value — the same courtesy `_register_weather_
+            # forecast_subscriptions` extends via its own initial
+            # `async_update_listeners` call. Best-effort/fire-and-forget
+            # only: this runs from `__init__`, unconditionally, whether
+            # or not Home Assistant itself has finished starting yet
+            # (ADR-002 §1a) — this integration's own config entry can
+            # easily still be mid-setup at this exact moment, racing
+            # against every other integration's own startup, including
+            # Forecast.Solar's. `async_startup`/`async_refit`'s own
+            # `_refresh_forecast_solar_providers` call is the *awaited*,
+            # non-racy retry that actually closes that window; this one
+            # is purely a courtesy for the common case where Forecast.
+            # Solar happened to already be ready.
+            self.hass.async_create_task(self._poll_forecast_solar(entity_id))
+
+    async def _refresh_forecast_solar_providers(self) -> None:
+        """An *awaited* Forecast.Solar poll of every configured
+        `forecast_solar`-shaped baseline provider — called from
+        `async_startup` (ADR-002 §1's safety net) and `async_refit`
+        (scheduled recalibration and the manual Recalculate button
+        alike), so both actually wait for a fresh sample before fitting/
+        recomputing, rather than only ever relying on whatever
+        `_register_forecast_solar_polls`'s own fire-and-forget "immediate
+        first sample" already did (or failed to do, e.g. this
+        integration's config entry not yet loaded during Home
+        Assistant's own startup — exactly the race report that prompted
+        this method). A manual Recalculate press previously had no way
+        at all to recover from that missed first sample short of
+        waiting up to `_FORECAST_SOLAR_POLL_INTERVAL` for the next
+        scheduled poll; this closes that gap too.
+        """
+        for entity_id in self._forecast_solar_provider_ids():
+            await self._poll_forecast_solar(entity_id)
+
+    def _make_forecast_solar_poll(self, entity_id: str) -> Callable[[Any], None]:
+        @callback  # type: ignore[untyped-decorator]
+        def _handle(_now: Any) -> None:
+            self.hass.async_create_task(self._poll_forecast_solar(entity_id))
+
+        return _handle  # type: ignore[no-any-return]
+
+    async def _poll_forecast_solar(self, entity_id: str) -> None:
+        """Sample one Forecast.Solar config entry's current forecast and
+        push it, same as `_make_forecast_listener`'s weather-subscription
+        counterpart above — `entity_id` here is that config entry's own
+        `entry_id` (`BaselineProvider`'s docstring), not a real HA
+        entity_id, and is passed straight through to the service call
+        unchanged.
+        """
+        provider = self._entity_providers.get(entity_id)
+        if not isinstance(provider, BaselineProvider):
+            return
+        try:
+            response = await self.hass.services.async_call(
+                "forecast_solar",
+                "get_forecast",
+                {"config_entry": entity_id},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as exc:
+            _LOGGER.exception(
+                "Forecast.Solar poll failed for config entry %s — its baseline"
+                " forward() will keep returning nothing until the next hourly"
+                " poll (or a manual reload) succeeds",
+                entity_id,
+                exc_info=exc,
+            )
+            return
+        if not isinstance(response, dict) or not response.get("wh_period"):
+            _LOGGER.warning(
+                "Forecast.Solar poll for config entry %s returned no usable"
+                " wh_period data (response keys: %s)",
+                entity_id,
+                sorted(response) if isinstance(response, dict) else type(response).__name__,
+            )
+        else:
+            _LOGGER.debug(
+                "Forecast.Solar poll for config entry %s returned %d wh_period entr(y/ies)",
+                entity_id,
+                len(response["wh_period"]),
+            )
+        provider.update_live_forecast(response)
+        self._handle_provider_update(entity_id)

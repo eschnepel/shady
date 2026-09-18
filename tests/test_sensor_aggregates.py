@@ -13,29 +13,13 @@ aggregates `async_setup_entry` adds alongside it.
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
+from tests.support import _load, _run
+from tests.support_ha import FakeHomeAssistant, _install_ha_stub, _install_sensor_stub
 
 
 def _set_state(
@@ -58,220 +42,8 @@ def _set_state(
     _run(_drive())
 
 
-# -- hand-written `homeassistant` stub (real stand-in, not a mock) ----------
-
-
-def _callback(func: Any) -> Any:
-    return func
-
-
-class FakeState:
-    def __init__(
-        self,
-        entity_id: str,
-        attributes: dict[str, Any] | None = None,
-        state: str = "unknown",
-    ) -> None:
-        self.entity_id = entity_id
-        self.state = state
-        self.attributes = attributes or {}
-
-
-class FakeStates:
-    def __init__(self) -> None:
-        self._states: dict[str, FakeState] = {}
-        self._listeners: dict[str, list[Any]] = {}
-
-    def get(self, entity_id: str) -> FakeState | None:
-        return self._states.get(entity_id)
-
-    def async_all(self, domain: str | None = None) -> list[FakeState]:
-        values = list(self._states.values())
-        if domain is None:
-            return values
-        return [s for s in values if s.entity_id.startswith(f"{domain}.")]
-
-    def set(
-        self,
-        entity_id: str,
-        attributes: dict[str, Any] | None = None,
-        state: float | str | None = None,
-    ) -> None:
-        resolved_state = "unknown" if state is None else str(state)
-        self._states[entity_id] = FakeState(entity_id, attributes, resolved_state)
-        for listener in self._listeners.get(entity_id, []):
-            listener(None)
-
-
-class FakeStore:
-    """Real (non-`Mock`) stand-in for `homeassistant.helpers.storage
-    .Store` — backed by `hass.store_data`, matching every other test
-    file's copy of this stub."""
-
-    def __init__(self, hass: Any, version: int, key: str) -> None:
-        self._hass = hass
-        self._version = version
-        self._key = key
-
-    async def async_load(self) -> Any:
-        return self._hass.store_data.get(self._key)
-
-    async def async_save(self, data: Any) -> None:
-        self._hass.store_data[self._key] = data
-
-
-class FakeHomeAssistant:
-    def __init__(self) -> None:
-        self.states = FakeStates()
-        self.statistics: dict[str, dict[datetime, float]] = {}
-        self.data: dict[str, Any] = {}
-        self._pending_tasks: list[asyncio.Task[Any]] = []
-        self.store_data: dict[str, Any] = {}
-
-    async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
-        return func(*args)
-
-    def async_create_task(self, coro: Any) -> Any:
-        task = asyncio.ensure_future(coro)
-        self._pending_tasks.append(task)
-        return task
-
-    async def drain(self) -> None:
-        while self._pending_tasks:
-            pending = self._pending_tasks
-            self._pending_tasks = []
-            await asyncio.gather(*pending)
-
-
-def _install_ha_stub() -> None:
-    ha = ModuleType("homeassistant")
-    ha_core = ModuleType("homeassistant.core")
-    ha_config_entries = ModuleType("homeassistant.config_entries")
-    ha_const = ModuleType("homeassistant.const")
-    ha_helpers = ModuleType("homeassistant.helpers")
-    ha_helpers_event = ModuleType("homeassistant.helpers.event")
-    ha_helpers_storage = ModuleType("homeassistant.helpers.storage")
-    ha_components = ModuleType("homeassistant.components")
-    ha_recorder = ModuleType("homeassistant.components.recorder")
-    ha_recorder_statistics = ModuleType("homeassistant.components.recorder.statistics")
-    ha_components_sensor = ModuleType("homeassistant.components.sensor")
-
-    ha_core.callback = _callback  # type: ignore[attr-defined]
-
-    class FakeConfigEntry:
-        def __init__(self, entry_id: str, data: dict[str, Any]) -> None:
-            self.entry_id = entry_id
-            self.data = data
-
-    ha_config_entries.ConfigEntry = FakeConfigEntry  # type: ignore[attr-defined]
-
-    def async_track_time_change(
-        hass: Any, action: Any, *, hour: int, minute: int, second: int
-    ) -> Any:
-        return lambda: None
-
-    def async_track_time_interval(hass: Any, action: Any, interval: Any) -> Any:
-        # Same non-auto-firing convention as `async_track_time_change`
-        # above (TASK-0013) -- tests that need the intraday tick call
-        # `_handle_intraday_tick` directly.
-        return lambda: None
-
-    def async_track_state_change_event(hass: Any, entity_ids: list[str], action: Any) -> Any:
-        for entity_id in entity_ids:
-            hass.states._listeners.setdefault(entity_id, []).append(action)
-
-        def _unsub() -> None:
-            for entity_id in entity_ids:
-                listeners = hass.states._listeners.get(entity_id, [])
-                if action in listeners:
-                    listeners.remove(action)
-
-        return _unsub
-
-    ha_helpers_event.async_track_time_change = async_track_time_change  # type: ignore[attr-defined]
-    ha_helpers_event.async_track_time_interval = async_track_time_interval  # type: ignore[attr-defined]
-    ha_helpers_event.async_track_state_change_event = (  # type: ignore[attr-defined]
-        async_track_state_change_event
-    )
-
-    def statistics_during_period(
-        hass: Any,
-        start_time: datetime,
-        end_time: datetime | None,
-        statistic_ids: set[str] | None,
-        period: str,
-        units: Any,
-        types: set[str],
-    ) -> dict[str, list[dict[str, Any]]]:
-        result: dict[str, list[dict[str, Any]]] = {}
-        for entity_id in statistic_ids or set():
-            by_start = hass.statistics.get(entity_id, {})
-            rows = [
-                {"start": start, "mean": mean}
-                for start, mean in sorted(by_start.items())
-                if start >= start_time and (end_time is None or start < end_time)
-            ]
-            result[entity_id] = rows
-        return result
-
-    ha_recorder_statistics.statistics_during_period = statistics_during_period  # type: ignore[attr-defined]
-
-    # -- `homeassistant.components.sensor` --
-
-    class SensorEntity:
-        """Real (non-Mock) stand-in — nothing beyond a plain base class
-        carrying `_attr_*` attributes; every aggregate sensor overrides
-        every relevant property itself (ADR-000 §3's thin-glue rule)."""
-
-    class SensorDeviceClass:
-        POWER = "power"
-        ENERGY = "energy"
-
-    class SensorStateClass:
-        MEASUREMENT = "measurement"
-        TOTAL = "total"
-        TOTAL_INCREASING = "total_increasing"
-
-    ha_components_sensor.SensorEntity = SensorEntity  # type: ignore[attr-defined]
-    ha_components_sensor.SensorDeviceClass = SensorDeviceClass  # type: ignore[attr-defined]
-    ha_components_sensor.SensorStateClass = SensorStateClass  # type: ignore[attr-defined]
-
-    class UnitOfPower:
-        WATT = "W"
-
-    class UnitOfEnergy:
-        WATT_HOUR = "Wh"
-
-    ha_const.UnitOfPower = UnitOfPower  # type: ignore[attr-defined]
-    ha_const.UnitOfEnergy = UnitOfEnergy  # type: ignore[attr-defined]
-
-    ha_helpers_storage.Store = FakeStore  # type: ignore[attr-defined]
-
-    ha.core = ha_core  # type: ignore[attr-defined]
-    ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
-    ha.const = ha_const  # type: ignore[attr-defined]
-    ha.helpers = ha_helpers  # type: ignore[attr-defined]
-    ha_helpers.event = ha_helpers_event  # type: ignore[attr-defined]
-    ha_helpers.storage = ha_helpers_storage  # type: ignore[attr-defined]
-    ha.components = ha_components  # type: ignore[attr-defined]
-    ha_components.recorder = ha_recorder  # type: ignore[attr-defined]
-    ha_recorder.statistics = ha_recorder_statistics  # type: ignore[attr-defined]
-    ha_components.sensor = ha_components_sensor  # type: ignore[attr-defined]
-
-    sys.modules["homeassistant"] = ha
-    sys.modules["homeassistant.core"] = ha_core
-    sys.modules["homeassistant.config_entries"] = ha_config_entries
-    sys.modules["homeassistant.const"] = ha_const
-    sys.modules["homeassistant.helpers"] = ha_helpers
-    sys.modules["homeassistant.helpers.event"] = ha_helpers_event
-    sys.modules["homeassistant.helpers.storage"] = ha_helpers_storage
-    sys.modules["homeassistant.components"] = ha_components
-    sys.modules["homeassistant.components.recorder"] = ha_recorder
-    sys.modules["homeassistant.components.recorder.statistics"] = ha_recorder_statistics
-    sys.modules["homeassistant.components.sensor"] = ha_components_sensor
-
-
 _install_ha_stub()
+_install_sensor_stub()
 
 # Same `shady` top-level package trick every other HA-facing test file
 # established — required for coordinator.py's `from .regression import
@@ -299,7 +71,9 @@ _load("diagnostics/__init__.py", "shady.diagnostics")
 _load("diagnostics/base.py", "shady.diagnostics.base")
 _load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
 _const_mod = _load("const.py", "shady.const")
+_load("coordinator_like.py", "shady.coordinator_like")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
+_load("device.py", "shady.device")
 _sensor_mod = _load("sensor.py", "shady.sensor")
 
 ShadyCoordinator = _coordinator_mod.ShadyCoordinator
@@ -323,7 +97,6 @@ UnitOfEnergy = _ha_const.UnitOfEnergy
 # -- shared test fixture (mirrors test_coordinator.py's own) ---------------
 
 _NOW = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
-_YESTERDAY = datetime(2026, 6, 14, tzinfo=UTC)
 _BASELINE_ENTITY = "sensor.forecast_solar_estimate"
 _ACTUAL_YIELD_ENTITY = "sensor.string_a_yield"
 

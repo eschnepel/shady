@@ -14,226 +14,15 @@ module under test.
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# -- hand-written `homeassistant` stub (real stand-in, not a mock) ----------
-
-
-def _callback(func: Any) -> Any:
-    return func
-
-
-class FakeState:
-    def __init__(
-        self,
-        entity_id: str,
-        attributes: dict[str, Any] | None = None,
-        state: str = "unknown",
-    ) -> None:
-        self.entity_id = entity_id
-        self.state = state
-        self.attributes = attributes or {}
-
-
-class FakeStates:
-    def __init__(self) -> None:
-        self._states: dict[str, FakeState] = {}
-        self._listeners: dict[str, list[Any]] = {}
-
-    def get(self, entity_id: str) -> FakeState | None:
-        return self._states.get(entity_id)
-
-    def async_all(self, domain: str | None = None) -> list[FakeState]:
-        values = list(self._states.values())
-        if domain is None:
-            return values
-        return [s for s in values if s.entity_id.startswith(f"{domain}.")]
-
-    def set(
-        self,
-        entity_id: str,
-        attributes: dict[str, Any] | None = None,
-        state: float | str | None = None,
-    ) -> None:
-        """Set/update an entity's state and fire any registered
-        state-change listeners — a real (non-mock) stand-in for a live
-        HA state-changed event, sufficient for what `coordinator.py`'s
-        listeners actually read (they re-derive everything from current
-        state, never from the fired event's payload). `state` mirrors
-        real HA: always stored as a string (`_numeric_state`'s own
-        `float(state.state)` parse is what turns it back into a
-        number) — `None` keeps the pre-`TASK-0012` default of
-        `"unknown"`."""
-        resolved_state = "unknown" if state is None else str(state)
-        self._states[entity_id] = FakeState(entity_id, attributes, resolved_state)
-        for listener in self._listeners.get(entity_id, []):
-            listener(None)
-
-
-class FakeHomeAssistant:
-    def __init__(self) -> None:
-        self.states = FakeStates()
-        self.statistics: dict[str, dict[datetime, float]] = {}
-        self._pending_tasks: list[asyncio.Task[Any]] = []
-        # Backs `FakeStore` — a plain dict simulating on-disk persistence,
-        # so constructing a second coordinator against this same
-        # `FakeHomeAssistant` (a simulated restart) sees whatever the
-        # first one saved (ADR-005 §5/§6, ADR-007 §1, TASK-0012).
-        self.store_data: dict[str, Any] = {}
-
-    async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
-        return func(*args)
-
-    def async_create_task(self, coro: Any) -> Any:
-        task = asyncio.ensure_future(coro)
-        self._pending_tasks.append(task)
-        return task
-
-    async def drain(self) -> None:
-        """Test-only: let every `async_create_task`-scheduled coroutine
-        (recompute, midnight-triggered refit) actually run to completion
-        before assertions — mirrors pumping HA's own event loop."""
-        while self._pending_tasks:
-            pending = self._pending_tasks
-            self._pending_tasks = []
-            await asyncio.gather(*pending)
-
-
-class FakeStore:
-    """Real (non-`Mock`) stand-in for `homeassistant.helpers.storage
-    .Store` — backed by `hass.store_data` (see `FakeHomeAssistant`),
-    not an in-memory-only dict of its own, so a simulated restart
-    (constructing a second `FakeStore`/coordinator against the same
-    `hass`) actually observes a prior `async_save`."""
-
-    def __init__(self, hass: Any, version: int, key: str) -> None:
-        self._hass = hass
-        self._version = version
-        self._key = key
-
-    async def async_load(self) -> Any:
-        return self._hass.store_data.get(self._key)
-
-    async def async_save(self, data: Any) -> None:
-        self._hass.store_data[self._key] = data
-
-
-def _install_ha_stub() -> None:
-    ha = ModuleType("homeassistant")
-    ha_core = ModuleType("homeassistant.core")
-    ha_config_entries = ModuleType("homeassistant.config_entries")
-    ha_helpers = ModuleType("homeassistant.helpers")
-    ha_helpers_event = ModuleType("homeassistant.helpers.event")
-    ha_helpers_storage = ModuleType("homeassistant.helpers.storage")
-    ha_components = ModuleType("homeassistant.components")
-    ha_recorder = ModuleType("homeassistant.components.recorder")
-    ha_recorder_statistics = ModuleType("homeassistant.components.recorder.statistics")
-
-    ha_core.callback = _callback  # type: ignore[attr-defined]
-
-    class FakeConfigEntry:
-        def __init__(self, entry_id: str, data: dict[str, Any]) -> None:
-            self.entry_id = entry_id
-            self.data = data
-
-    ha_config_entries.ConfigEntry = FakeConfigEntry  # type: ignore[attr-defined]
-
-    def async_track_time_change(
-        hass: Any, action: Any, *, hour: int, minute: int, second: int
-    ) -> Any:
-        # Never auto-fires in tests — `_handle_midnight` is exercised
-        # directly, which is a real (non-mocked) call into the exact
-        # same handler this registration would eventually invoke.
-        return lambda: None
-
-    def async_track_time_interval(hass: Any, action: Any, interval: Any) -> Any:
-        # Same non-auto-firing convention as `async_track_time_change`
-        # above (TASK-0013) — `_handle_intraday_tick` is exercised
-        # directly in tests that need it.
-        return lambda: None
-
-    def async_track_state_change_event(hass: Any, entity_ids: list[str], action: Any) -> Any:
-        for entity_id in entity_ids:
-            hass.states._listeners.setdefault(entity_id, []).append(action)
-
-        def _unsub() -> None:
-            for entity_id in entity_ids:
-                listeners = hass.states._listeners.get(entity_id, [])
-                if action in listeners:
-                    listeners.remove(action)
-
-        return _unsub
-
-    ha_helpers_event.async_track_time_change = async_track_time_change  # type: ignore[attr-defined]
-    ha_helpers_event.async_track_time_interval = async_track_time_interval  # type: ignore[attr-defined]
-    ha_helpers_event.async_track_state_change_event = (  # type: ignore[attr-defined]
-        async_track_state_change_event
-    )
-
-    def statistics_during_period(
-        hass: Any,
-        start_time: datetime,
-        end_time: datetime | None,
-        statistic_ids: set[str] | None,
-        period: str,
-        units: Any,
-        types: set[str],
-    ) -> dict[str, list[dict[str, Any]]]:
-        result: dict[str, list[dict[str, Any]]] = {}
-        for entity_id in statistic_ids or set():
-            by_start = hass.statistics.get(entity_id, {})
-            rows = [
-                {"start": start, "mean": mean}
-                for start, mean in sorted(by_start.items())
-                if start >= start_time and (end_time is None or start < end_time)
-            ]
-            result[entity_id] = rows
-        return result
-
-    ha_recorder_statistics.statistics_during_period = statistics_during_period  # type: ignore[attr-defined]
-
-    ha_helpers_storage.Store = FakeStore  # type: ignore[attr-defined]
-
-    ha.core = ha_core  # type: ignore[attr-defined]
-    ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
-    ha.helpers = ha_helpers  # type: ignore[attr-defined]
-    ha_helpers.event = ha_helpers_event  # type: ignore[attr-defined]
-    ha_helpers.storage = ha_helpers_storage  # type: ignore[attr-defined]
-    ha.components = ha_components  # type: ignore[attr-defined]
-    ha_components.recorder = ha_recorder  # type: ignore[attr-defined]
-    ha_recorder.statistics = ha_recorder_statistics  # type: ignore[attr-defined]
-
-    sys.modules["homeassistant"] = ha
-    sys.modules["homeassistant.core"] = ha_core
-    sys.modules["homeassistant.config_entries"] = ha_config_entries
-    sys.modules["homeassistant.helpers"] = ha_helpers
-    sys.modules["homeassistant.helpers.event"] = ha_helpers_event
-    sys.modules["homeassistant.helpers.storage"] = ha_helpers_storage
-    sys.modules["homeassistant.components"] = ha_components
-    sys.modules["homeassistant.components.recorder"] = ha_recorder
-    sys.modules["homeassistant.components.recorder.statistics"] = ha_recorder_statistics
-
+from tests.support import _load, _run
+from tests.support_ha import ConfigEntryState, FakeHomeAssistant, _install_ha_stub
 
 _install_ha_stub()
 
@@ -270,6 +59,7 @@ _load("diagnostics/__init__.py", "shady.diagnostics")
 _diagnostics_base_mod = _load("diagnostics/base.py", "shady.diagnostics.base")
 _load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
 _const_mod = _load("const.py", "shady.const")
+_load("coordinator_like.py", "shady.coordinator_like")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
 
 # TYPE_CHECKING-only static import mirroring the runtime file-path load
@@ -280,11 +70,17 @@ _coordinator_mod = _load("coordinator.py", "shady.coordinator")
 # the file-path load avoids.
 if TYPE_CHECKING:
     from shady.diagnostics.base import DiagnosticMode as DiagnosticMode  # noqa: PLC0414
+    from shady.providers.base import Provider as Provider  # noqa: PLC0414
+    from shady.providers.discovery import BaselineProvider as BaselineProvider  # noqa: PLC0414
 else:
     DiagnosticMode = _diagnostics_base_mod.DiagnosticMode
+    Provider = sys.modules["shady.providers.base"].Provider
+    BaselineProvider = sys.modules["shady.providers.discovery"].BaselineProvider
 
 ShadyCoordinator = _coordinator_mod.ShadyCoordinator
 Cache = sys.modules["shady.cache"].Cache
+IntradayBasis = sys.modules["shady.cache"].IntradayBasis
+IntradayState = sys.modules["shady.cache"].IntradayState
 CONF_STRINGS = _const_mod.CONF_STRINGS
 
 # -- shared test fixture -----------------------------------------------
@@ -369,10 +165,6 @@ def _make_coordinator(entry: Any | None = None) -> tuple[Any, FakeHomeAssistant]
     coordinator = ShadyCoordinator(hass, entry or _make_entry())
     coordinator._now = lambda: _NOW  # deterministic clock for state-change-triggered paths
     return coordinator, hass
-
-
-def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
 
 
 def _make_temperature_aware_coordinator() -> tuple[Any, FakeHomeAssistant]:
@@ -536,6 +328,23 @@ class TestStartupSafetyNet:
         first_fit_at = coordinator._last_fit_at
         _run(coordinator.async_startup(_NOW + timedelta(hours=1)))
         assert coordinator._last_fit_at == first_fit_at  # unchanged: no re-fit triggered
+
+    def test_async_startup_backfills_todays_elapsed_slots(self) -> None:
+        """`async_startup` (ADR-002 §1a) also closes the startup gap
+        `_recompute_string` deliberately leaves — a fresh coordinator's
+        in-memory forecast cache has nothing at all for today's already-
+        elapsed slots until this runs."""
+        coordinator, _hass = _make_coordinator()
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        today_start_index = Cache.index_for(today_start)
+        now_index = Cache.index_for(_NOW)
+
+        _run(coordinator.async_startup(_NOW))
+
+        pushed = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        elapsed = {index: value for index, value in pushed.items() if index < now_index}
+        assert elapsed  # today's elapsed slots were actually backfilled
+        assert all(index >= today_start_index for index in elapsed)
 
 
 class TestMissingRequiredEntities:
@@ -761,6 +570,58 @@ class TestRecomputeHorizon:
         assert pushed  # something was produced
         assert all(index >= now_index + 1 for index in pushed)  # never before "now"
         assert all(index < Cache.index_for(horizon_end) for index in pushed)
+
+
+class TestRecomputeForwardFillsSparseRawSamples:
+    """A raw baseline series that only reports on a coarser grid than
+    `FC`'s own 5-minute slots (e.g. an hourly weather/PV-forecast
+    provider, ADR-009 §1a) must have each sample held forward across
+    every slot up to the next sample's own timestamp — not just the one
+    slot its timestamp happens to land on, which used to leave every
+    other slot in that hour permanently `None`/unpushed."""
+
+    def test_every_remaining_slot_in_the_hour_is_filled_not_just_one(self) -> None:
+        coordinator, hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        hour_start = _NOW.replace(minute=0, second=0, microsecond=0)
+
+        class _HourlyProvider(BaselineProvider):
+            def forward(self, now: datetime) -> list[tuple[datetime, float]]:
+                return [(hour_start, 500.0), (hour_start + timedelta(hours=1), 600.0)]
+
+        coordinator._entity_providers[_BASELINE_ENTITY] = _HourlyProvider(
+            hass, _BASELINE_ENTITY, "wh_period", "sensor_dict"
+        )
+
+        coordinator._recompute_string(coordinator._strings[0], _NOW)
+
+        pushed = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        hour_start_index = Cache.index_for(hour_start)
+        # Offset 0 (the current slot, `_NOW` itself) is frozen by
+        # `not_before_index`; every one of the 11 remaining slots this
+        # hour must have been filled from the same 500.0 raw sample.
+        for offset in range(1, 12):
+            assert hour_start_index + offset in pushed
+
+    def test_zero_raw_forecast_fills_its_whole_span_with_zero(self) -> None:
+        coordinator, hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        hour_start = _NOW.replace(minute=0, second=0, microsecond=0)
+
+        class _ZeroThenPositiveProvider(BaselineProvider):
+            def forward(self, now: datetime) -> list[tuple[datetime, float]]:
+                return [(hour_start, 0.0), (hour_start + timedelta(hours=1), 500.0)]
+
+        coordinator._entity_providers[_BASELINE_ENTITY] = _ZeroThenPositiveProvider(
+            hass, _BASELINE_ENTITY, "wh_period", "sensor_dict"
+        )
+
+        coordinator._recompute_string(coordinator._strings[0], _NOW)
+
+        pushed = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        hour_start_index = Cache.index_for(hour_start)
+        for offset in range(1, 12):
+            assert pushed[hour_start_index + offset] == 0.0
 
 
 class TestPushSemantics:
@@ -1561,3 +1422,731 @@ class TestDiagnosticSensorIds:
 
         result = coordinator.diagnostic_sensor_ids()
         assert result == [("0", "Dummy"), ("extra", "Extra")]  # first registration wins for "0"
+
+
+class TestEnsureBaselineProviderGuards:
+    """`_ensure_baseline_provider` (construction helper) is a no-op —
+    the already-registered provider is left in place, not replaced —
+    when `entity_id` is already registered, and never registers
+    anything at all when `attribute`/`shape` is `None` (a per-string
+    override with only `baseline_entity_id` set, e.g., ADR-002 §2)."""
+
+    def test_duplicate_entity_id_is_left_untouched(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        existing = coordinator._entity_providers[_BASELINE_ENTITY]
+
+        coordinator._ensure_baseline_provider(_BASELINE_ENTITY, "wh_period", "sensor_dict")
+
+        assert coordinator._entity_providers[_BASELINE_ENTITY] is existing
+
+    def test_none_attribute_registers_nothing(self) -> None:
+        coordinator, _hass = _make_coordinator()
+
+        coordinator._ensure_baseline_provider("sensor.never_registered", None, None)
+
+        assert "sensor.never_registered" not in coordinator._entity_providers
+
+    def test_history_entity_id_threads_through_to_the_constructed_provider(self) -> None:
+        """ADR-009 §1c Amendment / ADR-012 §2a Amendment (`TASK-0034`) —
+        `_ensure_baseline_provider`'s new optional fifth argument reaches
+        the constructed `BaselineProvider` unchanged, readable back via
+        the generic `Provider.history_entity_id()` method."""
+        coordinator, _hass = _make_coordinator()
+
+        coordinator._ensure_baseline_provider(
+            "fs_entry_new", "wh_period", "forecast_solar", "sensor.power_production_now"
+        )
+
+        provider = coordinator._entity_providers["fs_entry_new"]
+        assert provider.history_entity_id() == "sensor.power_production_now"
+
+    def test_history_entity_id_defaults_to_none(self) -> None:
+        coordinator, _hass = _make_coordinator()
+
+        coordinator._ensure_baseline_provider("fs_entry_new", "wh_period", "forecast_solar")
+
+        provider = coordinator._entity_providers["fs_entry_new"]
+        assert provider.history_entity_id() is None
+
+
+class TestFetchActualYieldStatisticsEpochTimestamp:
+    """`_fetch_actual_yield_statistics` (ADR-007a §4) parses a
+    recorder-returned row's `"start"` via `datetime.fromtimestamp` when
+    it comes back as a raw epoch number rather than an already-parsed
+    `datetime` — real HA's recorder can return either shape depending
+    on the query path; `support_ha.py`'s own `statistics_during_period`
+    stand-in always returns `datetime`s, so this monkeypatches the
+    coordinator module's imported name directly, for this one test
+    only, to exercise the other shape."""
+
+    def test_epoch_float_start_is_parsed_into_a_datetime(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        epoch = _NOW.timestamp()
+        original = _coordinator_mod.statistics_during_period
+
+        def _fake_statistics_during_period(
+            hass: Any, start: Any, end: Any, statistic_ids: Any, period: Any, units: Any, types: Any
+        ) -> dict[str, list[dict[str, Any]]]:
+            return {_ACTUAL_YIELD_ENTITY: [{"start": epoch, "mean": 123.0}]}
+
+        _coordinator_mod.statistics_during_period = _fake_statistics_during_period  # type: ignore[attr-defined]
+        try:
+            result = coordinator._fetch_actual_yield_statistics(
+                _ACTUAL_YIELD_ENTITY, _NOW, _NOW + timedelta(minutes=5)
+            )
+        finally:
+            _coordinator_mod.statistics_during_period = original  # type: ignore[attr-defined]
+
+        assert result == [123.0]
+
+
+class TestFetchFnHistoryEntityRouting:
+    """`_fetch_fn` (ADR-007a §4) routes a past-dated query to the new
+    `_fetch_provider_history_statistics` — generically, via
+    `Provider.history_entity_id()` (ADR-012 §1/§2a Amendment), never an
+    `isinstance(provider, BaselineProvider)` check — instead of
+    `provider.fetch()`, whenever the registered provider resolves a
+    non-`None` history entity; a provider whose `history_entity_id()`
+    stays at the base class's `None` default keeps routing to
+    `provider.fetch()` exactly as before this amendment (`TASK-0034`)."""
+
+    _HISTORY_ENTITY = "sensor.power_production_now"
+
+    def test_routes_to_recorder_when_history_entity_id_resolved(self) -> None:
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+            baseline_history_entity_id=self._HISTORY_ENTITY,
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.statistics[self._HISTORY_ENTITY] = {
+            _YESTERDAY: 111.0,
+            _YESTERDAY + timedelta(minutes=5): 222.0,
+        }
+
+        async def _construct() -> Any:
+            # Construction itself schedules an immediate Forecast.Solar
+            # poll task (`_register_forecast_solar_polls`) for this
+            # shape — needs a running loop to attach to, like every
+            # other `hass.async_create_task` call site (mirrors
+            # `TestBaselineMissingForecastSolarShape` above).
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        coordinator = _run(_construct())
+
+        result = coordinator._fetch_fn("fs_entry_1", _YESTERDAY, _YESTERDAY + timedelta(minutes=15))
+
+        assert result == [111.0, 222.0, None]
+
+    def test_falls_back_to_provider_fetch_when_no_history_entity_id(self) -> None:
+        """The default fixture's global baseline (`sensor_dict`, no
+        `baseline_history_entity_id`) is unaffected by this amendment —
+        `provider.history_entity_id()` stays `None`, so `_fetch_fn`
+        still calls `provider.fetch()`, reading the seeded
+        `_synthetic_wh_period` state exactly as before `TASK-0034`."""
+        coordinator, _hass = _make_coordinator()
+
+        result = coordinator._fetch_fn(_BASELINE_ENTITY, _NOW, _NOW + timedelta(minutes=5))
+
+        assert result == [500.0]
+
+    def test_history_entity_routing_leaves_forward_push_path_untouched(self) -> None:
+        """ADR-012 §2a's own explicit claim: a resolved `history_
+        entity_id` only ever changes `_fetch_fn`'s dispatch, never
+        `forward()`/the push path."""
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+            baseline_history_entity_id=self._HISTORY_ENTITY,
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+
+        async def _construct() -> Any:
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        coordinator = _run(_construct())
+        provider = coordinator._entity_providers["fs_entry_1"]
+        provider.update_live_forecast({"wh_period": {_NOW.isoformat(): 999.0}})
+
+        forwarded = provider.forward(_NOW)
+
+        assert forwarded == [(_NOW, 999.0)]
+
+
+class TestFetchProviderHistoryStatistics:
+    """`_fetch_provider_history_statistics` (ADR-012 §2a Amendment,
+    `TASK-0034`) mirrors `_fetch_actual_yield_statistics` exactly — same
+    epoch-timestamp parsing, same slot-mapping — deliberately not shared
+    or refactored between the two (ADR-012 §2a's own explicit scope)."""
+
+    def test_returns_seeded_recorder_values_by_slot(self) -> None:
+        coordinator, hass = _make_coordinator()
+        hass.statistics["sensor.power_production_now"] = {
+            _YESTERDAY: 50.0,
+            _YESTERDAY + timedelta(minutes=5): 75.0,
+        }
+
+        result = coordinator._fetch_provider_history_statistics(
+            "sensor.power_production_now", _YESTERDAY, _YESTERDAY + timedelta(minutes=10)
+        )
+
+        assert result == [50.0, 75.0]
+
+    def test_epoch_float_start_is_parsed_into_a_datetime(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        epoch = _NOW.timestamp()
+        original = _coordinator_mod.statistics_during_period
+
+        def _fake_statistics_during_period(
+            hass: Any, start: Any, end: Any, statistic_ids: Any, period: Any, units: Any, types: Any
+        ) -> dict[str, list[dict[str, Any]]]:
+            return {"sensor.power_production_now": [{"start": epoch, "mean": 321.0}]}
+
+        _coordinator_mod.statistics_during_period = _fake_statistics_during_period  # type: ignore[attr-defined]
+        try:
+            result = coordinator._fetch_provider_history_statistics(
+                "sensor.power_production_now", _NOW, _NOW + timedelta(minutes=5)
+            )
+        finally:
+            _coordinator_mod.statistics_during_period = original  # type: ignore[attr-defined]
+
+        assert result == [321.0]
+
+
+class TestNumericStateMissingEntity:
+    """`_numeric_state` (ADR-005 §1) returns `None`, not a `KeyError`/
+    `AttributeError`, for an entity that does not currently exist."""
+
+    def test_missing_entity_returns_none(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator._numeric_state("sensor.does_not_exist_at_all") is None
+
+
+class TestBaselineMissingForecastSolarShape:
+    """`_baseline_missing` (ADR-009 Amendment) checks a `forecast_solar`-
+    shaped baseline's existence via `hass.config_entries.async_get_entry`
+    rather than `hass.states.get` — that shape stores a config entry's
+    own `entry_id` in the field HA entity IDs normally occupy."""
+
+    def test_missing_when_no_matching_config_entry_is_loaded(self) -> None:
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+
+        async def _construct() -> Any:
+            # Construction itself schedules an immediate Forecast.Solar
+            # poll task (`_register_forecast_solar_polls`) for this
+            # shape — needs a running loop to attach to, like every
+            # other `hass.async_create_task` call site.
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        coordinator = _run(_construct())
+
+        assert coordinator._baseline_missing("fs_entry_1") is True
+        assert "fs_entry_1" in coordinator.missing_required_entities()
+
+    def test_missing_when_config_entry_exists_but_is_not_yet_loaded(self) -> None:
+        """The exact race a real user hit: `async_get_entry` already
+        returns a non-`None` entry the moment Home Assistant has begun
+        setting up Forecast.Solar, well before that setup (and its
+        `get_forecast` service) is actually ready — mere presence must
+        not be mistaken for readiness."""
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.config_entries.register_entry("fs_entry_1", state=ConfigEntryState.SETUP_IN_PROGRESS)
+
+        async def _construct() -> Any:
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        coordinator = _run(_construct())
+
+        assert coordinator._baseline_missing("fs_entry_1") is True
+        assert "fs_entry_1" in coordinator.missing_required_entities()
+
+    def test_not_missing_once_the_config_entry_is_loaded(self) -> None:
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.config_entries.register_entry("fs_entry_1")
+
+        async def _construct() -> Any:
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        coordinator = _run(_construct())
+
+        assert coordinator._baseline_missing("fs_entry_1") is False
+        assert "fs_entry_1" not in coordinator.missing_required_entities()
+
+
+class TestTargetCellTemperatureForSlotEdgeCases:
+    """`target_cell_temperature_for_slot` (ADR-004 §5's coordinator-level
+    diagnostic wiring) returns `None`, rather than raising, both when
+    the string has no resolved temperature source at all and when
+    `_predict_target_slot_temperature` itself can't produce a value."""
+
+    def test_none_when_no_temperature_source_resolved(self) -> None:
+        coordinator, _hass = _make_coordinator()  # default fixture: no temperature source
+        index = Cache.index_for(_NOW)
+        assert coordinator.target_cell_temperature_for_slot(0, index) is None
+
+    def test_none_when_predict_target_slot_temperature_returns_none(self) -> None:
+        # Weather tier resolved, but no `rated_dc_capacity_wp` configured
+        # -> `_predict_target_slot_temperature` itself returns `None`
+        # (its own documented "no correction can be produced" case).
+        entry = _make_entry(default_temperature_source="weather.home")
+        hass = FakeHomeAssistant()
+        hass.states.set(
+            _BASELINE_ENTITY,
+            {"wh_period": _synthetic_wh_period(_YESTERDAY, _NOW + timedelta(days=3))},
+        )
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.states.set("weather.home", {"temperature": 20.0, "forecast": []})
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+
+        index = Cache.index_for(_NOW)
+        assert coordinator.target_cell_temperature_for_slot(0, index) is None
+
+
+class TestFcSumFcDayArrayNoStrings:
+    """`fc_sum`/`fc_day_array` (ADR-005 §2/§3) degrade gracefully — no
+    `IndexError`/empty-`get_time_range` crash — for a config entry with
+    zero configured strings."""
+
+    @staticmethod
+    def _make_no_strings_coordinator() -> Any:
+        entry = _make_entry(**{CONF_STRINGS: []})
+        hass = FakeHomeAssistant()
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+        return coordinator
+
+    def test_fc_sum_is_none_with_no_strings(self) -> None:
+        coordinator = self._make_no_strings_coordinator()
+        assert coordinator.fc_sum(_NOW) is None
+
+    def test_fc_day_array_is_all_none_with_no_strings(self) -> None:
+        coordinator = self._make_no_strings_coordinator()
+        timestamps, values = coordinator.fc_day_array(_NOW)
+        assert len(timestamps) == 288
+        assert values == [None] * 288
+
+
+class TestActualYieldListenersNoStrings:
+    """`_register_actual_yield_listeners` (ADR-005 §5) registers no
+    listener at all for a config entry with zero configured strings —
+    there is no actual-yield entity to track (unlike the global
+    baseline provider, which is still registered independent of any
+    string — see `TestGenericProviderPushLoop` — so only the
+    actual-yield entity itself is asserted absent here)."""
+
+    def test_no_listener_registered_with_no_strings(self) -> None:
+        entry = _make_entry(**{CONF_STRINGS: []})
+        hass = FakeHomeAssistant()
+        ShadyCoordinator(hass, entry)
+        assert _ACTUAL_YIELD_ENTITY not in hass.states._listeners
+
+
+class TestEnergyResetHandlerFiresPersist:
+    """`_handle_energy_reset` (ADR-005 §5/§6's day-boundary schedule)
+    schedules a persist only when `_maybe_reset_energy_totals` actually
+    performed a reset — true for a freshly constructed coordinator,
+    whose `cache.last_reset_date()` starts as `None`."""
+
+    def test_fresh_coordinator_triggers_a_persist_task(self) -> None:
+        coordinator, hass = _make_coordinator()
+        assert coordinator.cache.last_reset_date() is None
+
+        async def _drive() -> None:
+            coordinator._handle_energy_reset(_NOW)
+            await hass.drain()
+
+        _run(_drive())
+        assert coordinator.cache.last_reset_date() == _NOW.date()
+
+
+class TestRecomputeStringEarlyReturns:
+    """`_recompute_string` (ADR-002 §2/ADR-006 §1) returns early — no
+    push, no exception — for every one of its defensive "nothing to
+    recompute yet" branches."""
+
+    def test_no_baseline_configured_at_all(self) -> None:
+        entry = _make_entry(
+            baseline_entity_id=None,
+            baseline_attribute=None,
+            baseline_shape=None,
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+        # A model wouldn't normally exist without a resolvable baseline
+        # (`_fit_string`'s own matching guard) — set one by hand purely
+        # to reach this method's own, independent baseline check.
+        borrowed_model = _fit_a_real_model()
+        coordinator.cache.set_model("shading", 0, borrowed_model)
+
+        coordinator._recompute_string(coordinator._strings[0], _NOW)
+
+        assert coordinator.cache.validated_range(coordinator.forecast_sensor_id(0)) is None
+
+    def test_resolved_baseline_entity_has_no_registered_provider(self) -> None:
+        # A per-string `baseline_entity_id` with no `baseline_attribute`/
+        # `baseline_shape` (ADR-002 §2's override fields) never gets a
+        # `BaselineProvider` registered (`_ensure_baseline_provider`'s
+        # own `attribute is None or shape is None` guard) — so it
+        # resolves non-`None` here but has nothing in
+        # `_entity_providers` to recompute from.
+        entry = _make_entry(
+            strings=[
+                {
+                    "name": "Dach Süd",
+                    "baseline_entity_id": "sensor.orphan_baseline",
+                    "baseline_attribute": None,
+                    "baseline_shape": None,
+                    "actual_yield_entity_id": _ACTUAL_YIELD_ENTITY,
+                    "converter_limit_w": None,
+                    "temperature_source_entity_id": None,
+                    "temperature_coefficient_pct_per_c": -0.4,
+                    "rated_dc_capacity_wp": None,
+                }
+            ],
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+        borrowed_model = _fit_a_real_model()
+        coordinator.cache.set_model("shading", 0, borrowed_model)
+
+        coordinator._recompute_string(coordinator._strings[0], _NOW)
+
+        assert coordinator.cache.validated_range(coordinator.forecast_sensor_id(0)) is None
+
+    def test_baseline_series_entirely_outside_the_recompute_horizon(self) -> None:
+        coordinator, hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        before = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        assert before  # sanity: the normal refit did push something
+
+        class _OutOfHorizonProvider(BaselineProvider):
+            def forward(self, now: datetime) -> list[tuple[datetime, float]]:
+                return [(now + timedelta(days=5), 500.0)]
+
+        coordinator._entity_providers[_BASELINE_ENTITY] = _OutOfHorizonProvider(
+            hass, _BASELINE_ENTITY, "wh_period", "sensor_dict"
+        )
+
+        coordinator._recompute_string(coordinator._strings[0], _NOW)
+
+        after = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        assert after == before  # unchanged: the early return, not a crash-then-silent-push
+
+    def test_empty_values_by_index_after_predict_day_basis(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        before = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+
+        original = coordinator._predict_day_basis
+        coordinator._predict_day_basis = lambda *args, **kwargs: ({}, {})
+        try:
+            coordinator._recompute_string(coordinator._strings[0], _NOW)
+        finally:
+            coordinator._predict_day_basis = original
+
+        after = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        assert after == before
+
+    def test_empty_pushed_dict_after_clamp(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        before = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+
+        original = coordinator._clamp_basis
+        coordinator._clamp_basis = lambda *args, **kwargs: {}
+        try:
+            coordinator._recompute_string(coordinator._strings[0], _NOW)
+        finally:
+            coordinator._clamp_basis = original
+
+        after = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        assert after == before
+
+
+def _fit_a_real_model() -> Any:
+    """A real, validly-fitted `FittedModel` instance (borrowed from a
+    normally-configured coordinator), for tests that need
+    `cache.get_model("shading", ...)` to be non-`None` purely to reach
+    an unrelated, later branch — not to exercise the fit itself."""
+    donor, _hass = _make_coordinator()
+    _run(donor.async_refit(_NOW))
+    model = donor.cache.get_model("shading", 0)
+    assert model is not None
+    return model
+
+
+class TestPredictDayBasisPastSlotSkip:
+    """`_predict_day_basis` (ADR-002 §3) skips any slot whose absolute
+    index is already before `now` — called directly here with a
+    same-day, earlier-than-`now` slot, since `_recompute_string`'s own
+    pre-filter (`now <= ts < horizon_end`) never actually lets such a
+    slot reach this method through the normal call path."""
+
+    def test_past_slot_is_excluded_from_the_result(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        string = coordinator._strings[0]
+        day = _NOW.date()
+        midnight_slot = 0  # 00:00 same day -- strictly before _NOW (10:00)
+
+        values, fc = coordinator._predict_day_basis(string, day, {midnight_slot: 500.0}, _NOW)
+
+        assert values == {}
+        assert fc == {}
+
+
+class TestPredictDayBasisBefore:
+    """`_predict_day_basis_before` (ADR-002 §1a) is the mirror image of
+    `_predict_day_basis`: restricted to slots strictly *before* a given
+    index, rather than at/after `now` — the one piece
+    `_backfill_elapsed_today_slots_for_string` needs and the normal
+    recompute path never does."""
+
+    def test_only_slots_before_the_given_index_are_included(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        string = coordinator._strings[0]
+        day = _NOW.date()
+        day_start_index = Cache.index_for(datetime(day.year, day.month, day.day, tzinfo=UTC))
+        before_index = day_start_index + 5
+
+        values, fc = coordinator._predict_day_basis_before(
+            string, day, {4: 500.0, 5: 500.0, 6: 500.0}, before_index
+        )
+
+        assert set(values) == {day_start_index + 4}
+        assert set(fc) == {day_start_index + 4}
+
+
+class TestBackfillElapsedTodaySlots:
+    """`_backfill_elapsed_today_slots` (ADR-002 §1a) — `async_startup`'s
+    own one-time catch-up for today's already-elapsed slots, which a
+    fresh restart's empty in-memory forecast cache would otherwise
+    leave permanently `None`: `_recompute_string` deliberately never
+    fills a slot before `now` (ADR-002 §3), since under continuous
+    operation it was always written before it became past."""
+
+    def test_fills_elapsed_slots_from_history(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        _run(coordinator.async_refit(_NOW))
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        today_start_index = Cache.index_for(today_start)
+        now_index = Cache.index_for(_NOW)
+        before = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        # Sanity: the normal recompute never touched anything before "now".
+        assert all(index > now_index for index in before)
+
+        coordinator._backfill_elapsed_today_slots(_NOW)
+
+        after = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        newly_filled = set(after) - set(before)
+        assert newly_filled  # something was actually backfilled
+        assert all(today_start_index <= index < now_index for index in newly_filled)
+
+    def test_no_op_at_exactly_midnight(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        midnight = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        _run(coordinator.async_refit(midnight))
+        before = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+
+        coordinator._backfill_elapsed_today_slots(midnight)
+
+        after = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        assert after == before  # nothing has elapsed yet today, nothing to backfill
+
+    def test_skips_a_string_with_no_fitted_model_yet(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        # Deliberately never fit — no model at all yet.
+        coordinator._backfill_elapsed_today_slots(_NOW)
+        assert coordinator.cache.validated_range(coordinator.forecast_sensor_id(0)) is None
+
+    def test_one_strings_failure_does_not_abort_the_others(self) -> None:
+        coordinator, _hass = _make_two_string_coordinator()
+        borrowed_model = _fit_a_real_model()
+        coordinator.cache.set_model("shading", 0, borrowed_model)
+        coordinator.cache.set_model("shading", 1, borrowed_model)
+
+        original = coordinator._backfill_elapsed_today_slots_for_string
+
+        def _boom(string: Any, today_start: datetime, now: datetime) -> None:
+            if string.index == 0:
+                raise RuntimeError("synthetic backfill failure")
+            original(string, today_start, now)
+
+        coordinator._backfill_elapsed_today_slots_for_string = _boom
+
+        coordinator._backfill_elapsed_today_slots(_NOW)  # must not raise
+
+        after = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(1))
+        assert after  # string 1 still got backfilled despite string 0's failure
+
+
+class TestClampBasisEmptyInput:
+    """`_clamp_basis` (ADR-006 §1b) returns `{}` for an empty basis,
+    rather than building a zero-length `numpy` array and indexing into
+    it."""
+
+    def test_empty_values_returns_empty_dict(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator._clamp_basis({}, {}, None) == {}
+
+
+class TestComputeIntradayOutputEmptyBasis:
+    """`_compute_intraday_output` (ADR-006 §1a/§1b) returns `{}` for an
+    `IntradayState` whose basis has no slots at all."""
+
+    def test_empty_basis_returns_empty_dict(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        basis = IntradayBasis(values={}, fc={}, inverter_limit=None)
+        state = IntradayState(
+            reset_at=_NOW,
+            active_slots_since_reset=0,
+            basis=basis,
+            ratio_string=None,
+            effective_factor=1.0,
+        )
+        assert coordinator._compute_intraday_output(state) == {}
+
+
+class TestIntradayEnergyWindowNoElapsedTime:
+    """`_intraday_energy_window` (ADR-006 §1a) returns `(0.0, 0.0)`
+    without querying the cache at all when `now` has not advanced past
+    the window's own start — the zero-width-window edge case."""
+
+    def test_now_equal_to_start_returns_zero_zero(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        string = coordinator._strings[0]
+        assert coordinator._intraday_energy_window(string, _NOW, _NOW) == (0.0, 0.0)
+
+
+class TestAdvanceIntradayStringNoState:
+    """`_advance_intraday_string` (ADR-006 §1a) is a no-op for a string
+    with no `IntradayState` yet (mode just turned on, or no recompute
+    has run since) — the next recompute establishes one, not this
+    method."""
+
+    def test_no_state_yet_is_a_no_op(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        string = coordinator._strings[0]
+        assert coordinator.cache.intraday_state(string.index) is None
+
+        coordinator._advance_intraday_string(string, _NOW)
+
+        assert coordinator.cache.intraday_state(string.index) is None
+
+
+class TestIntradayTickFullDispatchPath:
+    """The 5-minute intraday/diagnostics tick's full, real dispatch
+    chain (`_handle_intraday_tick` -> `_async_intraday_tick` ->
+    `_intraday_tick_sync`, ADR-006 §1a/ADR-004 §2/§4) — every other
+    intraday test in this module calls `_advance_intraday_string`
+    directly; this is the one test exercising the actual scheduled-
+    callback/executor-job path those tests all bypass."""
+
+    def test_tick_completes_without_error_when_everything_is_off(self) -> None:
+        coordinator, hass = _make_coordinator()  # default fixture: intraday + diagnostics off
+
+        async def _drive() -> None:
+            coordinator._handle_intraday_tick(_NOW)
+            await hass.drain()  # let the scheduled task actually run to completion
+
+        _run(_drive())
+
+        assert hass._pending_tasks == []  # the task ran, not just got queued
+
+
+class TestDiagnosticsTickSyncModeOff:
+    """`_diagnostics_tick_sync` (ADR-004 §2/§4) is a genuine no-op — the
+    zero-extra-cost guarantee ADR-004 §1 promises — when no diagnostic
+    mode is active, the default state for every config entry."""
+
+    def test_no_active_mode_is_a_no_op(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator.active_diagnostic_mode() == "off"
+
+        coordinator._diagnostics_tick_sync(_NOW)
+
+        assert coordinator._diagnostic_result_cache is None
+
+
+class TestRegisterProviderListenersSkipsNonForwardingProviders:
+    """`_register_provider_listeners` (ADR-012 §4) registers no
+    listener at all for a `Provider` that leaves `forward()` at its
+    base-class default — "no forecast concept of its own" — even
+    though every provider this project actually ships
+    (`BaselineProvider`/`TemperatureProvider`) does override it."""
+
+    def test_provider_without_forward_gets_no_listener(self) -> None:
+        coordinator, hass = _make_coordinator()
+
+        class _NoForwardConceptProvider(Provider):
+            def fetch(self, start: datetime, end: datetime) -> list[float | None | str]:
+                return []
+
+        coordinator._entity_providers["sensor.no_forward_concept"] = _NoForwardConceptProvider()
+
+        coordinator._register_provider_listeners()
+
+        assert "sensor.no_forward_concept" not in hass.states._listeners
+
+
+class TestPushProviderSeriesEdgeCases:
+    """`_push_provider_series` (ADR-012 §4) is a no-op, not a crash, for
+    an unrecognized entity_id and for a provider whose `forward()`
+    returns a non-`list` iterable that turns out empty once consumed
+    (the `if not series`/`if not values` distinction: a bare iterator
+    object is always truthy, unlike an empty `list`)."""
+
+    def test_unregistered_entity_id_is_a_no_op(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._push_provider_series("sensor.totally_unregistered", _NOW)  # must not raise
+
+    def test_empty_iterator_forward_result_is_a_no_op(self) -> None:
+        coordinator, hass = _make_coordinator()
+
+        class _EmptyIteratorProvider(BaselineProvider):
+            def forward(self, now: datetime) -> Any:
+                return iter(())  # truthy iterator, yields nothing
+
+        coordinator._entity_providers[_BASELINE_ENTITY] = _EmptyIteratorProvider(
+            hass, _BASELINE_ENTITY, "wh_period", "sensor_dict"
+        )
+
+        coordinator._push_provider_series(_BASELINE_ENTITY, _NOW)  # must not raise

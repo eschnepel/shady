@@ -29,7 +29,7 @@ class EntityRef:
 class Provider(ABC):
     """Shared base class for external time-series providers (ADR-012 §1).
 
-    Three methods, two calling conventions:
+    Four methods, two calling conventions:
 
     - `fetch` — required, pull path. No base-class default; a subclass
       that omits it fails to instantiate.
@@ -37,6 +37,10 @@ class Provider(ABC):
       discover).
     - `forward` — optional, push path. Defaults to `None` (this
       provider's series is not genuinely forward-looking).
+    - `history_entity_id` — optional, recorder-backed pull-path assist
+      (ADR-012 §2a Amendment). Defaults to `None` (no linked history
+      source; `fetch()` alone answers every `coordinator.py` query for
+      this provider).
     """
 
     @abstractmethod
@@ -66,6 +70,32 @@ class Provider(ABC):
         provider with no forecast concept of its own leaves this default
         in place and never participates in the coordinator's push path
         (ADR-012 §4).
+        """
+        return None
+
+    def history_entity_id(self) -> str | None:
+        """Return the entity_id of a linked, recorder-backed history
+        source for this provider, if one exists (ADR-012 §2a).
+
+        Only meaningful for a provider whose own `fetch()` has no genuine
+        retrospective capability for at least part of its data (e.g. a
+        push-sourced series with nothing queryable for a past-dated
+        range — ADR-009 §1a/§1b/§1c) but which has identified a separate,
+        ordinary HA entity representing the same physical quantity,
+        continuously sampled, whose own recorder history is a safe
+        stand-in. The base class default returns `None` (nothing linked)
+        — a provider with a fully self-sufficient `fetch()`, or with no
+        safely-linkable history source at all, leaves this default in
+        place, mirroring `identify()`/`forward()`'s own opt-in shape
+        above. `coordinator.py`'s `_fetch_fn` (ADR-012 §2a) checks this
+        generically for every provider, exactly the way the one generic
+        push loop (§4) already checks `forward()` generically — a future
+        provider (another PV-forecast shape, a weather-history proxy, …)
+        that resolves one of these picks up recorder-backed backfill
+        automatically the moment it overrides this method, with no new
+        `coordinator.py` code and no per-provider `isinstance` check
+        needed, the same "free" genericity §4's Consequences already
+        claims for `forward()`.
         """
         return None
 

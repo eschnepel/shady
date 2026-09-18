@@ -7,24 +7,9 @@ runtime dependency chain stays free of `custom_components/shady/__init__.py`
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
-from types import ModuleType
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
+from tests.support import _load
 
 _load("providers/base.py", "shady.providers.base")
 _normalize_mod = _load("providers/normalize.py", "shady.providers.normalize")

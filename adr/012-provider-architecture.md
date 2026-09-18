@@ -1,13 +1,22 @@
 # ADR-012 – Provider Architecture: Shared Base Class and Cache Reuse for External Series
 
-**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-08-20
+**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-09-15 — §4a
+(weather forecast subscription push, ADR-009 §1a Amendment) and §4b
+(Forecast.Solar polling push, ADR-009 §1b Amendment) added 2026-09-14; §1
+(Amendment: fourth optional `Provider` method, `history_entity_id()`) and §2a
+(recorder-backed history backfill via it, ADR-009 §1c Amendment, `TASK-0034`)
+added below, extending §2's actual-yield recorder-read precedent to any provider
+that resolves a linked history entity — generically, not only
+`BaselineProvider`.
 
 This ADR is kept current in place: §1 already describes `providers/base.py` as
 an actual base class (not a structural protocol) with the optional
-`forward(now)` push method alongside `fetch`/`identify`; §4 already describes
-`coordinator.py`'s one generic loop over `forward()`- implementing providers;
-§1a's two shared helpers (state-value mapping, series-tuple assembly) are folded
-into §1a/§5 directly.
+`forward(now)` push method alongside `fetch`/`identify`, and — as of the
+Amendment above — the optional `history_entity_id()` recorder-backed-pull-path
+method alongside all three; §4 already describes `coordinator.py`'s one generic
+loop over `forward()`-implementing providers, and §2a (Amendment) the analogous
+one for `history_entity_id()`-implementing providers; §1a's two shared helpers
+(state-value mapping, series-tuple assembly) are folded into §1a/§5 directly.
 
 ______________________________________________________________________
 
@@ -56,9 +65,9 @@ ______________________________________________________________________
 
 `providers/base.py` defines a base class every concrete provider subclasses —
 not a structural `typing.Protocol`, but an actual base class with overridable
-methods, since §4 below needs `coordinator.py` to call one of them generically
-without knowing which concrete provider it's talking to. Three methods, two
-calling conventions:
+methods, since §4 below (and §2a, Amendment) need `coordinator.py` to call one
+of them generically without knowing which concrete provider it's talking to.
+Four methods, two calling conventions:
 
 - **`fetch(start, end) -> list[float | None | str]`** — the on-demand, pull
   path. **Required**; the base class provides no default (a subclass that omits
@@ -81,6 +90,17 @@ calling conventions:
   leaves the default `None` in place, and simply never participates in §4's push
   path — `coordinator.py` checks for this generically (§4), not per provider
   type.
+- **`history_entity_id() -> str | None`** — **optional** (Amendment, 2026-09-15,
+  `TASK-0034`); the base class default returns `None`. The pull-path counterpart
+  to `forward()`'s push-path pattern above: "does this provider have a separate,
+  ordinary HA entity whose own recorder history is a safe stand-in for a
+  past-dated `fetch()` call this provider's own `fetch()` cannot genuinely
+  answer" (ADR-009 §1c). A provider overrides it only if it has identified
+  exactly such an entity; one that doesn't (every provider today except a
+  `forecast_solar`-shaped `BaselineProvider` instance whose companion sensor was
+  resolved) leaves the default `None` in place and simply never participates in
+  §2a's recorder-backfill path — `coordinator.py` checks for this generically
+  (§2a), not per provider type, the same way §4 already does for `forward()`.
 
 Two concrete providers exist behind this one base class:
 
@@ -90,7 +110,10 @@ Two concrete providers exist behind this one base class:
   `providers/normalize.py`'s canonical-series mapping over a past range (ADR-009
   §2), and `forward()` via that same canonical-series mapping over the live
   attribute's current forward range — one mapping function, two callers, past
-  range or live range, not two separate implementations.
+  range or live range, not two separate implementations. Overrides
+  `history_entity_id()` (Amendment) only for a `forecast_solar`-shaped instance
+  whose companion sensor was resolved at discovery time (ADR-009 §1c) — every
+  other shape/instance leaves the base class's `None` default in place.
 - **`providers/temperature.py`** — the temperature provider (ADR-003b §1a). Its
   `identify()` is trivial: whichever entity the config flow (ADR-010) selected
   directly, with no ranking step, exactly as ADR-003b §1a already specifies ("no
@@ -158,6 +181,87 @@ The dividing line this ADR draws: a provider exists only where there is
 discovery/scoring to do (baseline) or more than one source tier with different
 fetch logic to pick between (temperature). Anything simpler is just an
 `entity_id` config value.
+
+### 2a — Amendment (2026-09-15): recorder-backed baseline history backfill via a linked entity
+
+§2 draws a clean line for actual-yield: no discovery/scoring to do, so
+`coordinator.py` wires its `entity_id` straight into `cache.py`'s `fetch_fn`,
+backed by `statistics_during_period`, with no provider-layer involvement.
+Baseline sourcing needs the opposite — full discovery/scoring — which is exactly
+why it has a `Provider` at all; but that does not mean a baseline provider's
+`fetch()` is always the right thing to call for a past-dated range. ADR-009 §1c
+(Amendment, same date) establishes that a `forecast_solar`-shaped
+`BaselineCandidate`/`BaselineProvider` may carry a linked, recorder-backed
+history entity — this section is the source of truth for what `coordinator.py`
+does with one once resolved.
+
+Rather than a `BaselineProvider`-specific field, this is a fourth, generic,
+optional method on `Provider` itself (§1 Amendment, same date):
+`history_entity_id() -> str | None`, base-class default `None`, the same opt-in
+shape `identify()`/`forward()` already established there. `_fetch_fn` (ADR-007a
+§4) checks it **generically**, for whichever provider (if any) is registered for
+the `sensor_id` being fetched — no `isinstance` check against `BaselineProvider`
+or any other concrete subclass:
+
+```python
+provider = self._entity_providers.get(sensor_id)
+if provider is not None:
+    history_entity_id = provider.history_entity_id()
+    if history_entity_id is not None:
+        return self._fetch_provider_history_statistics(history_entity_id, start, end)
+    return provider.fetch(start, end)
+```
+
+— called **instead of** `provider.fetch()` for that call, not layered as a
+fallback under it: for the one shape this currently ever returns non-`None` for
+(`forecast_solar`, a `_PUSH_SOURCED_SHAPES` member, §4b), `fetch()`'s own
+`_read_raw_attribute()` has no genuine retrospective capability for a past-dated
+range anyway (ADR-009 §1c), so there is nothing worth falling back to.
+`forward()` — the live/push path §4b already established — is entirely
+unaffected: `history_entity_id()` only ever changes which past-dated `fetch()`
+call `_fetch_fn` routes to, never the live series `forward()` reads and pushes.
+
+`coordinator.py` gains a second recorder-backed fetch method,
+`_fetch_provider_history_statistics`, deliberately **mirroring** — not sharing,
+extending, or otherwise modifying — the existing
+`_fetch_actual_ yield_statistics` (§2, ADR-007a §4): the same
+`statistics_during_period` call, the same `_STATISTICS_PERIOD`/`{"mean"}`
+arguments, the same `by_start.get(start + i * SLOT_DURATION)` slot-mapping. The
+one difference is which `entity_id` it queries: the linked history entity, never
+`sensor_id` itself (a `forecast_solar` baseline's own `sensor_id` is a config
+entry id with no recorder history of its own — ADR-009 §1b). Named generically
+(not `_fetch_baseline_statistics`) because the dispatch above is generic too — a
+future provider unrelated to baseline sourcing that overrides
+`history_entity_id()` reuses this same method, not a copy of it.
+
+**Why this generic hook lives on `Provider` and its dispatch lives in
+`coordinator.py`, never inside a concrete provider's own `fetch()`:** two
+separate boundary questions, both settled the same way §4's `forward()` already
+settled them for the push path. First, genericity: putting a `history_entity_id`
+field only on `BaselineProvider` would mean every future provider wanting this
+(another PV-forecast shape, a weather-history proxy) re-implements its own
+version of the `_fetch_fn` dispatch check above, one `isinstance` branch at a
+time — exactly the coordinator-code-per-provider coupling §4's own Consequences
+already rejected for the push path ("no new coordinator code" is the explicit
+design goal there; the same goal applies here). Second, module boundary:
+recorder access is a categorically heavier, blocking-I/O concern this project
+has consistently kept inside `coordinator.py` alone (its own module docstring:
+"the only module that imports `cache.py`"; §2 above: actual yield's recorder
+read has "no provider-layer involvement at all"). A `Provider` subclass reads
+`hass.states`/`hass.config_entries`/ `hass.services`/the entity registry
+(ADR-009 §4-Amendment) — all in-memory, non-blocking surfaces — and stops there;
+`statistics_during_period` needs the recorder's own dedicated executor
+(`coordinator.py`'s module docstring, "Recorder access runs off the event
+loop"), which is `coordinator.py`'s concern to dispatch, not a `Provider`'s to
+reach for on its own. `history_entity_id()` only ever hands back an entity_id
+string — routing what happens with it entirely through `_fetch_fn` keeps that
+boundary intact for every provider, present and future, not just this one.
+
+**Not a required entity, not part of `missing_required_entities()`.** See
+ADR-009 §1c's own closing paragraph — a `history_entity_id()` that is not yet
+resolvable degrades to "no recorder backfill this cycle," not a setup-blocking
+condition; `_baseline_missing`/`missing_required_entities()` (ADR-002 §1a) are
+unchanged by this amendment.
 
 ### 3 — Cache reuse: no new cache concept
 
@@ -236,6 +340,46 @@ predictor, should one ever be added) picks this up for free the moment it
 overrides `forward()` — no new coordinator code, and no new ADR needed to wire
 it in.
 
+### 4a — Amendment (2026-09-14): weather forecast subscription push
+
+The generic loop in §4 above still applies to every provider whose live series
+comes from re-reading a `state.attributes` value on a state-changed event. A
+`weather_sunshine`/`weather_cloud` `BaselineProvider` resolution (ADR-009 §1a
+Amendment) no longer has an attribute to re-read at all — HA 2024.4 removed it —
+so it needs a second, structurally different registration: `coordinator.py`'s
+`_register_weather_forecast_subscriptions` looks up the `weather` domain's own
+entity component (`hass.data[weather.const. DATA_COMPONENT]`, the same public
+data key HA's own frontend websocket API uses for this) and calls
+`entity.async_subscribe_forecast(forecast_type, listener)` for each such
+provider. The listener records the pushed forecast on the provider
+(`update_live_forecast()`) and then reuses the exact same "push to cache, maybe
+recompute" tail as the §4 state-change path (`_handle_provider_update`) — only
+*how* a fresh series arrives differs between the two registrations, not what
+happens once it has. A provider with no `forecast_type` (every other provider
+today) is entirely unaffected and keeps using the plain §4 path only.
+
+### 4b — Amendment (2026-09-14): Forecast.Solar polling push
+
+A `forecast_solar`-shaped `BaselineProvider` resolution (ADR-009 §1b Amendment)
+has neither a state attribute to re-read (§4) nor a push subscription to
+register (§4a) — Forecast.Solar exposes its forecast only via the
+request/response `forecast_solar.get_forecast` service, with no subscription
+equivalent. `coordinator.py`'s `_register_forecast_solar_polls` therefore
+registers a third kind of update source: a plain `async_track_time_interval`
+poll, once per hour per such provider (identified via the
+`BaselineProvider.shape` property added for this purpose), each firing an
+awaited `hass.services.async_call("forecast_solar", "get_forecast", ...)`. The
+result is fed into the same `update_live_forecast()` /
+`_handle_provider_ update` tail §4a's subscription listener already uses — the
+third variation on this ADR's running theme (§4's own closing note: "no new
+coordinator code... the moment it overrides `forward()`") is genuinely a new
+registration mechanism, since Forecast.Solar's sourcing has no entity or
+subscription to hang a listener off of at all, only a config entry ID to poll
+against (`entity_id` for this one shape holds that config entry's own
+`entry_id`, per ADR-009 §1b). `missing_required_entities()` is the one other
+coordinator method that had to become shape-aware as a result, for the same
+reason.
+
 ### 5 — Module boundary is unchanged
 
 `providers/temperature.py` reads `hass.states` directly to resolve its
@@ -244,7 +388,17 @@ for `providers/discovery.py`: reads only, no writes, no reaching into another
 integration's coordinator or `hass.data`. `providers/base.py` itself needs none
 of that — it holds the shared base class definition plus §1a's two small,
 HA-agnostic helpers, and stays in the zero-mocking pure tier (ADR-000 §6)
-alongside `providers/normalize.py`.
+alongside `providers/normalize.py`. §4a's
+`hass.data[weather.const. DATA_COMPONENT]` lookup, and §4b's
+`hass.config_entries`/`hass.services` calls, are not exceptions to this rule
+either: all three are public, core-level HA surfaces — the `weather` domain's
+own entity-component registry, the config entry manager, and the service-call
+dispatcher respectively — not any specific integration's private internals.
+§2a's (Amendment) entity registry lookup (`providers/discovery.py`, ADR-009 §1c)
+is the same kind of core-level, read-only surface, for the same reason — and,
+unlike §4a/§4b, has no recorder-access counterpart of its own:
+`_fetch_provider_history_statistics` (§2a) stays in `coordinator.py`, the one
+place recorder access has ever lived in this design (§2).
 
 ______________________________________________________________________
 
@@ -306,3 +460,20 @@ ______________________________________________________________________
   (recompute-triggering vs. push-only) is more than the single kind that existed
   before this policy, though both use the identical `push` call underneath
   (ADR-007a §3).
+- **Pro (Amendment, 2026-09-15):** §2a's generic `history_entity_id()` hook
+  gives the recorder-backfill fix this amendment ships (ADR-009 §1c) the exact
+  same "free for future providers" property §4's `forward()` already has for the
+  push path — the design choice this amendment was made specifically to get,
+  over the narrower alternative of a `BaselineProvider`-only field plus an
+  `isinstance` check in `_fetch_fn`. A weather-history proxy or another
+  PV-forecast shape added later needs only to override `history_entity_id()`; no
+  `coordinator.py` change, no new `isinstance` branch, no new ADR needed to wire
+  it in.
+- **Con (Amendment, 2026-09-15):** `history_entity_id()`'s optionality is the
+  same runtime-signal tradeoff §4's Consequences already accept for `forward()`
+  — a provider author who resolves a genuinely valid history entity but forgets
+  to override this method fails silently (no recorder backfill, still
+  correct-if-slow behavior via `fetch()`) rather than being caught at review
+  time. Mitigated the same way: exactly one provider (`BaselineProvider`, and
+  only its `forecast_solar` shape) overrides it today, not a large surface where
+  this could hide.

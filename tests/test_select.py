@@ -19,29 +19,11 @@ independent of any other test file's `sys.modules` state.
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import sys
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
-
+from tests.support import _load, _run
 
 # -- minimal `homeassistant.components.select` stand-in ---------------------
 
@@ -52,13 +34,32 @@ class _FakeSelectEntity:
     behaviour (state writes, entity registry, ...) is exercised here."""
 
 
+class _DeviceEntryType:
+    """Real (non-`Mock`) stand-in for HA's `DeviceEntryType` enum —
+    `device.py` only ever reads `.SERVICE`."""
+
+    SERVICE = "service"
+
+
+def _fake_device_info(**kwargs: Any) -> dict[str, Any]:
+    # Real HA's `DeviceInfo` is a `TypedDict` — calling it just builds a
+    # plain `dict` of its keyword arguments at runtime.
+    return dict(kwargs)
+
+
 _select_module = ModuleType("homeassistant.components.select")
 _select_module.SelectEntity = _FakeSelectEntity  # type: ignore[attr-defined]
+_device_registry_module = ModuleType("homeassistant.helpers.device_registry")
+_device_registry_module.DeviceEntryType = _DeviceEntryType  # type: ignore[attr-defined]
+_device_registry_module.DeviceInfo = _fake_device_info  # type: ignore[attr-defined]
 sys.modules["homeassistant"] = ModuleType("homeassistant")
 sys.modules["homeassistant.components"] = ModuleType("homeassistant.components")
 sys.modules["homeassistant.components.select"] = _select_module
+sys.modules["homeassistant.helpers"] = ModuleType("homeassistant.helpers")
+sys.modules["homeassistant.helpers.device_registry"] = _device_registry_module
 
 _const_mod = _load("const.py", "shady.const")
+_load("device.py", "shady.device")
 select = _load("select.py", "shady.select")
 
 
@@ -88,6 +89,7 @@ def _make_entry(entry_id: str = "entry123") -> Any:
 
     entry = _Entry()
     entry.entry_id = entry_id  # type: ignore[attr-defined]
+    entry.title = "Shady"  # type: ignore[attr-defined]
     return entry
 
 

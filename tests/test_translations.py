@@ -4,32 +4,37 @@
 `config_flow.py` is HA-facing (see `test_config_flow.py`'s module
 docstring) so loading it needs the same small, hand-written, real
 (non-`Mock`) `homeassistant` stand-in that file already establishes —
-duplicated here rather than imported from it, matching this project's
-per-file self-contained-harness convention (each test file owns its
-load order rather than depending on another test file's module-level
-side effects).
+this file's own `ConfigFlow`/`OptionsFlow` stub classes are duplicated
+here rather than imported from it (genuinely narrower than what
+`test_config_flow.py` needs, matching this project's per-file
+self-contained-harness convention: each test file owns its load order
+rather than depending on another test file's module-level side
+effects); `_callback`/`FakeConfigEntry` are shared from `tests
+.support_ha` instead, since those two are identical to what every
+`FakeHomeAssistant`-based file already needs (see below).
 
-One cross-file subtlety this file must respect even though it doesn't
-use it directly: five other test files (`test_button.py`,
-`test_coordinator.py`, `test_init.py`, `test_sensor_aggregates.py`,
-`test_sensor_forecast.py`) install their own `homeassistant
-.config_entries` stub at *their* collection time, then re-fetch
-`sys.modules["homeassistant.config_entries"].ConfigEntry` *dynamically,
-at test-run time* (not a name bound at collection time) inside their
-own `_make_entry`/`_make_config_entry` helpers. Because pytest collects
-every test file (running all module-level code, including this file's)
-before running any test function, whichever such stub was installed
+One cross-file subtlety worth understanding even though it no longer
+bites: five other test files (`test_button.py`, `test_coordinator.py`,
+`test_init.py`, `test_sensor_aggregates.py`, `test_sensor_forecast.py`)
+each call `tests.support_ha`'s shared `_install_ha_stub()` at *their*
+collection time, which re-fetches `sys.modules["homeassistant
+.config_entries"].ConfigEntry` *dynamically, at test-run time* (not a
+name bound at collection time) inside their own `_make_entry`/
+`_make_config_entry` helpers. Because pytest collects every test file
+(running all module-level code, including this file's) before running
+any test function, whichever `_install_ha_stub()` call happens to run
 *last* in file-collection order is the one every one of those five
-files' dynamic lookups actually gets at run time — so all five,
-independently, install a byte-for-byte-identical `FakeConfigEntry
-(entry_id, data)` two-positional-argument shape, making them mutually
-interchangeable no matter which one ends up "last". This file is
-collected after all five (alphabetically), so it must keep that same
-shape for its own `ConfigEntry` stub too, even though this file's own
-tests never construct one — a differently-shaped stub here would
-silently break those five files' `_make_entry` calls the moment this
-file exists, with the failure surfacing in files that look completely
-unrelated to translations.
+files' dynamic lookups actually gets at run time. Before `support_ha.py`
+existed, each of those five files independently defined its own
+textually-identical `FakeConfigEntry(entry_id, data)` copy, so "last one
+wins" was harmless only because every copy happened to match — a
+fragile invariant five separate definitions had to keep matching by
+hand. Now that every one of them (this file included, via the import
+below) shares the single `FakeConfigEntry` class `support_ha.py`
+defines once, "last one wins" is no longer even a meaningful question:
+every installer assigns the exact same class object, so collection
+order can't produce a mismatch — there is only one definition to
+possibly disagree with.
 
 This file does not re-drive the flow end to end (that is
 `test_config_flow.py`'s job) — it only calls the three private
@@ -47,24 +52,13 @@ from a function call.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
+from tests.support import _SHADY_DIR, _load
+from tests.support_ha import FakeConfigEntry, _callback
 
 
 class _FlowHandlerBase:
@@ -84,22 +78,6 @@ class _OptionsFlow(_FlowHandlerBase):
     pass
 
 
-class _ConfigEntry:
-    """Matches the exact `(entry_id, data)` shape `test_button.py`,
-    `test_coordinator.py`, `test_init.py`, `test_sensor_aggregates.py`,
-    and `test_sensor_forecast.py` each independently install — see this
-    module's docstring for why this file must match it even though it
-    is never constructed here."""
-
-    def __init__(self, entry_id: str, data: dict[str, Any]) -> None:
-        self.entry_id = entry_id
-        self.data = data
-
-
-def _callback(func: Any) -> Any:
-    return func
-
-
 def _install_ha_stub() -> None:
     ha = ModuleType("homeassistant")
     ha_core = ModuleType("homeassistant.core")
@@ -108,7 +86,7 @@ def _install_ha_stub() -> None:
     ha_core.callback = _callback  # type: ignore[attr-defined]
     ha_config_entries.ConfigFlow = _ConfigFlow  # type: ignore[attr-defined]
     ha_config_entries.OptionsFlow = _OptionsFlow  # type: ignore[attr-defined]
-    ha_config_entries.ConfigEntry = _ConfigEntry  # type: ignore[attr-defined]
+    ha_config_entries.ConfigEntry = FakeConfigEntry  # type: ignore[attr-defined]
 
     ha.core = ha_core  # type: ignore[attr-defined]
     ha.config_entries = ha_config_entries  # type: ignore[attr-defined]

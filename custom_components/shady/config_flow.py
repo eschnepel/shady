@@ -22,6 +22,7 @@ from .const import (
     BASELINE_CANDIDATE_NONE,
     CONF_BASELINE_ATTRIBUTE,
     CONF_BASELINE_ENTITY_ID,
+    CONF_BASELINE_HISTORY_ENTITY_ID,
     CONF_BASELINE_SHAPE,
     CONF_CLIPPING_THRESHOLD,
     CONF_DEFAULT_TEMPERATURE_SOURCE,
@@ -36,6 +37,7 @@ from .const import (
     CONF_STRING_ACTUAL_YIELD_ENTITY,
     CONF_STRING_BASELINE_ATTRIBUTE,
     CONF_STRING_BASELINE_ENTITY_ID,
+    CONF_STRING_BASELINE_HISTORY_ENTITY_ID,
     CONF_STRING_BASELINE_SHAPE,
     CONF_STRING_CONFIGURE_ADVANCED,
     CONF_STRING_CONVERTER_LIMIT_W,
@@ -70,8 +72,12 @@ from .providers.discovery import BaselineCandidate, discover_baseline_candidates
 from .providers.normalize import BaselineShape
 
 # ADR-009 §3's manual-entry fallback needs a shape choice
-# (`TASK-0009-patch-1`) — `BaselineShape`'s own four values, in the same
-# order `providers/normalize.py` declares them.
+# (`TASK-0009-patch-1`) — four of `BaselineShape`'s five values, in the
+# same order `providers/normalize.py` declares them. `forecast_solar`
+# (ADR-009 Amendment) is deliberately excluded here: that shape's
+# `entity_id` field holds a Forecast.Solar config entry's own `entry_id`,
+# not something a user could reasonably type into a plain text field —
+# it is only ever produced by `discover_baseline_candidates`' own scan.
 _BASELINE_SHAPES: tuple[BaselineShape, ...] = (
     "sensor_dict",
     "sensor_list",
@@ -231,6 +237,12 @@ def _normalize_settings(
         baseline_entity_id: str | None = candidate.entity_id
         baseline_attribute: str | None = candidate.attribute
         baseline_shape: str | None = candidate.shape
+        # ADR-009 §1c Amendment / ADR-012 §2a Amendment (`TASK-0034`) —
+        # carried through unchanged alongside the three fields above,
+        # never itself user-entered; `None` for every candidate except a
+        # `forecast_solar` one whose companion history entity was
+        # resolved at discovery time.
+        baseline_history_entity_id: str | None = candidate.history_entity_id
     else:
         baseline_entity_id = str(user_input.get("baseline_manual_entity_id") or "").strip() or None
         baseline_attribute = str(user_input.get("baseline_manual_attribute") or "").strip() or None
@@ -244,10 +256,15 @@ def _normalize_settings(
             if baseline_entity_id is not None
             else None
         )
+        # A manual entry is never `forecast_solar`-shaped (that shape is
+        # discovery-only, ADR-009 §1b) so it never has a linked history
+        # entity either (ADR-009 §1c Amendment).
+        baseline_history_entity_id = None
     return {
         CONF_BASELINE_ENTITY_ID: baseline_entity_id,
         CONF_BASELINE_ATTRIBUTE: baseline_attribute,
         CONF_BASELINE_SHAPE: baseline_shape,
+        CONF_BASELINE_HISTORY_ENTITY_ID: baseline_history_entity_id,
         CONF_TEMPERATURE_AWARE: user_input[CONF_TEMPERATURE_AWARE],
         CONF_WINDOW_DAYS: user_input[CONF_WINDOW_DAYS],
         CONF_REGRESSION_METHOD: user_input[CONF_REGRESSION_METHOD],
@@ -381,6 +398,9 @@ def _build_current_string(
         CONF_STRING_BASELINE_ENTITY_ID: candidate.entity_id if candidate else None,
         CONF_STRING_BASELINE_ATTRIBUTE: candidate.attribute if candidate else None,
         CONF_STRING_BASELINE_SHAPE: candidate.shape if candidate else None,
+        # ADR-009 §1c Amendment / ADR-012 §2a Amendment (`TASK-0034`) — same
+        # carry-through as the settings step's `_normalize_settings` above.
+        CONF_STRING_BASELINE_HISTORY_ENTITY_ID: candidate.history_entity_id if candidate else None,
         # A string with a baseline override is, by definition, treated as
         # temperature-aware — no separate flag is asked (ADR-003b §1c /
         # ADR-010's `add_string` note).
@@ -468,7 +488,7 @@ class ShadyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore
 
     async def async_step_settings(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if not self._candidates:
-            self._candidates = discover_baseline_candidates(self.hass)
+            self._candidates = await discover_baseline_candidates(self.hass)
         if user_input is not None:
             self._data = _normalize_settings(user_input, self._candidates)
             return await self.async_step_add_string()
@@ -541,7 +561,7 @@ class ShadyOptionsFlow(config_entries.OptionsFlow):  # type: ignore[misc]
     async def async_step_settings(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         entry_data = dict(self.config_entry.data)
         if not self._candidates:
-            self._candidates = discover_baseline_candidates(self.hass)
+            self._candidates = await discover_baseline_candidates(self.hass)
             self._pending_existing = list(entry_data.get(CONF_STRINGS, []))
         if user_input is not None:
             self._data = _normalize_settings(user_input, self._candidates)

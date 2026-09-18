@@ -93,6 +93,11 @@ for Shady — just as valid as pointing Shady at your raw PV sensors directly.
 - An existing PV-forecast integration (Forecast.Solar, Solcast, or similar)
   **or** a weather integration that publishes sunshine-duration or
   cloud-coverage forecasts, to serve as the baseline Shady corrects.
+- If you use Forecast.Solar specifically: leave its own companion "power
+  production now" sensor enabled. Shady links to it automatically and uses its
+  recorder history to give the baseline (uncorrected) side of training real
+  history from the moment it starts, rather than only from Shady's own forecasts
+  aging into the past after every restart.
 
 ## Installation (HACS)
 

@@ -26,6 +26,12 @@ see `tasks/TASK-0011-forecast-sensor-and-recalculate-button.md`'s Goal):
 `custom_components/shady/__init__.py`'s integration-level setup, which
 actually builds `hass.data[DOMAIN][entry.entry_id]` and forwards this
 platform, is `TASK-0016`'s.
+
+Every entity sets `_attr_device_info` from `.device.device_info(entry)`
+so it groups under one device per config entry on Home Assistant's own
+Settings -> Devices & Services -> Devices page — `button.py`/`select.py`
+do the same for their own single entity, all keyed off the identical
+`entry`.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.const import UnitOfEnergy, UnitOfPower
 
 from .const import DOMAIN
+from .device import device_info
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -118,6 +125,7 @@ class ShadyForecastSensor(SensorEntity):  # type: ignore[misc]
         self._raw_sensor_id = coordinator.raw_forecast_sensor_id(string_index)
         self._attr_unique_id = self._sensor_id
         self._attr_name = f"{string_name} Forecast"
+        self._attr_device_info = device_info(entry)
         # Injectable clock (a plain callable, not a `Mock`) — mirrors
         # `coordinator.py`'s own `_now` convention; tests substitute a
         # fixed value the same way `cache.py`'s `reference` parameter
@@ -181,6 +189,7 @@ class ShadyPvSumSensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_pv_sum_{entry.entry_id}"
         self._attr_name = "PV Sum"
+        self._attr_device_info = device_info(entry)
 
     @property
     def native_value(self) -> float | None:
@@ -201,6 +210,7 @@ class ShadyFcSumSensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_fc_sum_{entry.entry_id}"
         self._attr_name = "Forecast Sum"
+        self._attr_device_info = device_info(entry)
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     @property
@@ -223,6 +233,7 @@ class ShadyFcDaySumSensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_fc_day_sum_{entry.entry_id}"
         self._attr_name = "Forecast Day Total"
+        self._attr_device_info = device_info(entry)
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     @property
@@ -251,6 +262,7 @@ class ShadyFcRemainingTodaySensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_fc_remaining_today_{entry.entry_id}"
         self._attr_name = "Forecast Remaining Today"
+        self._attr_device_info = device_info(entry)
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     @property
@@ -274,6 +286,7 @@ class ShadyPvEnergyIntegralSensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_pv_energy_integral_{entry.entry_id}"
         self._attr_name = "PV Energy Today"
+        self._attr_device_info = device_info(entry)
 
     @property
     def native_value(self) -> float:
@@ -296,6 +309,7 @@ class ShadyFcEnergyIntegralSensor(SensorEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_fc_energy_integral_{entry.entry_id}"
         self._attr_name = "Forecast Energy Today"
+        self._attr_device_info = device_info(entry)
 
     @property
     def native_value(self) -> float:
@@ -344,6 +358,7 @@ class ShadyDiagnosticsSensor(SensorEntity):  # type: ignore[misc]
         self._sensor_id = sensor_id
         self._attr_unique_id = f"{DOMAIN}_diagnostics_{sensor_id}_{entry.entry_id}"
         self._attr_name = name
+        self._attr_device_info = device_info(entry)
 
     def _result(self) -> DiagnosticSensorResult | None:
         result = self._coordinator.diagnostic_result()

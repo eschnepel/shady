@@ -20,204 +20,30 @@ self-contained, per that same established convention.
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from typing import Any
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
+from tests.support import _SHADY_DIR, _load, _run
+from tests.support_ha import FakeHomeAssistant, _install_ha_stub
 
 
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
-
-
-# -- hand-written `homeassistant` stub (real stand-in, not a mock) ----------
-
-
-def _callback(func: Any) -> Any:
-    return func
-
-
-class FakeState:
-    def __init__(
-        self,
-        entity_id: str,
-        attributes: dict[str, Any] | None = None,
-        state: str = "unknown",
-    ) -> None:
-        self.entity_id = entity_id
-        self.state = state
-        self.attributes = attributes or {}
-
-
-class FakeStates:
-    def __init__(self) -> None:
-        self._states: dict[str, FakeState] = {}
-        self._listeners: dict[str, list[Any]] = {}
-
-    def get(self, entity_id: str) -> FakeState | None:
-        return self._states.get(entity_id)
-
-    def async_all(self, domain: str | None = None) -> list[FakeState]:
-        values = list(self._states.values())
-        if domain is None:
-            return values
-        return [s for s in values if s.entity_id.startswith(f"{domain}.")]
-
-    def set(
-        self,
-        entity_id: str,
-        attributes: dict[str, Any] | None = None,
-        state: float | str | None = None,
-    ) -> None:
-        resolved_state = "unknown" if state is None else str(state)
-        self._states[entity_id] = FakeState(entity_id, attributes, resolved_state)
-        for listener in self._listeners.get(entity_id, []):
-            listener(None)
-
-    def remove(self, entity_id: str) -> None:
-        self._states.pop(entity_id, None)
-
-
-class FakeStore:
-    """Real (non-`Mock`) stand-in for `homeassistant.helpers.storage
-    .Store` — backed by `hass.store_data`, matching `test_coordinator
-    .py`'s own copy of this stub."""
-
-    def __init__(self, hass: Any, version: int, key: str) -> None:
-        self._hass = hass
-        self._version = version
-        self._key = key
-
-    async def async_load(self) -> Any:
-        return self._hass.store_data.get(self._key)
-
-    async def async_save(self, data: Any) -> None:
-        self._hass.store_data[self._key] = data
-
-
-class FakeConfigEntries:
-    """Real (non-`Mock`) stand-in for the slice of `hass.config_entries`
-    (`ConfigEntries`) `__init__.py` actually calls: forwarding/unloading
-    this config entry's platforms, and scheduling a reload. Records
-    every call for assertions rather than doing anything with real HA
-    platform machinery — `sensor.py`/`select.py`/`button.py` are never
-    executed by these fakes, matching every other platform-level test
-    file's own independence from this one."""
-
-    def __init__(self) -> None:
-        self.forwarded: list[tuple[Any, list[str]]] = []
-        self.unloaded: list[tuple[Any, list[str]]] = []
-        self.reload_calls: list[str] = []
-
-    async def async_forward_entry_setups(self, entry: Any, platforms: list[str]) -> None:
-        self.forwarded.append((entry, list(platforms)))
-
-    async def async_unload_platforms(self, entry: Any, platforms: list[str]) -> bool:
-        self.unloaded.append((entry, list(platforms)))
-        return True
-
-    def async_schedule_reload(self, entry_id: str) -> None:
-        self.reload_calls.append(entry_id)
-
-
-class FakeServices:
-    """Real (non-`Mock`) stand-in for `hass.services` — enough surface
-    for `__init__.py`'s `hass.services.has_service`/`async_register`
-    and a test-side `async_call` that actually applies the registered
-    `vol.Schema` (so `cv.datetime` string-parsing is exercised for
-    real, not bypassed)."""
-
-    def __init__(self) -> None:
-        self._handlers: dict[tuple[str, str], tuple[Any, Any]] = {}
-
-    def has_service(self, domain: str, service: str) -> bool:
-        return (domain, service) in self._handlers
-
-    def async_register(self, domain: str, service: str, handler: Any, schema: Any = None) -> None:
-        self._handlers[(domain, service)] = (handler, schema)
-
-    async def async_call(
-        self, domain: str, service: str, service_data: dict[str, Any] | None = None
-    ) -> None:
-        handler, schema = self._handlers[(domain, service)]
-        data = schema(service_data or {}) if schema is not None else (service_data or {})
-        await handler(SimpleNamespace(data=data))
-
-
-class FakeHomeAssistant:
-    def __init__(self) -> None:
-        self.states = FakeStates()
-        self.statistics: dict[str, dict[datetime, float]] = {}
-        self.data: dict[str, Any] = {}
-        self._pending_tasks: list[asyncio.Task[Any]] = []
-        self.store_data: dict[str, Any] = {}
-        self.config_entries = FakeConfigEntries()
-        self.services = FakeServices()
-        # ADR-002 §1a's own pivot: True by default (the common case for
-        # a config-entry reload/late setup) -- tests that exercise the
-        # "Home Assistant is still starting" branch set this False
-        # before calling `async_setup_entry`.
-        self.is_running = True
-        self._at_started_callbacks: list[Any] = []
-
-    async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
-        return func(*args)
-
-    def async_create_task(self, coro: Any) -> Any:
-        task = asyncio.ensure_future(coro)
-        self._pending_tasks.append(task)
-        return task
-
-    async def async_finish_starting(self) -> None:
-        """Test helper simulating Home Assistant reporting fully
-        started: flips `is_running` and runs every callback
-        `async_at_started` queued while it was `False`, awaited
-        directly (deterministic, unlike the real event-bus dispatch)."""
-        self.is_running = True
-        callbacks, self._at_started_callbacks = self._at_started_callbacks, []
-        for callback_fn in callbacks:
-            await callback_fn(self)
-
-
-def _install_ha_stub() -> None:
-    ha = ModuleType("homeassistant")
-    ha_core = ModuleType("homeassistant.core")
-    ha_config_entries = ModuleType("homeassistant.config_entries")
+def _install_init_extras_stub() -> None:
+    """Extends the already-installed core stub (call `_install_ha_stub()`
+    first) with `homeassistant.exceptions` (`ConfigEntryNotReady`,
+    `ServiceValidationError`), `homeassistant.helpers.start`
+    (`async_at_started`), and `homeassistant.helpers.config_validation`
+    (`datetime`) — this file's own additions, the only consumer of any
+    of the three."""
+    ha = sys.modules["homeassistant"]
+    ha_helpers = sys.modules["homeassistant.helpers"]
     ha_exceptions = ModuleType("homeassistant.exceptions")
-    ha_helpers = ModuleType("homeassistant.helpers")
-    ha_helpers_event = ModuleType("homeassistant.helpers.event")
-    ha_helpers_storage = ModuleType("homeassistant.helpers.storage")
     ha_helpers_start = ModuleType("homeassistant.helpers.start")
     ha_helpers_config_validation = ModuleType("homeassistant.helpers.config_validation")
-    ha_components = ModuleType("homeassistant.components")
-    ha_recorder = ModuleType("homeassistant.components.recorder")
-    ha_recorder_statistics = ModuleType("homeassistant.components.recorder.statistics")
 
-    ha_core.callback = _callback  # type: ignore[attr-defined]
-
-    class FakeConfigEntry:
-        def __init__(self, entry_id: str, data: dict[str, Any]) -> None:
-            self.entry_id = entry_id
-            self.data = data
-
-    ha_config_entries.ConfigEntry = FakeConfigEntry  # type: ignore[attr-defined]
-
-    # -- `homeassistant.exceptions` (this file's own addition) --
+    # -- `homeassistant.exceptions` --
 
     class ConfigEntryNotReady(Exception):
         pass
@@ -228,57 +54,7 @@ def _install_ha_stub() -> None:
     ha_exceptions.ConfigEntryNotReady = ConfigEntryNotReady  # type: ignore[attr-defined]
     ha_exceptions.ServiceValidationError = ServiceValidationError  # type: ignore[attr-defined]
 
-    def async_track_time_change(
-        hass: Any, action: Any, *, hour: int, minute: int, second: int
-    ) -> Any:
-        return lambda: None
-
-    def async_track_time_interval(hass: Any, action: Any, interval: Any) -> Any:
-        return lambda: None
-
-    def async_track_state_change_event(hass: Any, entity_ids: list[str], action: Any) -> Any:
-        for entity_id in entity_ids:
-            hass.states._listeners.setdefault(entity_id, []).append(action)
-
-        def _unsub() -> None:
-            for entity_id in entity_ids:
-                listeners = hass.states._listeners.get(entity_id, [])
-                if action in listeners:
-                    listeners.remove(action)
-
-        return _unsub
-
-    ha_helpers_event.async_track_time_change = async_track_time_change  # type: ignore[attr-defined]
-    ha_helpers_event.async_track_time_interval = async_track_time_interval  # type: ignore[attr-defined]
-    ha_helpers_event.async_track_state_change_event = (  # type: ignore[attr-defined]
-        async_track_state_change_event
-    )
-
-    def statistics_during_period(
-        hass: Any,
-        start_time: datetime,
-        end_time: datetime | None,
-        statistic_ids: set[str] | None,
-        period: str,
-        units: Any,
-        types: set[str],
-    ) -> dict[str, list[dict[str, Any]]]:
-        result: dict[str, list[dict[str, Any]]] = {}
-        for entity_id in statistic_ids or set():
-            by_start = hass.statistics.get(entity_id, {})
-            rows = [
-                {"start": start, "mean": mean}
-                for start, mean in sorted(by_start.items())
-                if start >= start_time and (end_time is None or start < end_time)
-            ]
-            result[entity_id] = rows
-        return result
-
-    ha_recorder_statistics.statistics_during_period = statistics_during_period  # type: ignore[attr-defined]
-
-    ha_helpers_storage.Store = FakeStore  # type: ignore[attr-defined]
-
-    # -- `homeassistant.helpers.start` (this file's own addition) --
+    # -- `homeassistant.helpers.start` --
     # Real HA fires immediately if `hass.is_running` is already True by
     # registration time, else waits for the started event -- mirrored
     # here via `FakeHomeAssistant._at_started_callbacks` /
@@ -292,10 +68,10 @@ def _install_ha_stub() -> None:
 
     ha_helpers_start.async_at_started = async_at_started  # type: ignore[attr-defined]
 
-    # -- `homeassistant.helpers.config_validation` (this file's own
-    # addition) -- real `cv.datetime` accepts either an already-parsed
-    # `datetime` or an ISO-8601 string; this stub mirrors exactly that
-    # narrow slice, not the full validator library.
+    # -- `homeassistant.helpers.config_validation` -- real `cv.datetime`
+    # accepts either an already-parsed `datetime` or an ISO-8601 string;
+    # this stub mirrors exactly that narrow slice, not the full
+    # validator library.
     def cv_datetime(value: Any) -> datetime:
         if isinstance(value, datetime):
             return value
@@ -308,33 +84,17 @@ def _install_ha_stub() -> None:
 
     ha_helpers_config_validation.datetime = cv_datetime  # type: ignore[attr-defined]
 
-    ha.core = ha_core  # type: ignore[attr-defined]
-    ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
     ha.exceptions = ha_exceptions  # type: ignore[attr-defined]
-    ha.helpers = ha_helpers  # type: ignore[attr-defined]
-    ha_helpers.event = ha_helpers_event  # type: ignore[attr-defined]
-    ha_helpers.storage = ha_helpers_storage  # type: ignore[attr-defined]
     ha_helpers.start = ha_helpers_start  # type: ignore[attr-defined]
     ha_helpers.config_validation = ha_helpers_config_validation  # type: ignore[attr-defined]
-    ha.components = ha_components  # type: ignore[attr-defined]
-    ha_components.recorder = ha_recorder  # type: ignore[attr-defined]
-    ha_recorder.statistics = ha_recorder_statistics  # type: ignore[attr-defined]
 
-    sys.modules["homeassistant"] = ha
-    sys.modules["homeassistant.core"] = ha_core
-    sys.modules["homeassistant.config_entries"] = ha_config_entries
     sys.modules["homeassistant.exceptions"] = ha_exceptions
-    sys.modules["homeassistant.helpers"] = ha_helpers
-    sys.modules["homeassistant.helpers.event"] = ha_helpers_event
-    sys.modules["homeassistant.helpers.storage"] = ha_helpers_storage
     sys.modules["homeassistant.helpers.start"] = ha_helpers_start
     sys.modules["homeassistant.helpers.config_validation"] = ha_helpers_config_validation
-    sys.modules["homeassistant.components"] = ha_components
-    sys.modules["homeassistant.components.recorder"] = ha_recorder
-    sys.modules["homeassistant.components.recorder.statistics"] = ha_recorder_statistics
 
 
 _install_ha_stub()
+_install_init_extras_stub()
 
 _shady_pkg = ModuleType("shady")
 _shady_pkg.__path__ = []
@@ -359,6 +119,7 @@ _load("diagnostics/__init__.py", "shady.diagnostics")
 _load("diagnostics/base.py", "shady.diagnostics.base")
 _load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
 _const_mod = _load("const.py", "shady.const")
+_load("coordinator_like.py", "shady.coordinator_like")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
 _init_mod = _load("__init__.py", "shady")
 
@@ -474,6 +235,12 @@ class TestAsyncSetupEntryGenuineConstructionFailure:
         raised: BaseException | None = None
         try:
             _run(async_setup_entry(hass, entry))
+        # Deliberately broad, same reason as the noqa below: this test
+        # exists specifically to prove *any* exception propagates
+        # unconverted, not just a specific expected type (see class
+        # docstring) -- narrowing to Exception would weaken exactly the
+        # guarantee being tested.
+        # codeql[py/catch-base-exception]
         except BaseException as exc:  # noqa: BLE001 -- deliberately broad: proving *any* exception propagates, unconverted, not just a specific expected type
             raised = exc
 

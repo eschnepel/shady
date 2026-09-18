@@ -1,14 +1,30 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-03
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-14
 
 This ADR is kept current in place: §1/§1a describe the current
 `ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
 boolean switch this ADR originally shipped with), §2b/§5 describe the current
 generic, `sensor_id`-driven sensor.py shape (not the original dedicated
 sum-sensor class), and §4 reflects `compute_cadence()`/`fit_cadence()`-gated
-caching. See ADR-013 for two sketched future modes that validate §1a's interface
-shape against needs beyond this ADR's own scope.
+caching. As of 2026-09-13, §1a/§5 also reflect `DiagnosticMode` depending on a
+structural `ShadyCoordinatorLike` Protocol rather than importing
+`ShadyCoordinator` by name, and
+`RegressionSettings`/`StringComputationConfig`/`DiagnosedSlot` no longer living
+in `coordinator.py` — a CodeQL `py/unsafe-cyclic-import` finding on the prior
+`TYPE_CHECKING`-guarded `ShadyCoordinator` import (runtime-safe, but that query
+does not special-case `TYPE_CHECKING`) prompted the change. As of 2026-09-14,
+those three DTOs and `ShadyCoordinatorLike` itself moved on once more, from
+`diagnostics/base.py` into a new `coordinator_like.py` — separating "what a
+`DiagnosticMode` is and produces" (`base.py`) from "what a `DiagnosticMode`
+consumes from its coordinator" (`coordinator_like.py`), two concerns `base.py`
+had been holding together since the 2026-09-13 change — then, the same day, out
+of `diagnostics/` entirely to `coordinator_like.py` next to `coordinator.py`
+itself: what it describes is `ShadyCoordinator`'s own shape, not anything
+diagnostics-owned, `diagnostics/` being only its one consumer so far rather than
+what it's about. §1a's interface itself, and every concrete mode's behavior, is
+unchanged by any of these moves. See ADR-013 for two sketched future modes that
+validate §1a's interface shape against needs beyond this ADR's own scope.
 
 ______________________________________________________________________
 
@@ -55,9 +71,125 @@ The actual diagnostic calculation lives behind a shared base class in a new pure
 package, `diagnostics/` — mirroring `providers/base.py`'s `Provider` ABC
 (ADR-012 §1): a shared base class with required and optional overridable
 methods, dispatched off a config value, so a new concrete mode is additive
-rather than a rework of the gating mechanism in §1. `diagnostics/base.py` holds
-the ABC and its output dataclasses; `diagnostics/compare_regressions.py` holds
-this ADR's one concrete mode, `CompareRegressionsMode`.
+rather than a rework of the gating mechanism in §1. As of 2026-09-14,
+`coordinator_like.py` (next to `coordinator.py`, not inside `diagnostics/` —
+what it describes is `ShadyCoordinator`'s own shape) holds the input-side
+contract (`ShadyCoordinatorLike` and the DTOs its methods return) and
+`diagnostics/base.py` holds the output side (the `DiagnosticMode` ABC and its
+output dataclasses) — two concerns `base.py` alone had been holding together
+since the 2026-09-13 revision; `diagnostics/compare_regressions.py` holds this
+ADR's one concrete mode, `CompareRegressionsMode`.
+
+`coordinator_like.py`:
+
+```python
+@dataclass(frozen=True)
+class RegressionSettings:
+    """Global scalars string_computation.py's apply_training_
+    corrections()/fit_string_model() need — the same five values
+    coordinator.py's own default-method 288-slot sweep already
+    resolves, exposed read-only so a DiagnosticMode can call those
+    same pure functions itself without reaching into coordinator.py's
+    private state. Generic, not diagnostics-specific — reusable by
+    ADR-013's sketched future modes. Lives here, not in coordinator.py,
+    since it exists specifically to cross the DiagnosticMode boundary
+    -- and not in string_computation.py/regression/base.py despite the
+    name, since its five fields don't map 1:1 onto either module's own
+    parameters (three reach regression.base.build_pool only via
+    string_computation.fit_string_model's pass-through; two are
+    consumed directly by string_computation.apply_training_corrections
+    and never reach regression/base.py at all); returned by
+    ShadyCoordinatorLike.regression_settings() below."""
+
+    smoothing_radius: int
+    neighbor_fitting_cutoff: float
+    recency_decay_max: float
+    clipping_threshold: float
+    max_uplift_c: float
+
+
+@dataclass(frozen=True)
+class StringComputationConfig:
+    """One configured string's remaining per-string inputs to
+    string_computation.py's functions — everything coordinator.py
+    already resolves internally for its own fit, exposed read-only.
+    baseline_entity_id/temperature_entity_id/temperature_tier are None
+    when unconfigured/unresolved, exactly as coordinator.py's own fit
+    already treats them (a None baseline_entity_id means this string
+    cannot be fit/diagnosed at all — no baseline forecast to compare
+    against). Lives here for the same reason as RegressionSettings
+    above -- and not in string_computation.py despite the name, since
+    baseline_entity_id/actual_yield_entity_id/temperature_entity_id are
+    entity IDs compare_regressions.py uses only to fetch raw series
+    from the cache before calling string_computation.py; no string_
+    computation.py function signature takes an entity ID at all
+    (ADR-014's explicit point of that module); returned by
+    ShadyCoordinatorLike.string_computation_config()."""
+
+    baseline_entity_id: str | None
+    actual_yield_entity_id: str
+    temperature_entity_id: str | None
+    temperature_tier: Literal["weather", "cell", "ambient"] | None
+    converter_limit_w: float | None
+    coefficient_per_c: float
+    provider_already_corrects: bool
+    rated_dc_capacity_wp: float | None
+
+
+@dataclass(frozen=True)
+class DiagnosedSlot:
+    """Which slot is currently "the diagnosed slot" (§2/§2a) —
+    resolved from the pin if one is set, else "the last complete
+    slot" as of now (auto-tracking). index is the absolute slot index
+    (Cache.index_for convention); slot_of_day is index's 0-287
+    time-of-day component (get_pinned_slot_pool's own argument);
+    is_elapsed is whether this slot's own actual/PV value can exist
+    yet — False only for a manually-pinned slot still in the future
+    (§2a's one exception to "selected actual"/accuracy being shown).
+    Inherently a diagnostics concept, so it lives here rather than in
+    coordinator.py, which only resolves it; returned by
+    ShadyCoordinatorLike.diagnosed_slot() below."""
+
+    index: int
+    slot_of_day: int
+    is_elapsed: bool
+
+
+class ShadyCoordinatorLike(Protocol):
+    """The exact subset of ShadyCoordinator's public interface a
+    DiagnosticMode is allowed to depend on: cache, strings(), now(),
+    diagnosed_slot(), regression_settings(), string_computation_
+    config(), target_cell_temperature_for_slot() — nothing wider.
+    ShadyCoordinator satisfies this structurally, with no inheritance
+    and no import of this module's types required beyond what
+    coordinator.py already needs for its own return types. Declaring
+    this as a Protocol rather than importing ShadyCoordinator by name
+    (even TYPE_CHECKING-only) means diagnostics/ never references
+    coordinator.py under any condition, which is what actually
+    resolves the coordinator.py <-> diagnostics/ import cycle CodeQL's
+    py/unsafe-cyclic-import flags — a TYPE_CHECKING guard is
+    runtime-safe (the import never executes), but that query only
+    checks whether an import sits lexically outside a def, not
+    whether it is further gated on TYPE_CHECKING, so a guarded
+    back-reference to coordinator.py still trips it."""
+
+    @property
+    def cache(self) -> Cache: ...
+
+    def strings(self) -> list[tuple[int, str]]: ...
+
+    def now(self) -> datetime: ...
+
+    def diagnosed_slot(self, now: datetime | None = None) -> DiagnosedSlot: ...
+
+    def regression_settings(self) -> RegressionSettings: ...
+
+    def string_computation_config(self, string_index: int) -> StringComputationConfig: ...
+
+    def target_cell_temperature_for_slot(self, string_index: int, index: int) -> float | None: ...
+```
+
+`diagnostics/base.py`:
 
 ```python
 DiagnosticCadence = Literal["daily", "hourly", "slot"]
@@ -107,25 +239,24 @@ class DiagnosticFitResult:
 class DiagnosticMode(ABC):
     key: ClassVar[str]
 
-    def __init__(self, coordinator: ShadyCoordinator) -> None:
-        """Every concrete mode holds the owning ShadyCoordinator
-        instance and pulls whatever coordinator-owned data it needs
-        (string config, registered FC providers, the cache, or
-        anything added to ShadyCoordinator's public interface later)
-        directly, on demand, through self._coordinator — the
-        coordinator never has to anticipate or know what a given mode
-        does with it. The import-level cycle this implies is resolved
-        the same way this project's test files resolve a comparable
-        problem (ADR-000 §6): a TYPE_CHECKING-only import of
-        ShadyCoordinator in diagnostics/base.py, so no runtime import
-        statement in diagnostics/ names coordinator.py or
-        homeassistant.* directly. A mode may only use coordinator.py's
-        *public* interface (no leading underscore) — the same module
-        boundary ADR-000 §5 enforces everywhere else in this codebase;
-        where a mode needs coordinator-owned data with no public
-        accessor yet, the coordinator is extended with one as an
-        explicit, reviewed part of whichever task needs it, not a
-        silent reach into a `_`-prefixed name."""
+    def __init__(self, coordinator: ShadyCoordinatorLike) -> None:
+        """Every concrete mode holds a ShadyCoordinatorLike reference (in
+        practice, the owning ShadyCoordinator instance, imported from
+        coordinator_like.py TYPE_CHECKING-only -- this module never
+        constructs or inspects it, only stores it) and pulls whatever
+        coordinator-owned data it needs through self._coordinator, on
+        demand — the coordinator never has to anticipate or know what a
+        given mode does with it. A mode may only call what
+        ShadyCoordinatorLike declares; this is the same *public*-interface
+        boundary ADR-000 §5 enforces everywhere else in this codebase,
+        now additionally checked by mypy at every call site rather than
+        being a convention only. Where a mode needs coordinator-owned
+        data with no accessor on ShadyCoordinatorLike yet, both
+        ShadyCoordinator's matching public method and ShadyCoordinatorLike
+        itself are extended together, as an explicit, reviewed part of
+        whichever task needs it, not a silent reach into a
+        `_`-prefixed name or an unrelated public method ShadyCoordinatorLike
+        doesn't declare."""
         self._coordinator = coordinator
 
     @abstractmethod
@@ -536,8 +667,19 @@ per-instance registry as of the 2026-09-01 amendment — mirroring its existing
 runs one generic loop over `forward()`-implementing providers (ADR-012 §4) —
 same "one dispatch site, not one branch per concrete case" shape. As of
 2026-09-01, that call takes no arguments — `extra_fit()` resolves whatever it
-needs itself through the `ShadyCoordinator` reference it was constructed with,
-rather than `coordinator.py` assembling anything for it first.
+needs itself through the `ShadyCoordinatorLike` reference it was constructed
+with (§1a), rather than `coordinator.py` assembling anything for it first.
+`RegressionSettings`/`StringComputationConfig`/`DiagnosedSlot` (§1a) — the
+read-only DTOs `ShadyCoordinator`'s own
+`regression_settings()`/`string_ computation_config()`/`diagnosed_slot()`
+methods return to satisfy `ShadyCoordinatorLike` — live in `coordinator_like.py`
+alongside that Protocol (next to `coordinator.py` as of 2026-09-14; nested
+inside `diagnostics/` briefly before that, `diagnostics/base.py` before that),
+not in `coordinator.py`: none of the three is actually used by
+`string_ computation.py`'s own functions (ADR-014 keeps those decoupled from any
+coordinator-owned type, explicit scalar parameters only), so their only real
+purpose is crossing the `DiagnosticMode` boundary, which is
+`diagnostics/ base.py`'s job to own.
 
 The retained per-slot pool cache from §3 lives in `cache.py` (ADR-007),
 populated by `coordinator.py` as a side effect of recalibration — not owned by
@@ -674,19 +816,30 @@ ______________________________________________________________________
   into an additive change — a new option string, a new `DiagnosticMode`
   subclass, one registry entry. ADR-013's two sketched modes are the validation
   of this: both fit the interface as written, with no further change to
-  `diagnostics/base.py` needed for either.
+  `diagnostics/base.py`/`coordinator_like.py` needed for either.
 - **Con:** `diagnostics/` sits outside ADR-000 §6's zero-mocking test tier —
-  every `DiagnosticMode` test needs a real or hand-stubbed `ShadyCoordinator`
-  (the same `hass`-stub convention `coordinator.py`'s own tests already use,
-  TASK-0009), not a bare dataclass, since a mode holds a live coordinator
-  reference (§1a) rather than being handed a pure input DTO.
-- **Con:** A `DiagnosticMode` can, in principle, reach any public method
-  `ShadyCoordinator` exposes (§1a) — the boundary that keeps this disciplined
-  (only public, non-`_`-prefixed access; extend the coordinator's public surface
-  deliberately rather than reaching into private state) is a convention this ADR
-  states, not one the type system enforces, the same category of
-  "runtime-not-enforced contract" ADR-012 §1 already accepts for `forward()`'s
-  optionality.
+  every `DiagnosticMode` test needs something satisfying `ShadyCoordinatorLike`
+  (§1a) — in practice a real or hand-stubbed `ShadyCoordinator` (the same
+  `hass`-stub convention `coordinator.py`'s own tests already use, TASK-0009),
+  not a bare dataclass, since a mode holds a live coordinator reference rather
+  than being handed a pure input DTO. `test_diagnostics_base.py`'s own
+  base-class-shape tests are the one exception: since they exercise only
+  `DiagnosticMode`'s shared machinery, never a concrete mode's actual
+  coordinator calls, a minimal hand-written stand-in duck-typed against
+  `ShadyCoordinatorLike` is enough there.
+- **Con:** As of 2026-09-13, `DiagnosticMode` depends on `ShadyCoordinatorLike`
+  (§1a) — a structural `Protocol` declaring exactly the members a mode may call
+  — rather than importing `ShadyCoordinator` by name. This is a real improvement
+  over the prior "convention only" state (mypy now flags a call to any
+  `ShadyCoordinator` public method absent from `ShadyCoordinatorLike` as a type
+  error at every call site, not just at review time), but it is still not
+  airtight: nothing at *runtime* stops a mode from calling a method that happens
+  to exist on whatever concrete object was passed in, and a `# type: ignore` can
+  always bypass the check, the same category of "runtime-not-enforced contract"
+  ADR-012 §1 already accepts for `forward()`'s optionality. Extending
+  `ShadyCoordinatorLike` itself remains a deliberate, reviewed step (§1a) — the
+  Protocol changes how a boundary violation is *caught*, not who decides where
+  the boundary sits.
 - **Pro:** A mode holding its own coordinator reference (§1a) means there is
   exactly one path to a mode's inputs, with nothing to keep in sync between a
   constructor-time reference and a separate per-call DTO — and no need to keep

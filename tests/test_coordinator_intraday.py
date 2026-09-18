@@ -33,13 +33,13 @@ import numpy as np
 import pytest
 
 from tests import test_coordinator as tc
+from tests.support import _run
 
 Cache = tc.Cache
 _NOW = tc._NOW
 _ACTUAL_YIELD_ENTITY = tc._ACTUAL_YIELD_ENTITY
 _make_entry = tc._make_entry
 _make_coordinator = tc._make_coordinator
-_run = tc._run
 hass_pushed_values = tc.hass_pushed_values
 
 _forecast_adjust_mod = sys.modules["shady.forecast_adjust"]

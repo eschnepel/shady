@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components.select import SelectEntity
 
 from .const import DIAGNOSTIC_MODES, DOMAIN
+from .device import device_info
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -62,6 +63,7 @@ class ShadyDiagnosticModeSelect(SelectEntity):  # type: ignore[misc]
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_diagnostic_mode_{entry.entry_id}"
         self._attr_options = list(DIAGNOSTIC_MODES)
+        self._attr_device_info = device_info(entry)
 
     @property
     def current_option(self) -> str:

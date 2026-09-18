@@ -1,0 +1,23 @@
+name: "Shady CodeQL config"
+
+# `py/ineffectual-statement` ("Statement has no effect", part of the
+# `+security-and-quality` pack this repo's codeql.yml opts into) flags
+# every `...`-bodied `typing.overload`/`typing.Protocol` stub in this
+# codebase (cache.py's get_time_range/get_pinned_slot_pool overloads,
+# diagnostics/base.py's ShadyCoordinatorLike Protocol, and any future ones)
+# as clutter with no effect. This is a long-standing, still-open CodeQL
+# false positive for exactly this PEP 484-recommended idiom, not a real
+# issue in this code — see github/codeql#11629 and github/codeql#11351
+# (both filed and confirmed as false positives by the CodeQL team; a fix
+# is in progress as github/codeql#22291 but not yet merged/shipped as of
+# 2026-09-13). `query-filters` can only match on query metadata (id,
+# tags, ...), not on file path, so this exclusion is necessarily
+# repo-wide rather than scoped to the specific files above — accepted
+# here since this codebase uses `@overload`/`Protocol` deliberately and
+# extensively (ADR-000 §1's mypy --strict requirement) and will keep
+# adding more, and the alternative (dismissing each new alert by hand,
+# forever, as new stubs are added) doesn't scale. Every other
+# `security-and-quality` check stays active.
+query-filters:
+  - exclude:
+      id: py/ineffectual-statement

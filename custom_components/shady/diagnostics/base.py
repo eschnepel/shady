@@ -6,23 +6,45 @@ Every concrete diagnostic mode (starting with `compare_regressions.py`'s
 `CompareRegressionsMode`) subclasses `DiagnosticMode` below. This module
 holds only the shared base class and the plain output dataclasses its
 methods return — no concrete mode logic lives here, mirroring
-`providers/base.py`'s `Provider` ABC (ADR-012 §1).
+`providers/base.py`'s `Provider` ABC (ADR-012 §1). The *input* side of
+that same boundary — `ShadyCoordinatorLike` and the DTOs its methods return
+— as of 2026-09-14 lives in `coordinator_like.py`, next to
+`coordinator.py` itself (moved there the same day from a `diagnostics/`-
+nested location — what it describes is `ShadyCoordinator`'s own shape,
+not anything diagnostics-owned, `diagnostics/` just being its only
+consumer today). `base.py` is "what a `DiagnosticMode` is and produces",
+`coordinator_like.py` is "what a `DiagnosticMode` consumes", and neither
+concern needs the other's contents to make sense on its own.
 
 As of ADR-004 §5's second Amendment (2026-09-01), a `DiagnosticMode` is
-constructed with a reference to the owning `ShadyCoordinator` and pulls
+constructed with a reference to the owning coordinator and pulls
 whatever coordinator-owned data it needs directly, on demand, through
 that reference's **public** interface only (`strings()`, `cache`, ...) —
 never a `_`-prefixed attribute. This trades the module's prior purity
 (no `cache.py`/`homeassistant.*` import) for not having to anticipate
 every future mode's exact inputs ahead of time via a per-call context
-DTO. The `ShadyCoordinator` import below is `TYPE_CHECKING`-only, so no
-runtime import of `coordinator.py` (and therefore no `homeassistant.*`)
-is introduced by this module itself — the cycle is resolved the same way
-this project's own test files already resolve a comparable problem
-(ADR-000 §6), not by restoring purity. `DiagnosticContext` and
-`DiagnosticSlotSample`, the prior per-call input DTOs, are removed
-outright (not deprecated-and-kept) — see ADR-004 §5's second Amendment
-for the full rationale.
+DTO. `DiagnosticContext` and `DiagnosticSlotSample`, the prior per-call
+input DTOs, are removed outright (not deprecated-and-kept) — see ADR-004
+§5's second Amendment for the full rationale.
+
+`DiagnosticMode.__init__` takes `ShadyCoordinatorLike` (`coordinator_like.py`)
+— a `Protocol` mirroring exactly the subset of `ShadyCoordinator`'s
+public interface a `DiagnosticMode` actually calls (`cache`, `strings()`,
+`now()`, `diagnosed_slot()`, `regression_settings()`,
+`string_computation_config()`, `target_cell_temperature_for_slot()`) —
+not the concrete `ShadyCoordinator` class. `ShadyCoordinator` satisfies
+it structurally, with no explicit inheritance and no import of
+`coordinator_like.py` required on `coordinator.py`'s side beyond what it
+already needs. This — not a `TYPE_CHECKING`-guarded import of
+`ShadyCoordinator` — is how the `coordinator.py` <-> `diagnostics/`
+reference is resolved: a `TYPE_CHECKING` guard is runtime-safe (the
+import never executes), but CodeQL's `py/unsafe-cyclic-import` query
+only checks whether an import sits lexically outside a `def`, not
+whether it is further gated on `TYPE_CHECKING` — so a guarded
+back-reference to `coordinator.py` still trips it. Depending on a local
+`Protocol` instead means `diagnostics/` never imports `coordinator.py`
+at all, under any condition, which resolves the alert for real rather
+than suppressing it.
 
 As of ADR-004 §5's third Amendment (2026-09-02), `compute()`'s and
 `extra_fit()`'s zero-argument signatures are unchanged, but their output
@@ -69,7 +91,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 if TYPE_CHECKING:
-    from ..coordinator import ShadyCoordinator
+    # Neither `ShadyCoordinatorLike` nor any of its own imports are needed at
+    # runtime here -- `__init__` only stores `coordinator`, it never
+    # constructs or inspects it, so the annotation (deferred anyway by
+    # `from __future__ import annotations` above) is all this module
+    # needs. Staying TYPE_CHECKING-only also matters for a narrower
+    # reason: `test_diagnostics_base.py` file-path-loads this module in
+    # isolation (`shady` is never registered as a real package in
+    # `sys.modules`), so a real `from ..coordinator_like import ...`
+    # would fail that load the same way `from ..cache import Cache`
+    # would.
+    from ..coordinator_like import ShadyCoordinatorLike
 
 DiagnosticCadence = Literal["daily", "hourly", "slot"]
 """How often a mode needs `extra_fit()`/`compute()` to run, declared by
@@ -147,20 +179,21 @@ class DiagnosticMode(ABC):
     """Shared base class for diagnostic modes (ADR-004 §1/§5, Amendment
     2026-09-01, Amendment 2026-09-02, second Amendment 2026-09-02).
 
-    Constructed with the owning `ShadyCoordinator`; `compute()`/
-    `extra_fit()` take no further parameters and resolve whatever they
-    need through that reference's public interface, covering every
-    diagnostic entity this mode produces in one call (ADR-004 §5, fourth
-    Amendment). Encapsulation boundary despite dropping purity: a
-    `DiagnosticMode` may use only `coordinator.py`'s public
-    (non-`_`-prefixed) interface — extend the coordinator with a new
-    accessor rather than reach into private state (ADR-004 §5, second
-    Amendment).
+    Constructed with the owning coordinator (typed as `ShadyCoordinatorLike`
+    in `coordinator_like.py`, not the concrete `ShadyCoordinator`);
+    `compute()`/`extra_fit()` take no further parameters and resolve
+    whatever they need through that reference's public interface,
+    covering every diagnostic entity this mode produces in one call
+    (ADR-004 §5, fourth Amendment). Encapsulation boundary despite
+    dropping purity: a `DiagnosticMode` may use only `coordinator.py`'s
+    public (non-`_`-prefixed) interface — extend the coordinator with a
+    new accessor rather than reach into private state (ADR-004 §5,
+    second Amendment).
     """
 
     key: ClassVar[str]
 
-    def __init__(self, coordinator: ShadyCoordinator) -> None:
+    def __init__(self, coordinator: ShadyCoordinatorLike) -> None:
         self._coordinator = coordinator
 
     @abstractmethod

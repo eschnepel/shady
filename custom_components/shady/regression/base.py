@@ -257,7 +257,6 @@ def build_pool(
         )
         time_weight = 1.0 - abs(offset) / (smoothing_radius + 1)
 
-        pv_contribution = raw_pv
         neighbor_scale = np.ones(raw_fc.shape[0])
 
         if offset != 0:

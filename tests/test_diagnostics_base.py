@@ -10,36 +10,22 @@ left the zero-mocking tier (ADR-000 §6) — but these tests exercise only
 `DiagnosticMode`'s own base-class shape (constructor requiredness,
 abstract-member requiredness, the two cadence getters, the output
 dataclasses), never real coordinator behavior, so a minimal hand-written
-stand-in object stands in for `ShadyCoordinator` rather than the full
-`homeassistant`-stub convention `test_coordinator.py` uses. A future test
-here that actually exercises a cadence getter or stored reference
-against real coordinator behavior should switch to that heavier
-convention instead of inventing a third one.
+stand-in object stands in for `CoordinatorLike` (as of 2026-09-13; see
+ADR-004 §1a) rather than the full `homeassistant`-stub convention
+`test_coordinator.py` uses. A future test here that actually exercises a
+cadence getter or stored reference against real coordinator behavior
+should switch to that heavier convention instead of inventing a third
+one.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from dataclasses import fields
-from pathlib import Path
-from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-_SHADY_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "shady"
-
-
-def _load(relative_path: str, module_name: str) -> ModuleType:
-    path = _SHADY_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
+from tests.support import _load
 
 _base_mod = _load("diagnostics/base.py", "shady.diagnostics.base")
 
@@ -64,7 +50,7 @@ else:
 
 
 class _StubCoordinator:
-    """Minimal stand-in for `ShadyCoordinator` — these tests never call
+    """Minimal stand-in for `CoordinatorLike` — these tests never call
     through it, they only check it is stored and reachable, so no real
     coordinator behavior (public or private) needs to be modeled here.
     """
@@ -72,8 +58,8 @@ class _StubCoordinator:
 
 def _stub_coordinator() -> Any:
     """Returns an `_StubCoordinator` typed `Any` — `DiagnosticMode.__init__`
-    is (correctly) typed to require a real `ShadyCoordinator`, resolved
-    concretely here via the `TYPE_CHECKING`-only static import above; an
+    is (correctly) typed to require `CoordinatorLike` (ADR-004 §1a), a
+    `Protocol` this stand-in does not structurally satisfy; an
     `Any`-typed factory is the same "fake object standing in for a
     strictly-typed dependency" convention `test_coordinator.py`'s own
     `Any`-typed helpers already use, rather than a `# type: ignore` at
