@@ -1,0 +1,13 @@
+name: "Shady CodeQL config — tests"
+
+# tests/ only. See ADR-000 §1a for why the split exists and why
+# `py/catch-base-exception` is excluded here but not in
+# codeql-config-main.yml (short version: the inline
+# `# codeql[py/catch-base-exception]` comment in test_init.py does not
+# actually suppress the alert — this query-filter does).
+paths:
+  - tests
+
+query-filters:
+  - exclude:
+      id: py/catch-base-exception

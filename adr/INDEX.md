@@ -11,7 +11,7 @@ see ADR-000 §7 for the mandatory-update rule this enforces.
 
 | ADR | Status | Title |
 | -- | -- | -- |
-| [000](000-coding-standards.md) | Accepted | Code Quality Standards, Programming Style & Core Concepts |
+| [000](000-coding-standards.md) | Accepted | Code Quality Standards, Programming Style & Core Concepts *(§1a added 2026-09-19: CodeQL as a gating tool, the `main`/`tests` path-scoped config split, and the `py/ineffectual-statement`/`py/catch-base-exception` false-positive exclusions)* |
 | [001](001-empirical-shading-model.md) | Accepted | Empirical, Forecast-Value-Based Shading Model — predictor, regression method, granularity, rolling window |
 | [002](002-coordinator-update-strategy.md) | Accepted | Coordinator Update Strategy: Recalibration vs. Forecast Recompute |
 | [003](003-yield-corrections-clipping-derating.md) | Superseded *(split into ADR-003a and ADR-003b, 2026-08-18)* | Optional Per-String Yield Corrections: Clipping and Derating |

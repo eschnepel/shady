@@ -53,7 +53,7 @@ _load("regression/wls3.py", "shady.regression.wls3")
 _load("yield_correction.py", "shady.yield_correction")
 _load("forecast_adjust.py", "shady.forecast_adjust")
 _load("aggregation.py", "shady.aggregation")
-_load("cache.py", "shady.cache")
+_cache_mod = _load("cache.py", "shady.cache")
 _load("string_computation.py", "shady.string_computation")
 _load("diagnostics/__init__.py", "shady.diagnostics")
 _diagnostics_base_mod = _load("diagnostics/base.py", "shady.diagnostics.base")
@@ -78,9 +78,9 @@ else:
     BaselineProvider = sys.modules["shady.providers.discovery"].BaselineProvider
 
 ShadyCoordinator = _coordinator_mod.ShadyCoordinator
-Cache = sys.modules["shady.cache"].Cache
-IntradayBasis = sys.modules["shady.cache"].IntradayBasis
-IntradayState = sys.modules["shady.cache"].IntradayState
+Cache = _cache_mod.Cache
+IntradayBasis = _cache_mod.IntradayBasis
+IntradayState = _cache_mod.IntradayState
 CONF_STRINGS = _const_mod.CONF_STRINGS
 
 # -- shared test fixture -----------------------------------------------

@@ -1,6 +1,6 @@
 # ADR-000 – Code Quality Standards, Programming Style & Core Concepts
 
-**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-10
+**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-19
 
 This ADR is kept current in place: each section below reflects the project's
 present conventions directly, rather than a separate change log. Notable
@@ -11,7 +11,13 @@ the `switch.py` → `select.py` (`ShadyDiagnosticModeSelect`) replacement and
 Python ≥3.14 minimum-runtime raise (§4), the `numpy.typing.NDArray[np.float64]`
 typing convention (§4), the `coordinator.cache` read-only property (§3, per
 `AUDIT-0009-entity-layer` / `TASK-0023`), and description-only accuracy fixes to
-§1's CI table and §3's dependency diagram (per `TASK-0027`).
+§1's CI table and §3's dependency diagram (per `TASK-0027`). As of 2026-09-19,
+new §1a documents CodeQL, which §1's tooling table did not previously mention at
+all despite `.github/workflows/codeql.yml` already existing: the `main`/`tests`
+path-scoped job split, the two `py/ineffectual-statement` /
+`py/catch-base-exception` false-positive exclusions and why each is scoped the
+way it is, and the discovery that inline `lgtm[...]`/`codeql[...]` suppression
+comments do not actually work with this toolchain.
 
 ______________________________________________________________________
 
@@ -50,6 +56,64 @@ a separate hand-written `ci.yml` — the workflow installs dependencies, then ru
 All four must pass with zero errors before a change is considered complete.
 `mypy --strict` is non-negotiable: every function signature carries full type
 annotations, including return types on methods that return `None`.
+
+### 1a — Static analysis: CodeQL
+
+CodeQL (the `+security-and-quality` query pack) runs via
+`.github/workflows/codeql.yml`, separately from §1's pre-commit gate — it does
+not block a PR the way `code_checker.yml` does, but findings surface in the
+repo's Security tab and are treated as required reading before merge.
+
+As of 2026-09-19 this is two jobs over a `main`/`tests` matrix rather than one
+undifferentiated scan: `.github/codeql/codeql-config-main.yml` covers everything
+except `tests/`, `.github/codeql/codeql-config-tests.yml` covers only `tests/`,
+and each `analyze` step uploads under its own `/language:python-main` /
+`/language:python-tests` category so neither overwrites the other in the
+Security tab. The split exists because `query-filters` match on query metadata
+(rule id, tags) only, never on file path — with a single config there was no way
+to exclude a rule for `tests/` without also disabling it for
+`custom_components/`, or vice versa, and the two surfaces turned out to need
+opposite answers for the two rules below.
+
+Two rules are excluded, each for a distinct, specifically-verified false
+positive rather than a real issue — every other check in the pack, including the
+two rules below outside their excluded surface, stays active:
+
+- **`py/ineffectual-statement`** ("Statement has no effect"), excluded in
+  `codeql-config-main.yml` only. It flags every `...`-bodied
+  `typing.overload`/`typing.Protocol` stub body in `cache.py` and
+  `coordinator_like.py` as dead code — these are a PEP 484-recommended idiom
+  this codebase relies on deliberately and extensively per §1's `mypy --strict`
+  requirement, not clutter. This is a long-standing, still-open CodeQL false
+  positive for exactly this idiom (github/codeql#11629, github/codeql#11351,
+  both confirmed as false positives by the CodeQL team; a fix is in progress as
+  github/codeql#22291 but not yet shipped as of 2026-09-13). Deliberately *not*
+  excluded for `tests/` (`codeql-config-tests.yml`): the one instance that used
+  to fire there — `tests/test_init.py`'s bare `await task`, awaiting a plain
+  `Task` variable rather than a call expression, a different false-positive
+  shape from the stub-body one (CodeQL's effect analysis looks at the awaited
+  expression itself rather than recognizing that `await` always suspends/resumes
+  regardless of what it wraps) — was fixed in code instead (`_ = await task`),
+  since it was a trivial, semantics-preserving change rather than a structural
+  idiom worth suppressing. `py/ineffectual-statement` therefore still catches
+  any real dead-statement bug added to `tests/` later.
+- **`py/catch-base-exception`** ("Except block handles BaseException"), excluded
+  in `codeql-config-tests.yml` only. `tests/test_init.py` has one deliberately
+  broad `except BaseException` in
+  `test_deferred_callback_schedules_reload_if_still_missing`, proving any
+  exception propagates unconverted through the deferred-reload path rather than
+  just one expected type — narrowing it to `Exception` would weaken exactly the
+  guarantee under test. The source still carries a
+  `# codeql[py/catch-base-exception]` comment at that line, but it is
+  documentation for human readers only and does **not** function as a
+  suppression: the CodeQL CLI does not honor `lgtm[...]`/`codeql[...]` inline
+  comments locally — verified empirically, neither form adds a `suppressions`
+  entry to the SARIF output — and github/codeql#11427 ("CodeQL is missing an
+  inline mechanism to suppress warnings") was still open as of 2026-09-19, so
+  there is no confirmed server-side path for them either. The `query-filters`
+  entry in `codeql-config-tests.yml` is the mechanism actually doing the
+  suppression. Kept active in `codeql-config-main.yml`, where a real over-broad
+  `except BaseException` in production code would matter.
 
 ### 2 — Handling Home Assistant's untyped surface
 

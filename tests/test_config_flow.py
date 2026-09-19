@@ -212,7 +212,7 @@ _install_ha_stub()
 # same multi-module load-order convention `test_forecast_adjust.py`
 # already relies on.
 _load("providers/base.py", "shady.providers.base")
-_normalize_mod = _load("providers/normalize.py", "shady.providers.normalize")
+_load("providers/normalize.py", "shady.providers.normalize")
 _discovery_mod = _load("providers/discovery.py", "shady.providers.discovery")
 _const_mod = _load("const.py", "shady.const")
 _flow_mod = _load("config_flow.py", "shady.config_flow")
@@ -545,8 +545,8 @@ class TestRemovingAStringDiscardsItsSettings:
         assert result["step_id"] == "string_settings_hub"
         choices = _in_choices(result["data_schema"], "entity_id")
         assert second_entity not in choices
-        result = _finish_hub_immediately(flow)
-        result = _run_regression_tuning(flow)
+        _finish_hub_immediately(flow)
+        _run_regression_tuning(flow)
         final = _run_advanced_optional(flow)
         strings = final["data"][CONF_STRINGS]
         assert second_entity not in strings

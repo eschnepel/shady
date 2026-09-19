@@ -439,7 +439,7 @@ class TestAsyncSetupEntryHassStarting:
             # itself scheduled via hass.async_create_task.
             for task in list(hass._pending_tasks):
                 if not task.done():
-                    await task
+                    _ = await task
 
         # `_init_mod` is this file's own captured reference (from load
         # time) to the executed `__init__.py` module -- NOT a fresh

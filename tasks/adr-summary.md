@@ -47,6 +47,17 @@ ______________________________________________________________________
   `# type: ignore[<code>]` on the *exact* flagged line (class statement for
   `misc`, the `@callback` line itself for `untyped-decorator`). Never a bare
   `# type: ignore`, never a global `disable_error_code`.
+- **Static analysis (`ADR-000 §1a`, added 2026-09-19):** CodeQL
+  (`+security-and-quality`) via `.github/workflows/codeql.yml`, split into a
+  `main`/`tests` path-scoped matrix (`codeql-config-main.yml` /
+  `codeql-config-tests.yml`) so `query-filters` — which match on rule id only,
+  never file path — can differ per surface. Two rules excluded, each on one
+  surface only: `py/ineffectual-statement` (main only — `...`-bodied
+  `@overload`/`Protocol` stubs in `cache.py`/`coordinator_like.py`, a known
+  CodeQL false positive) and `py/catch-base-exception` (tests only — one
+  deliberate broad catch in `test_init.py`; inline `codeql[...]` suppression
+  comments do not actually work with this toolchain, so the query-filter is the
+  real suppression, not the code comment).
 
 ## 2 — Module boundaries & dependency direction (`ADR-000 §3`, updated by ADR-003b/007/012)
 
