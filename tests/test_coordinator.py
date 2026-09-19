@@ -2244,6 +2244,93 @@ class TestBackfillElapsedTodaySlots:
         coordinator._backfill_elapsed_today_slots(_NOW)
         assert coordinator.cache.validated_range(coordinator.forecast_sensor_id(0)) is None
 
+    def test_finds_history_even_after_this_runs_own_successful_forward_push(self) -> None:
+        """The exact real-world race this backfill exists for, with the
+        one variable none of the other `forecast_solar` tests actually
+        exercise: a *successful* Forecast.Solar poll. `async_startup`
+        always polls (and therefore pushes fs_entry_1's forward series,
+        marking it `to_index=None` — ADR-007a §2) before running this
+        backfill, on every restart, not just as an occasional race —
+        so a real installation's baseline entity is never actually
+        queryable through `Cache.get_time_range()` by the time this
+        method runs. The already-resolved `history_entity_id`'s real
+        recorder statistics for today's already-elapsed slots must
+        still be found (via `_fetch_fn`, bypassing the cache entirely
+        for this read) despite that."""
+        history_entity = "sensor.power_production_now"
+        entry = _make_entry(
+            baseline_entity_id="fs_entry_1",
+            baseline_attribute="wh_period",
+            baseline_shape="forecast_solar",
+            baseline_history_entity_id=history_entity,
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.config_entries.register_entry("fs_entry_1")
+        today_start = datetime(_NOW.year, _NOW.month, _NOW.day, tzinfo=UTC)
+        hass.statistics[history_entity] = {
+            today_start: 111.0,
+            today_start + timedelta(minutes=5): 222.0,
+            today_start + timedelta(minutes=10): 333.0,
+        }
+
+        class _WorkingForecastSolarServices:
+            """Unlike `support_ha.py`'s own `FakeServices` (`async_call`
+            raises `KeyError` for an unregistered handler, silently
+            swallowed by `_poll_forecast_solar`'s `except Exception` —
+            every other `forecast_solar`-shaped test in this file relies
+            on exactly that to keep push out of its way), this always
+            succeeds — a *future* sample, so `push()` actually has
+            something at/after `not_before_index` to mark the sensor
+            "actively pushed" with."""
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def async_call(
+                self,
+                domain: str,
+                service: str,
+                service_data: dict[str, Any] | None = None,
+                *,
+                blocking: bool = False,
+                return_response: bool = False,
+            ) -> Any:
+                assert (domain, service) == ("forecast_solar", "get_forecast")
+                self.calls.append((service_data or {})["config_entry"])
+                future = (_NOW + timedelta(hours=1)).isoformat()
+                return {"wh_period": {future: 500.0}}
+
+        hass.services = _WorkingForecastSolarServices()  # type: ignore[assignment]
+
+        async def _construct() -> Any:
+            coordinator = ShadyCoordinator(hass, entry)
+            await hass.drain()
+            return coordinator
+
+        coordinator = _run(_construct())
+        coordinator._now = lambda: _NOW
+        borrowed_model = _fit_a_real_model()
+        coordinator.cache.set_model("shading", 0, borrowed_model)
+        coordinator._last_fit_at = _NOW  # skip the heavy refit; still runs the push refresh
+
+        _run(coordinator.async_startup(_NOW))
+
+        # Sanity: the push actually happened and poisoned naive
+        # `Cache.get_time_range()` access for fs_entry_1, same as a real
+        # restart — if this ever stops being true the test below would
+        # pass for the wrong reason. (Two calls, not one: construction's
+        # own fire-and-forget "immediate first sample", plus
+        # `async_startup`'s own awaited refresh.)
+        assert hass.services.calls == ["fs_entry_1", "fs_entry_1"]  # type: ignore[attr-defined]
+        assert coordinator.cache.validated_range("fs_entry_1") is not None
+        assert coordinator.cache.validated_range("fs_entry_1")[1] is None
+
+        pushed = hass_pushed_values(coordinator, coordinator.forecast_sensor_id(0))
+        now_index = Cache.index_for(_NOW)
+        elapsed = {index: value for index, value in pushed.items() if index < now_index}
+        assert elapsed  # this same run's backfill still found real historical data
+
     def test_one_strings_failure_does_not_abort_the_others(self) -> None:
         coordinator, _hass = _make_two_string_coordinator()
         borrowed_model = _fit_a_real_model()

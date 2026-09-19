@@ -838,8 +838,18 @@ class ShadyCoordinator:
         # in-memory forecast cache starts out empty, so this is the one
         # point in the whole startup path that already knows a model
         # exists (or doesn't) and it's worth trying regardless of which
-        # branch above ran.
-        self._backfill_elapsed_today_slots(resolved_now)
+        # branch above ran. Dispatched via the recorder's own executor,
+        # same as `async_refit`'s own `_refit_sync` call (see module
+        # docstring, "Recorder access runs off the event loop") — this
+        # method's own historical read (`_fetch_fn`, bypassing `Cache`'s
+        # push-poisoned validation state on purpose) can reach
+        # `_fetch_provider_history_statistics`'s `statistics_during_
+        # period` call, genuine blocking recorder I/O, so it must not run
+        # directly on the event loop the way it did before that read was
+        # ever actually reachable.
+        await get_instance(self.hass).async_add_executor_job(
+            self._backfill_elapsed_today_slots, resolved_now
+        )
 
     def shutdown(self) -> None:
         """Cancel every registered listener/schedule (TASK-0016's
@@ -1866,9 +1876,37 @@ class ShadyCoordinator:
         if not isinstance(provider, BaselineProvider):
             return
 
-        raw = self.cache.get_time_range([baseline_entity_id], today_start, now, on_invalid="raw")[
-            baseline_entity_id
-        ]
+        # Deliberately bypass `cache.get_time_range()` here rather than
+        # querying through `Cache` as usual (ADR-007a §4's normal path):
+        # `baseline_entity_id`'s cache entry may already have been marked
+        # "actively pushed" (`to_index=None`, ADR-007a §2) by this same
+        # `async_startup` run's own earlier forward-series push
+        # (`_refresh_forecast_solar_providers`, which always runs before
+        # this backfill in `async_startup`'s own ordering) — once that
+        # happens, `Cache._validate_range` never re-queries that sensor_id
+        # again, by design (locked in by `TestPushGuardAndPushOnlySensor`
+        # in `test_cache_core.py`). A push only ever covers *future* slots
+        # (`_push_provider_series`'s own `not_before_index=now+1`), so it
+        # never actually has anything to say about *today's already-
+        # elapsed* slots — but its blanket "never requery" flag would
+        # still silently shadow them forever if this read went through the
+        # cache, even though the underlying recorder history is real and
+        # present. Calling `_fetch_fn` directly reaches the exact same
+        # dispatch (`provider.fetch()` / `_fetch_provider_history_
+        # statistics()` for a resolved `history_entity_id`) without ever
+        # touching `Cache`'s push/validation state — matching what this
+        # method's own module comment above already documents as the
+        # intent ("provider.fetch, never forward()"). Reproduces
+        # `Cache._fetch_and_store`'s own inclusive-index-to-exclusive-
+        # timestamp conversion exactly, so slot alignment with
+        # `today_start_index`/`now_index` below is unchanged from before.
+        today_start_index = Cache.index_for(today_start)
+        now_index = Cache.index_for(now)
+        raw = self._fetch_fn(
+            baseline_entity_id,
+            Cache.timestamp_for(today_start_index),
+            Cache.timestamp_for(now_index + 1),
+        )
         slot_values = {slot: value for slot, value in enumerate(raw) if isinstance(value, float)}
         if not slot_values:
             _LOGGER.info(
@@ -1882,7 +1920,6 @@ class ShadyCoordinator:
             )
             return
 
-        now_index = Cache.index_for(now)
         values, fc_by_index = self._predict_day_basis_before(
             string, today_start.date(), slot_values, now_index
         )
@@ -1902,7 +1939,6 @@ class ShadyCoordinator:
         pushed = self._clamp_basis(values, fc_by_index, string.converter_limit_w)
         if not pushed:
             return
-        today_start_index = Cache.index_for(today_start)
         self.cache.push(self.forecast_sensor_id(string.index), pushed, today_start_index)
         _LOGGER.info(
             "Startup backfill for string %d (%s): filled %d of today's elapsed slot(s)",
