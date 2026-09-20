@@ -756,6 +756,15 @@ class ShadyCoordinator:
             self.hass, start, end, {history_entity_id}, _STATISTICS_PERIOD, None, {"mean"}
         )
         rows = raw.get(history_entity_id, [])
+
+        if _DIAGNOSTIC_LOG:
+            _LOGGER.warning(
+                "DIAG history fetch: entity_id=%r row_count=%d sample_row=%r",
+                history_entity_id,
+                len(rows),
+                rows[0] if rows else None,
+            )
+
         by_start: dict[datetime, float] = {}
         for row in rows:
             row_start = row["start"]
