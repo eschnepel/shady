@@ -256,6 +256,8 @@ _SERVICE_RESPONSE_STORE_KEY = f"{DOMAIN}_service_response_cache"
 # logs the *outermost* failure, never which string/step actually broke).
 _LOGGER = logging.getLogger(__name__)
 
+_DIAGNOSTIC_LOG = False
+
 
 def _domain(entity_id: str) -> str:
     return entity_id.split(".", 1)[0]
@@ -1000,6 +1002,26 @@ class ShadyCoordinator:
             sensor_ids.append(resolution.entity_id)
 
         pools = self.cache.get_regression_pools(sensor_ids, self._smoothing_radius, reference=now)
+
+        if _DIAGNOSTIC_LOG:
+            _now_slot = Cache.index_for(now) % SLOTS_PER_DAY
+            _fc_pool = pools[baseline_entity_id]
+            _pv_pool = pools[string.actual_yield_entity_id]
+            _LOGGER.warning(
+                "DIAG string %d (%s): pool shape=%s | whole-pool non-NaN FC=%d PV=%d"
+                " | now-slot(%d) non-NaN FC=%d PV=%d | now-slot FC sample=%s PV sample=%s",
+                string.index,
+                string.name,
+                _fc_pool.shape,
+                int(np.count_nonzero(~np.isnan(_fc_pool))),
+                int(np.count_nonzero(~np.isnan(_pv_pool))),
+                _now_slot,
+                int(np.count_nonzero(~np.isnan(_fc_pool[_now_slot]))),
+                int(np.count_nonzero(~np.isnan(_pv_pool[_now_slot]))),
+                _fc_pool[_now_slot][~np.isnan(_fc_pool[_now_slot])][:5].tolist(),
+                _pv_pool[_now_slot][~np.isnan(_pv_pool[_now_slot])][:5].tolist(),
+            )
+
         fc_by_offset = _split_by_offset(
             pools[baseline_entity_id], self._smoothing_radius, self._window_days
         )
