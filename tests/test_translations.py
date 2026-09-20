@@ -111,8 +111,10 @@ _install_ha_stub()
 # import ...`.
 _load("providers/base.py", "shady.providers.base")
 _load("providers/normalize.py", "shady.providers.normalize")
-_load("providers/discovery.py", "shady.providers.discovery")
+_load("regression/base.py", "shady.regression.base")
 _load("const.py", "shady.const")
+_load("cache.py", "shady.cache")
+_load("providers/discovery.py", "shady.providers.discovery")
 _flow_mod = _load("config_flow.py", "shady.config_flow")
 
 # Every schema-building function this task's "Consumed Interfaces" names

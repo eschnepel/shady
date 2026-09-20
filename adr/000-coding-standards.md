@@ -172,6 +172,7 @@ flowchart BT
     diagnostics --> aggregation
     diagnostics --> string_computation
     diagnostics --> cache
+    providers --> cache
     coordinator --> aggregation
     coordinator --> cache
     coordinator --> string_computation
@@ -192,7 +193,17 @@ flowchart BT
   `normalize.py` discover and normalize the forecast/sunshine/cloud-coverage
   baseline series (ADR-009); `temperature.py` resolves the config-flow-selected
   temperature source (ADR-003b §1a). Both read `hass.states` only — no writes,
-  no coordinator/internal API access.
+  no coordinator/internal API access. **Amendment (2026-09-19, `TASK-0036`):**
+  `discovery.py` also imports `ServiceResponseCache`/`service_call_key` from
+  `cache.py` — a narrow import of one independently-constructible class with no
+  dependency on `Cache`, `fetch_fn`, or `hass` itself (the same kind of
+  encapsulation-preserving exception `diagnostics/compare_regressions.py`'s own
+  `SLOTS_PER_DAY` import already established below), used to route
+  `weather.get_forecasts`/`forecast_solar.get_forecast` discovery-time sampling
+  through the same restart-persisted last-good-response cache `coordinator.py`'s
+  Forecast.Solar poll uses (ADR-007 §1a, ADR-012 §4b). This is nonetheless a
+  genuinely new edge (`providers --> cache` above) — until now nothing upstream
+  of `cache.py` in the pure-logic chain imported it at all.
 - **`yield_correction.py`** — pure logic: optional per-string clipping exclusion
   (ADR-003a) + temperature derating correction (ADR-003b), no-op if not
   configured. Used at two points in the pipeline: `string_computation.py` calls
@@ -238,7 +249,16 @@ flowchart BT
   dict stores for the model cache and ramp state, and the persisted integral
   totals; no HA imports, constructed with an injected `fetch_fn` so it never
   imports the recorder API itself; see ADR-007 for why the module exists,
-  ADR-007a for its storage/accessor design.
+  ADR-007a for its storage/accessor design. **Amendment (2026-09-19,
+  `TASK-0036`):** also holds a sixth, independently-constructible store,
+  `ServiceResponseCache` — the last usable response per outbound service call
+  (`forecast_solar.get_forecast`, `weather.get_forecasts`), restart-persisted
+  like the energy totals but via its own injected, duck-typed store object
+  rather than fully `coordinator.py`-mediated restore — see ADR-007 §1a for why.
+  `providers/discovery.py` now reaches into `cache.py` directly for this one
+  class, alongside `diagnostics/compare_regressions.py`'s pre-existing
+  `SLOTS_PER_DAY` import — `coordinator.py` remains the only holder of an actual
+  per-config-entry `Cache` instance.
 - **`coordinator.py`** — orchestrates: registers all scheduling triggers, plus,
   per ADR-012 §4, one generic listener per `forward()`-implementing provider
   (push-only — a second, distinct kind of registration from the scheduling

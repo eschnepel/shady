@@ -213,8 +213,10 @@ _install_ha_stub()
 # already relies on.
 _load("providers/base.py", "shady.providers.base")
 _load("providers/normalize.py", "shady.providers.normalize")
-_discovery_mod = _load("providers/discovery.py", "shady.providers.discovery")
+_load("regression/base.py", "shady.regression.base")
 _const_mod = _load("const.py", "shady.const")
+_load("cache.py", "shady.cache")
+_discovery_mod = _load("providers/discovery.py", "shady.providers.discovery")
 _flow_mod = _load("config_flow.py", "shady.config_flow")
 
 ShadyConfigFlow = _flow_mod.ShadyConfigFlow

@@ -376,6 +376,16 @@ justification ADR-012 §4a/§4b already accept for
 `hass.config_entries`/`hass.services`: a core HA registry, not "another
 integration's internal coordinator." Recorder access itself is **not** added to
 this module's boundary — that stays `coordinator.py`'s alone (ADR-012 §2a).
+**Amendment (2026-09-19, `TASK-0036`):** `_sample_weather_forecast`/
+`_sample_forecast_solar` (§1a/§1b above) now route their
+`weather.get_forecasts`/`forecast_solar.get_forecast` calls through `cache.py`'s
+`ServiceResponseCache` (ADR-007 §1a, ADR-000 §3's new `providers --> cache`
+edge) — the same restart-persisted last-good-response fallback
+`coordinator.py`'s own Forecast.Solar poll uses (ADR-012 §4b), so a transient
+failure no longer drops an otherwise-valid candidate off discovery. This is the
+one addition to this module's boundary beyond `hass.states`/
+`hass.services`/`hass.config_entries`/the entity registry — a narrow,
+`hass`-free import of one class, not a new HA surface.
 
 ### 5 — Global default, per-string override
 

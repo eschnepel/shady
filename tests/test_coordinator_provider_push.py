@@ -93,6 +93,15 @@ _ACTUAL_YIELD_ENTITY = tc._ACTUAL_YIELD_ENTITY
 _synthetic_wh_period = tc._synthetic_wh_period
 _make_entry = tc._make_entry
 
+# `ServiceResponseCache`'s expiry constant/key helper (ADR-007 §1a,
+# `TASK-0036`) — fetched off the already-registered `shady.cache`
+# module (loaded once via `tc`'s own module chain) rather than
+# re-imported, matching this file's own "everything but `coordinator
+# .py` itself resolves against `tc`'s already-registered `shady.*`
+# submodules" convention.
+_cache_mod = sys.modules["shady.cache"]
+_SERVICE_RESPONSE_MAX_AGE = _cache_mod.SERVICE_RESPONSE_MAX_AGE
+
 
 async def _construct_coordinator(hass: FakeHomeAssistant, entry: Any) -> Any:
     """Construction itself can schedule an immediate `hass.async_create_
@@ -389,6 +398,129 @@ class TestForecastSolarPoll:
             on_invalid="raw",
         )["fs_entry_1"]
         assert pushed == [500.0, 520.0, None]
+
+
+class TestForecastSolarPollServiceResponseCache:
+    """The service-response-cache fallback layered onto `_poll_forecast_
+    solar` above (ADR-007 §1a, ADR-012 §4b, `TASK-0036`) — a failing or
+    unusable poll now reuses the last usable forecast instead of going
+    silent for a full hour or overwriting a good forecast with nothing."""
+
+    @staticmethod
+    def _make_entry_and_hass() -> tuple[Any, FakeHomeAssistant]:
+        return TestForecastSolarPoll._make_entry_and_hass()
+
+    def test_a_failing_poll_reuses_the_previous_forecast(self) -> None:
+        entry, hass = self._make_entry_and_hass()
+        hass.services.responses["fs_entry_1"] = {  # type: ignore[attr-defined]
+            "wh_period": {"2026-06-15T10:00:00+00:00": 500.0}
+        }
+        coordinator = _run(_construct_coordinator(hass, entry))
+        hass.services.raises.add("fs_entry_1")  # type: ignore[attr-defined]
+
+        _run(coordinator._poll_forecast_solar("fs_entry_1"))
+
+        provider = coordinator._entity_providers["fs_entry_1"]
+        assert isinstance(provider, BaselineProvider)
+        assert provider._latest_forecast == {"wh_period": {"2026-06-15T10:00:00+00:00": 500.0}}
+
+    def test_a_wh_period_less_response_reuses_the_previous_forecast(self) -> None:
+        """The existing "returned no usable wh_period data" warning
+        branch now falls back instead of pushing the empty response
+        into the provider."""
+        entry, hass = self._make_entry_and_hass()
+        hass.services.responses["fs_entry_1"] = {  # type: ignore[attr-defined]
+            "wh_period": {"2026-06-15T10:00:00+00:00": 500.0}
+        }
+        coordinator = _run(_construct_coordinator(hass, entry))
+        hass.services.responses["fs_entry_1"] = {"watts": {}}  # type: ignore[attr-defined]
+
+        _run(coordinator._poll_forecast_solar("fs_entry_1"))
+
+        provider = coordinator._entity_providers["fs_entry_1"]
+        assert provider._latest_forecast == {"wh_period": {"2026-06-15T10:00:00+00:00": 500.0}}
+
+    def test_a_cold_failing_poll_is_still_swallowed(self) -> None:
+        """Unchanged from before this amendment: nothing remembered,
+        nothing pushed, no exception escapes — the cache sits in this
+        path now, but changes nothing about the cold case."""
+        entry, hass = self._make_entry_and_hass()
+        hass.services.raises.add("fs_entry_1")  # type: ignore[attr-defined]
+
+        coordinator = _run(_construct_coordinator(hass, entry))
+
+        provider = coordinator._entity_providers["fs_entry_1"]
+        assert provider._latest_forecast is None
+
+    def test_a_remembered_forecast_older_than_12_hours_is_not_used(self) -> None:
+        """Isolates "was this recalled" from "was this ever pushed":
+        the good response is remembered directly via the cache (never
+        through a poll, which would also set `_latest_forecast` itself)
+        so the provider's `_latest_forecast` staying `None` after the
+        expired poll can only mean the stale entry was correctly
+        excluded from recall, not merely left untouched from an
+        earlier successful push."""
+        entry, hass = self._make_entry_and_hass()
+        coordinator = _run(_construct_coordinator(hass, entry))
+        key = _cache_mod.service_call_key(
+            "forecast_solar", "get_forecast", {"config_entry": "fs_entry_1"}
+        )
+
+        async def _good() -> Any:
+            return {"wh_period": {"2026-06-15T10:00:00+00:00": 500.0}}
+
+        _run(coordinator._service_response_cache.async_call(key, _good, now=_NOW))
+
+        hass.services.raises.add("fs_entry_1")  # type: ignore[attr-defined]
+        coordinator._now = lambda: _NOW + _SERVICE_RESPONSE_MAX_AGE + timedelta(seconds=1)
+        _run(coordinator._poll_forecast_solar("fs_entry_1"))
+
+        provider = coordinator._entity_providers["fs_entry_1"]
+        # Aged out — behaves as a genuinely cold failure, not a recall.
+        assert provider._latest_forecast is None
+
+    def test_the_poll_result_survives_a_restart(self) -> None:
+        """End-to-end of the persisted half: a first coordinator polls
+        successfully; a second one, constructed over the same `hass`
+        (same on-disk store, fresh `hass.data`) with the service now
+        failing, still starts up with a usable baseline."""
+        entry, hass = self._make_entry_and_hass()
+        hass.services.responses["fs_entry_1"] = {  # type: ignore[attr-defined]
+            "wh_period": {"2026-06-15T10:00:00+00:00": 500.0}
+        }
+        _run(_construct_coordinator(hass, entry))
+
+        hass.data.clear()
+        hass.services.raises.add("fs_entry_1")  # type: ignore[attr-defined]
+        restarted = _run(_construct_coordinator(hass, entry))
+
+        provider = restarted._entity_providers["fs_entry_1"]
+        assert provider._latest_forecast == {"wh_period": {"2026-06-15T10:00:00+00:00": 500.0}}
+
+    def test_a_persisted_forecast_older_than_12_hours_is_not_used_after_a_restart(self) -> None:
+        entry, hass = self._make_entry_and_hass()
+        coordinator = _run(_construct_coordinator(hass, entry))
+        key = _cache_mod.service_call_key(
+            "forecast_solar", "get_forecast", {"config_entry": "fs_entry_1"}
+        )
+
+        async def _good() -> Any:
+            return {"wh_period": {"2026-06-15T10:00:00+00:00": 500.0}}
+
+        # Remember (and persist) a response at `_NOW`, bypassing the poll
+        # itself — isolates "was this recalled from disk" from "was this
+        # ever pushed by this coordinator instance".
+        _run(coordinator._service_response_cache.async_call(key, _good, now=_NOW))
+
+        hass.data.clear()
+        hass.services.raises.add("fs_entry_1")  # type: ignore[attr-defined]
+        restarted = _run(_construct_coordinator(hass, entry))
+        restarted._now = lambda: _NOW + _SERVICE_RESPONSE_MAX_AGE + timedelta(seconds=1)
+
+        _run(restarted._poll_forecast_solar("fs_entry_1"))
+
+        provider = restarted._entity_providers["fs_entry_1"]
+        assert provider._latest_forecast is None
 
 
 class TestForecastSolarRefreshOnRefit:

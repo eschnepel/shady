@@ -1,6 +1,8 @@
 # ADR-012 – Provider Architecture: Shared Base Class and Cache Reuse for External Series
 
-**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-09-15 — §4a
+**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-09-19 — §4b
+amended (last-good-response fallback via `cache.py`'s new
+`ServiceResponseCache`, `TASK-0036`); previously updated 2026-09-15 — §4a
 (weather forecast subscription push, ADR-009 §1a Amendment) and §4b
 (Forecast.Solar polling push, ADR-009 §1b Amendment) added 2026-09-14; §1
 (Amendment: fourth optional `Provider` method, `history_entity_id()`) and §2a
@@ -379,6 +381,20 @@ against (`entity_id` for this one shape holds that config entry's own
 `entry_id`, per ADR-009 §1b). `missing_required_entities()` is the one other
 coordinator method that had to become shape-aware as a result, for the same
 reason.
+
+**Amendment (2026-09-19, `TASK-0036`):** the awaited
+`hass.services.async_call("forecast_solar", "get_forecast", ...)` above now
+routes through `cache.py`'s `ServiceResponseCache` (ADR-007 §1a): a call that
+raises, or returns a response with no usable `wh_period` data, falls back to the
+last *usable* response this same poll produced within the last 12 hours, rather
+than leaving `BaselineProvider.forward()` starved for a full hour, or pushing an
+admittedly-empty response over a perfectly good previous one. Genuinely cold
+(nothing ever remembered, or the remembered entry has aged out) still degrades
+exactly as before this amendment: swallowed, nothing pushed, no exception
+escapes. `providers/discovery.py`'s own
+`_sample_weather_forecast`/`_sample_forecast_solar` (ADR-009 Amendment) route
+their identical two service calls through the same shared, `hass.data`-held
+cache instance, for the same reason at discovery time.
 
 ### 5 — Module boundary is unchanged
 

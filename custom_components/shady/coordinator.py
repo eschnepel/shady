@@ -158,7 +158,15 @@ from .aggregation import (
     sum_values,
     trapezoidal_energy_increment,
 )
-from .cache import SLOT_DURATION, SLOTS_PER_DAY, Cache, EnergyKind, IntradayBasis, IntradayState
+from .cache import (
+    SLOT_DURATION,
+    SLOTS_PER_DAY,
+    Cache,
+    EnergyKind,
+    IntradayBasis,
+    IntradayState,
+    service_call_key,
+)
 from .const import (
     CONF_BASELINE_ATTRIBUTE,
     CONF_BASELINE_ENTITY_ID,
@@ -203,7 +211,11 @@ from .diagnostics.base import DiagnosticMode, DiagnosticResult
 from .diagnostics.compare_regressions import CompareRegressionsMode
 from .forecast_adjust import clamp_output, reverse_transformed_forecast
 from .providers.base import Provider
-from .providers.discovery import BaselineProvider, resolve_forecast_solar_history_entity
+from .providers.discovery import (
+    BaselineProvider,
+    async_get_service_response_cache,
+    resolve_forecast_solar_history_entity,
+)
 from .providers.temperature import TemperatureProvider, TemperatureTier
 from .regression.base import FittedModel
 from .yield_correction import uplift_ambient_to_cell
@@ -225,6 +237,16 @@ _LAST_SLOT_OF_DAY = timedelta(hours=23, minutes=55)
 # energy-integral totals (ADR-005 §5/§6, ADR-007 §1) — bump only on an
 # incompatible on-disk schema change.
 _ENERGY_STORE_VERSION = 1
+
+# `homeassistant.helpers.storage.Store`'s schema version for the
+# service-response cache (ADR-007 §1a, `TASK-0036`) — bump only on an
+# incompatible on-disk schema change. One fixed, domain-wide key (not
+# per-config-entry) — every `ShadyCoordinator` attaches a `Store` built
+# from this same name, so whichever one wins `ServiceResponseCache
+# .attach_store`'s idempotent first-call-wins race still reads/writes
+# the same on-disk payload the shared cache actually uses.
+_SERVICE_RESPONSE_STORE_VERSION = 1
+_SERVICE_RESPONSE_STORE_KEY = f"{DOMAIN}_service_response_cache"
 
 # Diagnostic logging for the recalibration/recompute pipeline (fit +
 # forecast-recompute junctions) — this module previously had no logger
@@ -499,6 +521,26 @@ class ShadyCoordinator:
         self._energy_store: Store[dict[str, Any]] = Store(
             self.hass, _ENERGY_STORE_VERSION, f"{DOMAIN}_{entry.entry_id}_energy_totals"
         )
+        # Restart-persisted service-response cache (ADR-007 §1a, ADR-012
+        # §4b, `TASK-0036`) — shared process-wide via `hass.data`
+        # (`providers/discovery.py`'s `async_get_service_response_cache`,
+        # since discovery-time sampling needs the same instance with no
+        # config entry, and so no coordinator, yet in existence).
+        # `attach_store` is idempotent (first call wins) and every
+        # coordinator names the same fixed, domain-wide store key, so
+        # whichever config entry's `Store` object actually ends up
+        # attached still reads/writes the one payload this shared cache
+        # uses. Unlike `_energy_store` above, loading from it is *not*
+        # triggered here or from `async_restore_energy_state` — it is
+        # lazy, inside `ServiceResponseCache.async_call` itself, since
+        # the construction-time Forecast.Solar poll below fires before
+        # any explicit restore step could run (see that class's own
+        # docstring for why).
+        self._service_response_cache = async_get_service_response_cache(self.hass)
+        if self._service_response_cache is not None:
+            self._service_response_cache.attach_store(
+                Store(self.hass, _SERVICE_RESPONSE_STORE_VERSION, _SERVICE_RESPONSE_STORE_KEY)
+            )
         # Fitted-model cache (shading model, every string; temperature
         # model, `cell`/`ambient`-tier strings only) now lives in
         # `self.cache.get_model`/`set_model`/`invalidate_models`
@@ -2514,39 +2556,66 @@ class ShadyCoordinator:
         `entry_id` (`BaselineProvider`'s docstring), not a real HA
         entity_id, and is passed straight through to the service call
         unchanged.
+
+        Routed through `self._service_response_cache` (ADR-007 §1a,
+        ADR-012 §4b, `TASK-0036`): a call that raises, or returns a
+        response with no usable `wh_period`, falls back to the last
+        usable response for this exact config entry within the last 12
+        hours, so the provider keeps producing values instead of going
+        silent for a full hour — or, worse, being overwritten with an
+        admittedly-empty response. Genuinely cold (nothing ever
+        remembered, or a `hass` with no service-response cache
+        available) still degrades exactly as before this amendment:
+        swallowed, nothing pushed, no exception escapes.
         """
         provider = self._entity_providers.get(entity_id)
         if not isinstance(provider, BaselineProvider):
             return
-        try:
-            response = await self.hass.services.async_call(
-                "forecast_solar",
-                "get_forecast",
-                {"config_entry": entity_id},
-                blocking=True,
-                return_response=True,
-            )
-        except Exception as exc:
-            _LOGGER.exception(
-                "Forecast.Solar poll failed for config entry %s — its baseline"
-                " forward() will keep returning nothing until the next hourly"
-                " poll (or a manual reload) succeeds",
-                entity_id,
-                exc_info=exc,
-            )
-            return
-        if not isinstance(response, dict) or not response.get("wh_period"):
-            _LOGGER.warning(
-                "Forecast.Solar poll for config entry %s returned no usable"
-                " wh_period data (response keys: %s)",
-                entity_id,
-                sorted(response) if isinstance(response, dict) else type(response).__name__,
-            )
+
+        async def _call_service() -> Any:
+            try:
+                response = await self.hass.services.async_call(
+                    "forecast_solar",
+                    "get_forecast",
+                    {"config_entry": entity_id},
+                    blocking=True,
+                    return_response=True,
+                )
+            except Exception as exc:
+                _LOGGER.exception(
+                    "Forecast.Solar poll failed for config entry %s — falling back to"
+                    " any previously remembered forecast, if one exists",
+                    entity_id,
+                    exc_info=exc,
+                )
+                return None
+            if not isinstance(response, dict) or not response.get("wh_period"):
+                _LOGGER.warning(
+                    "Forecast.Solar poll for config entry %s returned no usable"
+                    " wh_period data (response keys: %s) — falling back to any"
+                    " previously remembered forecast, if one exists",
+                    entity_id,
+                    sorted(response) if isinstance(response, dict) else type(response).__name__,
+                )
+            return response
+
+        def _usable(response: Any) -> bool:
+            return isinstance(response, dict) and bool(response.get("wh_period"))
+
+        if self._service_response_cache is None:
+            response = await _call_service()
         else:
-            _LOGGER.debug(
-                "Forecast.Solar poll for config entry %s returned %d wh_period entr(y/ies)",
-                entity_id,
-                len(response["wh_period"]),
+            key = service_call_key("forecast_solar", "get_forecast", {"config_entry": entity_id})
+            response = await self._service_response_cache.async_call(
+                key, _call_service, usable=_usable, now=self._now()
             )
+        if response is None:
+            return
+        _LOGGER.debug(
+            "Forecast.Solar poll for config entry %s produced %d wh_period entr(y/ies)"
+            " (live or remembered)",
+            entity_id,
+            len(response["wh_period"]),
+        )
         provider.update_live_forecast(response)
         self._handle_provider_update(entity_id)

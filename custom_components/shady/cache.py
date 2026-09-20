@@ -68,10 +68,12 @@ ADR-008 §2.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import json
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Literal, overload
+from typing import Any, Literal, Protocol, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -104,6 +106,89 @@ EnergyKind = Literal["pv", "fc"]
 # entirely for a `weather`-tier string or one with no resolved
 # temperature source.
 ModelKind = Literal["shading", "temperature"]
+
+# Restart-persisted last-usable-response cache for outbound Home Assistant
+# *service* calls (ADR-007 §1a, `TASK-0036`) — the sixth `cache.py` store,
+# and the only one restart-persisted via its own injected store rather than
+# fully `coordinator.py`-mediated (see `ServiceResponseCache`'s own
+# docstring for why). A remembered response older than this is never
+# recalled — a half-day-old PV/weather forecast has no useful overlap left
+# with the horizon being predicted, so falling back to it would be worse
+# than reporting nothing and letting the existing cold-start paths run.
+SERVICE_RESPONSE_MAX_AGE = timedelta(hours=12)
+
+
+class ServiceResponseStore(Protocol):
+    """Structural stand-in for `homeassistant.helpers.storage.Store`'s
+    `async_load`/`async_save` — never imported directly (ADR-000 §6's
+    no-`hass` rule), the same injection discipline `FetchFn` already
+    establishes for the recorder API (ADR-007a §4). `coordinator.py`
+    constructs the real `Store` and hands it to
+    `ServiceResponseCache.attach_store`."""
+
+    async def async_load(self) -> Any: ...
+
+    async def async_save(self, data: Any) -> None: ...
+
+
+def service_call_key(
+    domain: str,
+    service: str,
+    data: Mapping[str, Any] | None = None,
+    *,
+    target: Mapping[str, Any] | None = None,
+) -> str:
+    """Canonical, `dict`-iteration-order-independent key for one service
+    call — `ServiceResponseCache`'s only notion of "which call is this"
+    (ADR-007 §1a). `target` is kept distinct from `data` rather than
+    folded in: `weather.get_forecasts` passes its entity through
+    `target=`, and two different entities must never collide onto one
+    remembered response.
+    """
+    payload = {
+        "domain": domain,
+        "service": service,
+        "data": _normalize_for_json(dict(data or {})),
+        "target": _normalize_for_json(dict(target)) if target else None,
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _normalize_for_json(value: Any) -> Any:
+    """Recursively reshape `value` onto plain JSON-safe types — `dict`
+    with string keys, `list`, and JSON scalars — so a remembered response
+    round-trips a `Store` write/read byte-identical to what a fresh
+    recall from memory returns (ADR-007 §1a). Applied once, on the way
+    *in* (when a response is remembered); the live response handed back
+    to a caller on a successful call is left untouched.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): _normalize_for_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_for_json(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _default_usable(response: Any) -> bool:
+    """The default "is this response good enough to remember/return"
+    predicate (ADR-007 §1a): not `None`, and not an empty
+    `dict`/`list`/`str`. Callers with a stricter notion (e.g.
+    `coordinator.py`'s Forecast.Solar poll requiring a non-empty
+    `wh_period`) pass their own `usable` instead.
+    """
+    return bool(response)
+
+
+@dataclass
+class _ServiceResponseEntry:
+    """One remembered service response — `response` already
+    JSON-normalized (`_normalize_for_json`), `remembered_at` the moment
+    it was captured (ADR-007 §1a)."""
+
+    response: Any
+    remembered_at: datetime
 
 
 @dataclass(frozen=True)
@@ -895,3 +980,187 @@ class Cache:
             self._intraday_state.pop(string_index, None)
         else:
             self._intraday_state[string_index] = state
+
+
+class ServiceResponseCache:
+    """Last-usable-response cache for outbound Home Assistant *service*
+    calls (ADR-007 §1a, `TASK-0036`) — the service-call counterpart of
+    `Cache`'s injected `fetch_fn` path: a call that cannot be satisfied
+    right now is answered from what was remembered last, instead of
+    degrading straight to "no data at all".
+
+    A sibling of `Cache`, not a member of it: `Cache` is per-config-entry
+    and constructed by `coordinator.py`, whereas
+    `providers/discovery.py`'s config-flow-time candidate sampling needs
+    the exact same fallback with no config entry (and so no coordinator,
+    no per-entry `Cache`) yet in existence — one instance is shared
+    process-wide via `hass.data` instead (`providers/discovery.py`'s
+    `async_get_service_response_cache`).
+
+    **No `hass` import, exactly like `Cache`** (ADR-000 §3/§6): the class
+    never calls a service itself. The caller injects an async callable
+    that performs the one call (`call_fn`, invoked by `async_call` below)
+    — `Cache`'s `fetch_fn` injection, applied to a different I/O surface.
+
+    **Restart-persistence is mediated by this class itself**, via
+    `attach_store` — a deliberate, narrow deviation from every other
+    restart-persisted state in this design (the energy integrals, fully
+    `coordinator.py`-mediated via `restore_energy_state`/
+    `async_restore_energy_state`). `attach_store` accepts an object
+    structurally matching `homeassistant.helpers.storage.Store`'s
+    `async_load`/`async_save` (`ServiceResponseStore`, never importing
+    that real class) and is idempotent — the first call wins, so a
+    second config entry's coordinator never starts double-writing.
+    Loading happens **lazily, inside `async_call`**, on first use, not
+    via an explicit, externally-triggered restore call: the
+    construction-time Forecast.Solar poll fires via
+    `hass.async_create_task` *before* `__init__.py`'s own
+    `await coordinator.async_restore_energy_state()` gets a chance to
+    run — an ordering race this project has already had to work around
+    once (`_refresh_forecast_solar_providers`, `TASK-0034-patch-1`). An
+    explicit, externally-sequenced restore would reintroduce exactly
+    that race for this cache; a lazy load triggered by whichever call
+    happens to run first does not, regardless of scheduling order.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[str, _ServiceResponseEntry] = {}
+        self._store: ServiceResponseStore | None = None
+        self._loaded = False
+        self._load_lock = asyncio.Lock()
+
+    def attach_store(self, store: ServiceResponseStore) -> None:
+        """Wire in the restart-persistence backing store — idempotent,
+        first call wins (`coordinator.py` calls this once per config
+        entry against one shared, domain-wide store key; only the first
+        one to run actually ends up attached, and since every config
+        entry names the same on-disk key regardless, that's harmless)."""
+        if self._store is None:
+            self._store = store
+
+    async def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        async with self._load_lock:
+            if self._loaded:
+                return
+            if self._store is not None:
+                try:
+                    data = await self._store.async_load()
+                except Exception:  # noqa: BLE001 - a storage failure must not block calls (ADR-000 §8)
+                    data = None
+                self.restore_service_responses(data)
+            self._loaded = True
+
+    async def async_call(
+        self,
+        key: str,
+        call_fn: Callable[[], Awaitable[Any]],
+        *,
+        usable: Callable[[Any], bool] | None = None,
+        now: datetime | None = None,
+    ) -> Any:
+        """The one call surface: always invokes `call_fn` first (recall
+        is a *fallback*, never a short-circuit); if the result is usable
+        (`usable`, default `_default_usable` — "not `None`, not empty"),
+        remembers it and returns it unchanged. Otherwise returns whatever
+        is remembered for `key` (and still unexpired, `SERVICE_RESPONSE_
+        MAX_AGE`), or `None` if nothing is — exactly today's behavior for
+        a genuinely cold failure, for every caller of this cache.
+
+        `call_fn` raising is treated the same as it returning an unusable
+        response — the exception never propagates past this method.
+        """
+        await self._ensure_loaded()
+        moment = now if now is not None else datetime.now(UTC)
+        is_usable = usable if usable is not None else _default_usable
+
+        try:
+            response = await call_fn()
+        except Exception:  # noqa: BLE001 - a misbehaving service call degrades to recall (ADR-000 §8)
+            response = None
+
+        if is_usable(response):
+            self._entries[key] = _ServiceResponseEntry(_normalize_for_json(response), moment)
+            await self._persist(moment)
+            return response
+        return self.recall(key, now=moment)
+
+    def recall(self, key: str, *, now: datetime | None = None) -> Any:
+        """Whatever is currently remembered for `key`, or `None` if
+        nothing is remembered, or the remembered entry is older than
+        `SERVICE_RESPONSE_MAX_AGE` (inclusive at the boundary)."""
+        moment = now if now is not None else datetime.now(UTC)
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if moment - entry.remembered_at > SERVICE_RESPONSE_MAX_AGE:
+            return None
+        return entry.response
+
+    def remembered_at(self, key: str) -> datetime | None:
+        """The capture timestamp of `key`'s remembered entry, or `None`
+        if nothing is remembered for it."""
+        entry = self._entries.get(key)
+        return entry.remembered_at if entry is not None else None
+
+    async def _persist(self, now: datetime) -> None:
+        self._prune_expired(now)
+        if self._store is None:
+            return
+        try:
+            await self._store.async_save(self.service_response_state())
+        except Exception:  # noqa: BLE001, S110 - a storage failure must not break the call (ADR-000 §8)
+            pass
+
+    def _prune_expired(self, now: datetime) -> None:
+        expired = [
+            key
+            for key, entry in self._entries.items()
+            if now - entry.remembered_at > SERVICE_RESPONSE_MAX_AGE
+        ]
+        for key in expired:
+            del self._entries[key]
+
+    def service_response_state(self) -> dict[str, Any]:
+        """JSON-safe snapshot for `coordinator.py`'s `Store` to persist
+        — every currently-remembered entry, `response` already
+        normalized (`_normalize_for_json`, applied when it was first
+        remembered)."""
+        return {
+            "entries": {
+                key: {"response": entry.response, "remembered_at": entry.remembered_at.isoformat()}
+                for key, entry in self._entries.items()
+            }
+        }
+
+    def restore_service_responses(self, data: Any) -> None:
+        """Restart-persistence entry point, called lazily by
+        `_ensure_loaded` with whatever `Store.async_load()` returned
+        (`None` on a fresh install). Tolerates a malformed/foreign
+        payload entirely (never raises, ADR-000 §8) — a corrupt on-disk
+        entry degrades to "nothing remembered for that key", not a
+        startup failure. Merges into whatever is already held rather
+        than replacing it outright: a key already remembered in-memory
+        (e.g. this same process already made a successful call before
+        this lazy load ran) is only overwritten if the stored entry is
+        at least as recent."""
+        if not isinstance(data, Mapping):
+            return
+        entries = data.get("entries")
+        if not isinstance(entries, Mapping):
+            return
+        for key, value in entries.items():
+            if not isinstance(key, str) or not isinstance(value, Mapping):
+                continue
+            remembered_at_raw = value.get("remembered_at")
+            if not isinstance(remembered_at_raw, str):
+                continue
+            try:
+                remembered_at = datetime.fromisoformat(remembered_at_raw)
+            except ValueError:
+                continue
+            existing = self._entries.get(key)
+            if existing is not None and existing.remembered_at >= remembered_at:
+                continue
+            self._entries[key] = _ServiceResponseEntry(value.get("response"), remembered_at)

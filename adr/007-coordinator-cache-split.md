@@ -1,6 +1,7 @@
 # ADR-007 – Splitting the Coordinator: A Dedicated Cache Module
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-08
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-19 — §1a
+(restart-persisted service-response cache, `TASK-0036`) added below.
 
 This ADR is kept current in place. `cache.py`'s concrete storage scheme and
 accessor API — including the 2026-08-13 `get_slot_pool` removal — moved to
@@ -94,7 +95,49 @@ of resuming, a cosmetic gap at most) — treating them as restart-persisted too
 would be needless complexity for no real benefit. `cache.py` itself is agnostic
 to this distinction; `coordinator.py` decides, per cache, whether to wire it to
 Home Assistant's restore-state mechanism on top of `cache.py`'s plain in-memory
-interface — only the integral totals are wired that way.
+interface — only the integral totals (and, per §1a below, the service-response
+cache) are wired that way.
+
+### 1a — Amendment (2026-09-19): restart-persisted service-response cache (`TASK-0036`)
+
+`cache.py` gains a sixth store, `ServiceResponseCache` — the last *usable*
+response for any outbound Home Assistant **service call** this integration makes
+(`forecast_solar.get_forecast`, `weather.get_forecasts`), keyed by
+`(domain, service, data, target)` via `service_call_key`. It answers a failing
+or unusable call with whatever was last remembered for that same key, aged out
+after 12 hours (`SERVICE_RESPONSE_MAX_AGE`) — a stale-but-plausible forecast
+beats none, but a half-day-old one no longer overlaps usefully with the horizon
+being predicted. Restart-persisted, like the energy-integral totals above — the
+single most valuable moment for a remembered forecast is exactly the one where
+memory is empty: right after a restart, before the polled integration is even
+loaded.
+
+Unlike the energy totals, this store's restart-persistence is **not** fully
+`coordinator.py`-mediated. `ServiceResponseCache` itself accepts an injected,
+duck-typed store object (`attach_store`, structurally matching
+`homeassistant.helpers.storage.Store`'s `async_load`/`async_save` — never
+importing that real class, the same injection discipline `fetch_fn` already
+established in ADR-007a §4) and loads from it **lazily, on first use**, rather
+than via an explicit, externally-triggered restore call. This is a deliberate,
+narrow deviation: the very first Forecast.Solar poll fires from
+`hass.async_create_task` at coordinator construction time — before
+`__init__.py`'s own `await coordinator.async_restore_energy_state()` gets a
+chance to run, an ordering race this project has already had to work around once
+(`_refresh_forecast_solar_providers`, `TASK-0034-patch-1`). An explicit,
+externally-sequenced restore step would reintroduce exactly that race for this
+cache; loading on first use, regardless of who calls it or when, does not.
+
+`ServiceResponseCache` is also a genuinely new kind of `cache.py` consumer:
+unlike every store above, it is shared **process-wide** (one instance per
+`hass`, not per config entry) and constructed independently of any
+`Cache`/`coordinator.py` instance — `providers/discovery.py`'s config-flow- time
+candidate sampling needs the same last-good-response fallback, with no config
+entry (and so no coordinator, no per-entry `Cache`) yet in existence. It is
+therefore held in `hass.data` (`providers/discovery.py`'s
+`async_get_service_response_cache`, ADR-000 §3's newly-added
+`providers --> cache` edge), not as a `ShadyCoordinator` attribute — the one
+exception to §2's "cache.py is only ever called from coordinator.py," alongside
+`diagnostics/compare_regressions.py`'s pre-existing `SLOTS_PER_DAY` import.
 
 ### 2 — `coordinator.py` shrinks to pure orchestration
 

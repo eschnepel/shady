@@ -20,6 +20,16 @@ entity_registry` (ADR-009 §1c Amendment, `TASK-0034`), needed because an
 entity registry lookup has no `hass`-attribute-based duck-typing
 equivalent the way `hass.states`/`hass.services`/`hass.config_entries`
 already have elsewhere in this module. See that import's own comment.
+
+Also imports `ServiceResponseCache`/`service_call_key` from `..cache`
+(ADR-007 §1a, `TASK-0036`, ADR-000 §3's new `providers --> cache` edge) —
+a narrow, `hass`-free, `Cache`-independent class, not a dependency on the
+rest of `cache.py`'s design or on `coordinator.py`. `_sample_weather_
+forecast`/`_sample_forecast_solar` below route their service calls
+through the shared, `hass.data`-held instance (`async_get_service_
+response_cache`) so a transient discovery-time failure falls back to the
+last usable response, the same way `coordinator.py`'s Forecast.Solar poll
+does (ADR-012 §4b).
 """
 
 from __future__ import annotations
@@ -29,6 +39,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+# `ServiceResponseCache`/`service_call_key` (ADR-007 §1a, `TASK-0036`) — the
+# one exception to this module's "no downstream import" convention: a
+# narrow, `Cache`-independent, `hass`-free class (ADR-000 §3's new
+# `providers --> cache` edge), the same kind of encapsulation-preserving
+# exception `diagnostics/compare_regressions.py`'s own `SLOTS_PER_DAY`
+# import already established. Used to route this module's own
+# `weather.get_forecasts`/`forecast_solar.get_forecast` sampling through
+# the same restart-persisted last-good-response fallback `coordinator.py`'s
+# Forecast.Solar poll uses (ADR-012 §4b).
+from ..cache import ServiceResponseCache, service_call_key
+from ..const import SERVICE_RESPONSE_CACHE_HASS_KEY
 from .base import EntityRef, Provider, map_state_value
 from .normalize import (
     CLOUD_COVERAGE_KEYS,
@@ -327,36 +348,82 @@ def _weather_entry_keys(value: Any) -> set[str] | None:
     return {str(key).lower() for key in first}
 
 
+def async_get_service_response_cache(hass: HomeAssistant) -> ServiceResponseCache | None:
+    """The one `ServiceResponseCache` instance shared by this module's
+    own sampling below and `coordinator.py`'s Forecast.Solar poll
+    (ADR-007 §1a, ADR-012 §4b, `TASK-0036`) — held in `hass.data`
+    (`SERVICE_RESPONSE_CACHE_HASS_KEY`), created on first access rather
+    than requiring `coordinator.py` to have run first, since this
+    module's own sampling can run earlier (config-flow discovery, before
+    any config entry — and so any coordinator — exists).
+
+    Returns `None` for a `hass` with no `.data` mapping at all (a
+    minimal test double, `getattr`-guarded the same way `coordinator.py`
+    already treats a `hass` lacking the `weather` entity component) —
+    every caller below degrades to calling the service directly with no
+    fallback, exactly today's behavior, rather than failing (ADR-000
+    §8).
+    """
+    hass_data = getattr(hass, "data", None)
+    if hass_data is None:
+        return None
+    cache = hass_data.get(SERVICE_RESPONSE_CACHE_HASS_KEY)
+    if cache is None:
+        cache = ServiceResponseCache()
+        hass_data[SERVICE_RESPONSE_CACHE_HASS_KEY] = cache
+    return cache  # type: ignore[no-any-return]
+
+
 async def _sample_weather_forecast(hass: HomeAssistant, entity_id: str) -> Any:
     """Call `weather.get_forecasts` once, to sample an entity's current
     hourly forecast payload (ADR-009 Amendment). Since HA 2024.4, this
     service is the *only* way to see a weather entity's forecast-shaped
     data at all — the `forecast` state attribute this module used to
     read directly was removed from `WeatherEntity` in that release.
-    Returns `None` (never raises) for any service-call failure — an
-    entity that advertises forecast support but errors on the call is
-    simply not a usable candidate, not a discovery-aborting problem
-    (ADR-000 §8).
+
+    Routed through the shared `ServiceResponseCache` (ADR-007 §1a,
+    `TASK-0036`): a call that raises, or returns a response with no
+    usable forecast entry for `entity_id`, falls back to the last usable
+    response for this exact entity within the last 12 hours, rather than
+    dropping an otherwise-valid candidate off discovery over a
+    transient failure. Genuinely cold (nothing remembered, or a `hass`
+    with no service-response cache available at all) still returns
+    `None`, never raises (ADR-000 §8) — unchanged from before this
+    amendment.
     """
-    try:
-        response = await hass.services.async_call(
-            "weather",
-            "get_forecasts",
-            {"type": _FORECAST_TYPE},
-            target={"entity_id": entity_id},
-            blocking=True,
-            return_response=True,
+
+    async def _call_service() -> Any:
+        try:
+            return await hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"type": _FORECAST_TYPE},
+                target={"entity_id": entity_id},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception:  # noqa: BLE001 - a misbehaving integration must not abort discovery
+            return None
+
+    def _usable(response: Any) -> bool:
+        return isinstance(response, Mapping) and isinstance(response.get(entity_id), Mapping)
+
+    cache = async_get_service_response_cache(hass)
+    if cache is None:
+        response = await _call_service()
+    else:
+        key = service_call_key(
+            "weather", "get_forecasts", {"type": _FORECAST_TYPE}, target={"entity_id": entity_id}
         )
-    except Exception:  # noqa: BLE001 - a misbehaving integration must not abort discovery
-        return None
-    if not response:
-        return None
+        response = await cache.async_call(key, _call_service, usable=_usable)
     # `response`'s value type is `JsonValueType` (a broad recursive
     # union) — narrowed here rather than trusting the `dict`-shaped
     # `{entity_id: {"forecast": [...]}}` contract blindly, since a
     # malformed/mismatched response is exactly the kind of "not a
     # usable candidate this time" case this function already treats as
     # `None`, not a crash (ADR-000 §8).
+    if not isinstance(response, Mapping):
+        return None
     entry = response.get(entity_id)
     if not isinstance(entry, Mapping):
         return None
@@ -399,22 +466,35 @@ async def _sample_forecast_solar(hass: HomeAssistant, config_entry_id: str) -> A
     polling sourcing"). Unlike `weather.get_forecasts`, this service is
     keyed by `config_entry` rather than `entity_id` — Forecast.Solar's
     own sensors have no forecast-shaped attribute left to key off of at
-    all (see the module-level `_FORECAST_SOLAR_*` comment). Returns
-    `None` (never raises) for any service-call failure — a config entry
-    that exists but errors on the call (e.g. not yet loaded) is simply
-    not a usable candidate this time round, not a discovery-aborting
-    problem (ADR-000 §8).
+    all (see the module-level `_FORECAST_SOLAR_*` comment).
+
+    Routed through the shared `ServiceResponseCache` (ADR-007 §1a,
+    `TASK-0036`), same as `_sample_weather_forecast` above: a call that
+    raises, or returns an empty/falsy response, falls back to the last
+    usable response for this exact config entry within the last 12
+    hours. Genuinely cold still returns `None`, never raises (ADR-000
+    §8) — unchanged from before this amendment.
     """
-    try:
-        return await hass.services.async_call(
-            _FORECAST_SOLAR_DOMAIN,
-            "get_forecast",
-            {"config_entry": config_entry_id},
-            blocking=True,
-            return_response=True,
-        )
-    except Exception:  # noqa: BLE001 - a misbehaving integration must not abort discovery
-        return None
+
+    async def _call_service() -> Any:
+        try:
+            return await hass.services.async_call(
+                _FORECAST_SOLAR_DOMAIN,
+                "get_forecast",
+                {"config_entry": config_entry_id},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception:  # noqa: BLE001 - a misbehaving integration must not abort discovery
+            return None
+
+    cache = async_get_service_response_cache(hass)
+    if cache is None:
+        return await _call_service()
+    key = service_call_key(
+        _FORECAST_SOLAR_DOMAIN, "get_forecast", {"config_entry": config_entry_id}
+    )
+    return await cache.async_call(key, _call_service)
 
 
 async def _scan_forecast_solar_domain(hass: HomeAssistant) -> list[BaselineCandidate]:

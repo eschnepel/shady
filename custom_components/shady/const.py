@@ -10,6 +10,14 @@ from __future__ import annotations
 
 DOMAIN = "shady"
 
+# `hass.data` key for the shared, restart-persisted service-response cache
+# (ADR-007 §1a, `TASK-0036`) — one instance per `hass`, shared by
+# `coordinator.py`'s Forecast.Solar poll (ADR-012 §4b) and
+# `providers/discovery.py`'s config-flow-time candidate sampling (ADR-009
+# §4 Amendment), the latter running with no config entry (and so no
+# coordinator, no per-entry `Cache`) yet in existence.
+SERVICE_RESPONSE_CACHE_HASS_KEY = f"{DOMAIN}_service_response_cache"
+
 # Regression methods shared by the shading model (ADR-001 §2) and the
 # temperature-forecast learned model (ADR-003c §2) — same four
 # `regression/` strategies, two independent method choices.

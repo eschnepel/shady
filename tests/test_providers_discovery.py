@@ -100,6 +100,9 @@ _install_fake_entity_registry_module()
 
 _load("providers/base.py", "shady.providers.base")
 _load("providers/normalize.py", "shady.providers.normalize")
+_load("regression/base.py", "shady.regression.base")
+_load("const.py", "shady.const")
+_load("cache.py", "shady.cache")
 _discovery_mod = _load("providers/discovery.py", "shady.providers.discovery")
 
 if TYPE_CHECKING:
@@ -231,17 +234,25 @@ class FakeHomeAssistant:
     Amendment, `TASK-0034`) is likewise left unset unless a test passes
     one in — mirrors `_install_fake_entity_registry_module`'s own
     `async_get`, which reads exactly this attribute, defaulting to
-    `None` (registry unavailable) the same way."""
+    `None` (registry unavailable) the same way. `.data` (`TASK-0036`,
+    the service-response cache's `hass.data`-held singleton) follows the
+    same opt-in convention: unset by default, so every test predating
+    the cache keeps exercising `async_get_service_response_cache`'s own
+    "no `.data` at all" fallback unchanged; a test exercising the cache
+    itself passes `data={}`."""
 
     def __init__(
         self,
         states: list[FakeState],
         entity_registry: FakeEntityRegistry | None = None,
+        data: dict[str, object] | None = None,
     ) -> None:
         self.states = FakeStates(states)
         self.services = FakeServices(self.states)
         if entity_registry is not None:
             self.entity_registry = entity_registry
+        if data is not None:
+            self.data = data
 
     def add_forecast_solar_entry(self, entry_id: str) -> None:
         if not hasattr(self, "config_entries"):
@@ -556,6 +567,83 @@ class TestForecastSolarDomainScan:
         hass.services.forecast_solar_responses["fs_entry_1"] = {"watts": {}}
         candidates = _run(_discovery_mod.discover_baseline_candidates(hass))
         assert candidates == []
+
+
+class TestServiceResponseCacheFallback:
+    """`_sample_weather_forecast`/`_sample_forecast_solar` routed
+    through the shared `ServiceResponseCache` (ADR-007 §1a, ADR-009 §4
+    Amendment, `TASK-0036`) — a transient failure at discovery time no
+    longer drops an otherwise-valid candidate. Uses `FakeHomeAssistant(
+    data={})` throughout: without an explicit `.data` mapping (every
+    other test in this file), `async_get_service_response_cache` returns
+    `None` and every call below degrades to exactly today's "no
+    fallback" behavior — covered by `test_a_cold_failing_sample_still_
+    returns_none`/`TestWeatherDomainScanEdgeCases`/
+    `TestForecastSolarDomainScan` above, all still passing unmodified."""
+
+    def test_weather_sample_falls_back_to_the_last_good_response(self) -> None:
+        hass = FakeHomeAssistant([_WEATHER_SUNSHINE], data={})
+        first = _run(_discovery_mod._sample_weather_forecast(hass, "weather.dwd"))
+        hass.services.weather_raises.add("weather.dwd")
+
+        second = _run(_discovery_mod._sample_weather_forecast(hass, "weather.dwd"))
+
+        assert first == [
+            {"datetime": "2026-01-01T10:00:00+00:00", "sunshine_duration": 900.0},
+            {"datetime": "2026-01-01T11:00:00+00:00", "sunshine_duration": 1200.0},
+        ]
+        assert second == first
+
+    def test_weather_sample_is_remembered_per_entity(self) -> None:
+        """Two weather entities must not share one remembered response
+        — the entity travels in `target=`, not `service_data`."""
+        hass = FakeHomeAssistant([_WEATHER_SUNSHINE, _WEATHER_CLOUD], data={})
+        _run(_discovery_mod._sample_weather_forecast(hass, "weather.dwd"))
+        hass.services.weather_raises.add("weather.openweathermap")
+
+        result = _run(_discovery_mod._sample_weather_forecast(hass, "weather.openweathermap"))
+
+        assert result is None
+
+    def test_forecast_solar_sample_falls_back_to_the_last_good_response(self) -> None:
+        hass = FakeHomeAssistant([], data={})
+        hass.services.forecast_solar_responses["fs_entry_1"] = {
+            "wh_period": {"2026-01-01T10:00:00+00:00": 500.0}
+        }
+        first = _run(_discovery_mod._sample_forecast_solar(hass, "fs_entry_1"))
+        hass.services.forecast_solar_raises.add("fs_entry_1")
+
+        second = _run(_discovery_mod._sample_forecast_solar(hass, "fs_entry_1"))
+
+        assert first == {"wh_period": {"2026-01-01T10:00:00+00:00": 500.0}}
+        assert second == first
+
+    def test_a_cold_failing_sample_still_returns_none(self) -> None:
+        hass = FakeHomeAssistant([_WEATHER_SUNSHINE], data={})
+        hass.services.weather_raises.add("weather.dwd")
+        hass.services.forecast_solar_raises.add("fs_entry_1")
+
+        assert _run(_discovery_mod._sample_weather_forecast(hass, "weather.dwd")) is None
+        assert _run(_discovery_mod._sample_forecast_solar(hass, "fs_entry_1")) is None
+
+    def test_end_to_end_discovery_recovers_a_candidate_after_a_transient_failure(self) -> None:
+        """The full `discover_baseline_candidates` path, not just the
+        private sampler — a second discovery run (e.g. a user reopening
+        the config flow) still finds the Forecast.Solar candidate even
+        though its service call fails this time."""
+        hass = FakeHomeAssistant([], data={})
+        hass.add_forecast_solar_entry("fs_entry_1")
+        hass.services.forecast_solar_responses["fs_entry_1"] = {
+            "wh_period": {"2026-01-01T10:00:00+00:00": 500.0}
+        }
+        first_run = _run(_discovery_mod.discover_baseline_candidates(hass))
+        hass.services.forecast_solar_raises.add("fs_entry_1")
+
+        second_run = _run(_discovery_mod.discover_baseline_candidates(hass))
+
+        assert len(first_run) == 1
+        assert len(second_run) == 1
+        assert second_run[0].entity_id == "fs_entry_1"
 
 
 class TestForecastSolarHistoryEntityResolution:

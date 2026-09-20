@@ -75,7 +75,7 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
         → string_computation.py  -- also reads regression/, forecast_adjust.py, yield_correction.py directly (ADR-014)
           → aggregation.py
             → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014); as of 2026-09-01, DiagnosticMode holds a construction-time coordinator reference, typed since 2026-09-13 as a local ShadyCoordinatorLike Protocol (ADR-004 §1a) rather than an import of coordinator.py itself, TYPE_CHECKING-guarded or otherwise -- diagnostics/ is no longer in the zero-mocking tier; that Protocol plus RegressionSettings/StringComputationConfig/DiagnosedSlot (moved from coordinator.py 2026-09-13 -- they exist only to cross this boundary, and don't map 1:1 onto string_computation.py/regression/base.py despite the names) live in coordinator_like.py, next to coordinator.py itself (split out of diagnostics/base.py 2026-09-14, then moved out of diagnostics/ entirely the same day -- what it describes is ShadyCoordinator's own shape, diagnostics/ just being its one consumer so far)
-            → cache.py
+            → cache.py  -- providers/discovery.py also imports ServiceResponseCache/service_call_key directly (2026-09-19, TASK-0036), the same narrow exception diagnostics/compare_regressions.py's own SLOTS_PER_DAY import already established
               → coordinator.py  -- reads diagnostics/ via a per-instance mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014); passes itself into each DiagnosticMode at construction (ADR-004 §5, 2026-09-01)
                 → sensor.py / config_flow.py / select.py / button.py
                   → __init__.py
@@ -311,7 +311,8 @@ base-class shape, never a concrete mode's actual coordinator calls.
 
 ## 5 — `cache.py` design (ADR-007, ADR-007a, ADR-008)
 
-Owns 5 independent caches, only ever called by `coordinator.py`:
+Owns 6 independent stores (5 + `TASK-0036`'s service-response cache below), the
+first 5 only ever called by `coordinator.py`:
 
 1. Per-string/per-slot fitted-model cache — `get_model`/`set_model`/
    `invalidate_models`, keyed by `(kind, string_index)` where `kind` is
@@ -326,13 +327,31 @@ Owns 5 independent caches, only ever called by `coordinator.py`:
    fetch-on-demand half.
 1. Per-string whole-day snapshot array (time-series shaped).
 1. Two restart-persisted energy-integral running totals (ADR-005 §5/§6) — the
-   *only* restart-persisted cache; carries `last_reset_date` for idempotent
-   midnight reset.
+   *only* restart-persisted cache before `TASK-0036`; carries `last_reset_date`
+   for idempotent midnight reset.
 1. Short-lived per-string ramp/crossfade state (dict, ADR-006 §1b) — not
    restart-persisted, discarded once a ramp/blend completes.
 1. Historical two-series pool cache (time-series shaped), generic over any
    `sensor_id` pair — backs regression training, diagnostics, and (ADR-003c) the
    temperature-forecast model's own predictor/target pair.
+1. **(2026-09-19, `TASK-0036`) `ServiceResponseCache`** — the last *usable*
+   response per outbound service call (`forecast_solar.get_forecast`,
+   `weather.get_forecasts`), keyed by
+   `service_call_key(domain, service, data, target)`. Restart-persisted like the
+   energy totals, but via its own injected, duck-typed store (`attach_store`,
+   structurally matching `Store.async_load`/`async_save`, never imported),
+   loaded **lazily on first `async_call`** rather than an explicit
+   coordinator-driven restore — the construction-time Forecast.Solar poll fires
+   before any such restore could run (ADR-007 §1a). 12-hour expiry
+   (`SERVICE_RESPONSE_MAX_AGE`, inclusive at the boundary) — an older remembered
+   forecast has no useful overlap left with the predicted horizon. Independently
+   constructed (not per-`Cache`, not per-config-entry) and shared process-wide
+   via `hass.data` (`providers/discovery.py`'s
+   `async_get_service_response_cache`) — the one store both `coordinator.py`'s
+   Forecast.Solar poll (ADR-012 §4b) and `providers/discovery.py`'s
+   config-flow-time sampling (ADR-009 §4 Amendment) call into directly, since
+   discovery runs before any config entry (and so any coordinator/per-entry
+   `Cache`) exists.
 
 **Time-series storage (ADR-007a §1):**
 `values: dict[sensor_id, list[float | None | str]]` — three-state
