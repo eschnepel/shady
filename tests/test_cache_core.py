@@ -171,6 +171,84 @@ class TestPushGuardAndPushOnlySensor:
         assert cache.validated_range("shady_forecast") == (base, None)
 
 
+class TestValidateRangeHistoricalBackfillOptIn:
+    """Given a sensor Shady pushes to (to_index=None), _validate_range's
+    default behavior (allow_historical_backfill=False, the implicit
+    default every other caller in this codebase relies on) still never
+    (re-)queries it at all — TestPushGuardAndPushOnlySensor above pins
+    this for a purely push-owned sensor with no external source. But a
+    hybrid sensor — pushed forward-only *and* backed by a real external
+    history source (a `forecast_solar`-shaped baseline with a resolved
+    `history_entity_id`, ADR-012 §2a Amendment/TASK-0034) — needs its
+    still-missing historical head fetched the first time a caller that
+    knows this (get_regression_pools) asks, without losing the "future
+    is always current, never re-queried" guarantee for the same sensor
+    (TASK-0034-patch-2)."""
+
+    def test_default_still_never_queries_a_push_marked_sensor(self) -> None:
+        calls: list[tuple[datetime, datetime]] = []
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            calls.append((start, end))
+            return []
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        base = cache_mod.Cache.index_for(datetime(2026, 1, 10, tzinfo=UTC))
+        cache.push("baseline", {base: 10.0}, not_before_index=base)
+
+        cache._validate_range("baseline", base - 100, base)  # allow_historical_backfill=False
+
+        assert calls == []
+
+    def test_opt_in_fetches_the_missing_historical_head_once(self) -> None:
+        calls: list[tuple[datetime, datetime]] = []
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            calls.append((start, end))
+            n = round((end - start) / cache_mod.SLOT_DURATION)
+            return [7.0] * n
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        base = cache_mod.Cache.index_for(datetime(2026, 1, 10, tzinfo=UTC))
+        cache.push("baseline", {base: 10.0}, not_before_index=base)
+
+        cache._validate_range("baseline", base - 5, base, allow_historical_backfill=True)
+
+        assert len(calls) == 1
+        result = cache.get_time_range(
+            ["baseline"],
+            cache_mod.Cache.timestamp_for(base - 5),
+            cache_mod.Cache.timestamp_for(base - 1),
+            on_invalid="raw",
+        )
+        assert result == {"baseline": [7.0] * 5}
+        # The future half, pushed directly, is untouched by the backfill.
+        assert cache.get_time_range(
+            ["baseline"],
+            cache_mod.Cache.timestamp_for(base),
+            cache_mod.Cache.timestamp_for(base),
+            on_invalid="raw",
+        ) == {"baseline": [10.0]}
+
+    def test_opt_in_is_a_no_op_once_the_head_is_already_covered(self) -> None:
+        calls: list[tuple[datetime, datetime]] = []
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            calls.append((start, end))
+            n = round((end - start) / cache_mod.SLOT_DURATION)
+            return [7.0] * n
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        base = cache_mod.Cache.index_for(datetime(2026, 1, 10, tzinfo=UTC))
+        cache.push("baseline", {base: 10.0}, not_before_index=base)
+        cache._validate_range("baseline", base - 5, base, allow_historical_backfill=True)
+        assert len(calls) == 1
+
+        cache._validate_range("baseline", base - 5, base, allow_historical_backfill=True)
+
+        assert len(calls) == 1  # no second fetch — the head is already validated
+
+
 class TestGetTimeRangeGroupByShapes:
     """Given get_time_range(..., group_by="sensor") vs group_by="slot"
     against the same data, the two return the documented complementary

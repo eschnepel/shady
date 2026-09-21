@@ -434,12 +434,39 @@ class Cache:
             return
         from_index, to_index = current
         new_from = min(from_index, start)
-        new_to = end if to_index is None else max(to_index, end)
+        # `to_index is None` ("actively pushed by Shady", ADR-007a §2)
+        # must stay `None` here, not be widened to `end`: this branch was
+        # unreachable before `allow_historical_backfill` (ADR-012 §2a
+        # Amendment, TASK-0034-patch-2) made it possible to fetch-and-
+        # store for such a sensor at all, and a historical backfill
+        # filling in the *past* says nothing about the *future* no
+        # longer being kept current by `push()` — the very thing
+        # `to_index=None` promises to every other reader.
+        new_to = to_index if to_index is None else max(to_index, end)
         self._validated[sensor_id] = (new_from, new_to)
 
-    def _validate_range(self, sensor_id: str, start: int, end: int) -> None:
+    def _validate_range(
+        self, sensor_id: str, start: int, end: int, *, allow_historical_backfill: bool = False
+    ) -> None:
         """Bring `sensor_id` up to date for `[start, end]` before reading
         (ADR-007a §4) — on-demand, fetching only what's actually missing.
+
+        `allow_historical_backfill` (ADR-012 §2a Amendment, TASK-0034,
+        this amendment): defaults to `False`, preserving the original
+        `to_index=None` contract exactly (ADR-007a §2) — a sensor Shady
+        pushes to end-to-end (its own computed output series, e.g.
+        `forecast_sensor_id`) has no external source to backfill from at
+        all, and must never be queried, full stop; `TestPushGuardAndPush
+        OnlySensor` (`tests/test_cache_core.py`) pins exactly this. A
+        `forecast_solar`-shaped baseline is a different, hybrid case: it
+        *is* pushed forward-only by `_push_provider_series` (so its
+        future is always current, same as any other `to_index=None`
+        sensor), but it *also* has a real external history source via
+        `history_entity_id()` (`_fetch_provider_history_statistics`) that
+        was simply never queried yet. Only a caller that knows its
+        `sensor_ids` may be exactly this hybrid case — `get_regression_
+        pools`, which needs real calendar history to train on regardless
+        of whether the entity is also being pushed to — opts in.
         """
         self._ensure_sensor(sensor_id)
         current = self._validated.get(sensor_id)
@@ -454,8 +481,10 @@ class Cache:
 
         from_index, to_index = current
         if to_index is None:
-            # Actively pushed by Shady — always current, never (re-)queried
-            # (ADR-007a §2).
+            if allow_historical_backfill and start < from_index:
+                self._fetch_and_store(sensor_id, start, from_index - 1)
+            # Actively pushed by Shady — the future is always current,
+            # never (re-)queried (ADR-007a §2).
             return
 
         # Fetch only the missing head and/or tail, in one call each.
@@ -710,7 +739,12 @@ class Cache:
 
         pools: dict[str, NDArray[np.float64]] = {}
         for sensor_id in sensor_ids:
-            self._validate_range(sensor_id, window_start_day_index, window_end_index)
+            self._validate_range(
+                sensor_id,
+                window_start_day_index,
+                window_end_index,
+                allow_historical_backfill=True,
+            )
             shadow = self._shadow[sensor_id]
             list_offset = self._list_offset[sensor_id]
 

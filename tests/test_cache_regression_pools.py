@@ -172,6 +172,65 @@ class TestGetRegressionPoolsBatchedSingleCall:
         assert pool.shape == (288, window_days)
 
 
+class TestGetRegressionPoolsBackfillsAPushMarkedBaseline:
+    """Given a `forecast_solar`-shaped baseline that's already been
+    pushed to (to_index=None — its live forward() series, same as any
+    other push-based sensor, ADR-007a §2) before get_regression_pools
+    ever runs, the historical pool is still populated from its real
+    external source (ADR-012 §2a Amendment, TASK-0034), not silently
+    left all-NaN just because the sensor happens to also be push-marked
+    (TASK-0034-patch-2's own bug report and fix)."""
+
+    def test_historical_pool_is_populated_despite_prior_push(self) -> None:
+        fetch_calls: list[tuple[datetime, datetime]] = []
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            fetch_calls.append((start, end))
+            n = round((end - start) / cache_mod.SLOT_DURATION)
+            return [42.0] * n
+
+        window_days = 2
+        cache = cache_mod.Cache(window_days=window_days, fetch_fn=fetch_fn)
+        reference = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+        now_index = cache_mod.Cache.index_for(reference)
+
+        # Simulate _push_provider_series: the live forward() series gets
+        # pushed *before* any refit/get_regression_pools call, marking
+        # "fc" to_index=None with no fetch involved at all.
+        cache.push("fc", {now_index + 1: 999.0}, not_before_index=now_index + 1)
+        assert cache.validated_range("fc") == (now_index + 1, None)
+        assert fetch_calls == []  # the push itself never touches fetch_fn
+
+        pools = cache.get_regression_pools(["fc"], smoothing_radius=0, reference=reference)
+
+        assert len(fetch_calls) == 1  # the missing historical head was fetched
+        assert not np.isnan(pools["fc"]).any()
+        assert np.allclose(pools["fc"], 42.0)
+
+    def test_future_pushed_value_is_unaffected_by_the_historical_backfill(self) -> None:
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            n = round((end - start) / cache_mod.SLOT_DURATION)
+            return [42.0] * n
+
+        cache = cache_mod.Cache(window_days=2, fetch_fn=fetch_fn)
+        reference = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+        now_index = cache_mod.Cache.index_for(reference)
+
+        cache.push("fc", {now_index + 1: 999.0}, not_before_index=now_index + 1)
+        cache.get_regression_pools(["fc"], smoothing_radius=0, reference=reference)
+
+        # A live read for the pushed future slot still sees the pushed
+        # value, not something re-fetched over it (the to_index=None
+        # marker must survive the historical backfill merge).
+        result = cache.get_time_range(
+            ["fc"],
+            cache_mod.Cache.timestamp_for(now_index + 1),
+            cache_mod.Cache.timestamp_for(now_index + 1),
+            on_invalid="raw",
+        )
+        assert result == {"fc": [999.0]}
+
+
 # -- AC4: get_time_range's own behavior/output stay unaffected -------------
 
 
