@@ -33,6 +33,12 @@ from tests.support_ha import FakeHomeAssistant
 _aggregation_mod = sys.modules["shady.aggregation"]
 diagnostic_accuracy = _aggregation_mod.diagnostic_accuracy
 _string_computation_mod = sys.modules["shady.string_computation"]
+# ADR-004 §2d (2026-09-21 Amendment): `series` entries are complete
+# `plotly-graph` traces -- reuse the production builder itself for
+# expected values below rather than duplicating its shape and risking
+# drift. As of `TASK-0015b-patch-3`, it's a `DiagnosticMode` static
+# method (`base.py`), not a `compare_regressions.py`-local function.
+_xy_series_entry = sys.modules["shady.diagnostics.base"].DiagnosticMode._xy_series_entry
 
 # A 3-day window, no smoothing (single offset "0") — small enough to hand
 # -verify, big enough to demonstrate a real gap-pattern mismatch across
@@ -133,14 +139,14 @@ class TestSumEntryDayAlignment:
 
         string_0 = _sensor(result, "0")
         assert string_0.attributes["series"] == [
-            {"name": "0", "data": [[500.0, 500.0], [500.0, 500.0], [500.0, 500.0]]}
+            _xy_series_entry("0", [[500.0, 500.0], [500.0, 500.0], [500.0, 500.0]])
         ]
 
         string_1 = _sensor(result, "1")
         # Day 0 is filtered out of string 1's own display series — it has
         # nothing that day — leaving only the two days it actually has.
         assert string_1.attributes["series"] == [
-            {"name": "0", "data": [[500.0, 300.0], [500.0, 300.0]]}
+            _xy_series_entry("0", [[500.0, 300.0], [500.0, 300.0]])
         ]
 
         summed = _sensor(result, "sum")
@@ -149,15 +155,15 @@ class TestSumEntryDayAlignment:
         # paired with the wrong calendar day the way summing the two
         # already-filtered lists above via position would have risked).
         assert summed.attributes["series"] == [
-            {
-                "name": "0",
-                "data": [
+            _xy_series_entry(
+                "0",
+                [
                     # day 0: FC = 500(str0)+500(str1, always present) — PV = 500(str0 only)
                     [1000.0, 500.0],
                     [1000.0, 800.0],  # day 1: both strings present
                     [1000.0, 800.0],  # day 2 (== _PIN's own day): both strings present
                 ],
-            }
+            )
         ]
 
     def test_sum_matches_a_symmetric_gap_pattern_naively_too(self) -> None:
@@ -176,7 +182,7 @@ class TestSumEntryDayAlignment:
         assert result is not None
         summed = _sensor(result, "sum")
         assert summed.attributes["series"] == [
-            {"name": "0", "data": [[1000.0, 800.0], [1000.0, 800.0]]}
+            _xy_series_entry("0", [[1000.0, 800.0], [1000.0, 800.0]])
         ]
 
 
@@ -255,9 +261,11 @@ class TestSelectedAggregatesSummedIndependently:
         selected_series = [
             entry for entry in summed.attributes["series"] if entry["name"].startswith("selected")
         ]
-        assert {"name": "selected actual", "data": [[1000.0, 530.0]]} in selected_series
+        assert _xy_series_entry("selected actual", [[1000.0, 530.0]]) in selected_series
         assert any(
-            entry["name"].startswith("selected method_x") and entry["data"] == [[1000.0, 500.0]]
+            entry["name"].startswith("selected method_x")
+            and entry["x"] == [1000.0]
+            and entry["y"] == [500.0]
             for entry in selected_series
         )
         assert summed.attributes["accuracy"] == {"method_x": expected_accuracy}

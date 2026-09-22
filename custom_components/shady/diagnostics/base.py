@@ -81,6 +81,19 @@ later via `select.py` must already have its entities in place). A mode
 producing several distinct aggregate entities — more than one kind of
 "sum" — is handled exactly the same way as one that doesn't: it simply
 declares more `sensor_id`s.
+
+As of 2026-09-21 (`TASK-0015b-patch-3`), `DiagnosticMode` also carries
+`_xy_series_entry()`, a `@staticmethod` every concrete mode inherits for
+building one `series`-attribute entry in `custom:plotly-graph`'s trace
+shape (ADR-004 §2d). It moved here from `compare_regressions.py`, where
+`TASK-0015b-patch-2` first introduced it as a private module-level
+function — `CompareRegressionsMode` was, at the time, still the only
+concrete mode there was to use it. Shared base-class placement matters
+once a second mode exists (ADR-013's sketched ones do, on paper): every
+mode's `series` output should look identical in shape, and a shared
+inherited method is what keeps that true by construction rather than by
+convention two independently-written `compute()` bodies would have to
+maintain by hand.
 """
 
 from __future__ import annotations
@@ -245,3 +258,32 @@ class DiagnosticMode(ABC):
         mode that doesn't need extra fitting."
         """
         return None
+
+    @staticmethod
+    def _xy_series_entry(name: str, points: list[list[float]]) -> dict[str, Any]:
+        """`points` (`[[x_i, y_i], ...]`) -> one `series`-attribute entry
+        in `custom:plotly-graph`'s own trace shape (ADR-004 §2d,
+        2026-09-21 Amendment, `TASK-0015b-patch-3`) — `{"entity": "",
+        "name": name, "type": "scatter", "mode": "markers", "x": [...],
+        "y": [...]}`, `entity`/`type`/`mode` constant on every entry.
+        Lives here rather than in any one concrete mode's own module
+        because it's the one shared building block ADR-004 §2/§5 expects
+        *every* `DiagnosticMode` to use for its own `series` output —
+        `CompareRegressionsMode` (`compare_regressions.py`) is the only
+        one that exists yet, but ADR-013's sketched future modes
+        (`compare_providers_daily`, a whole-day snapshot mode) will want
+        the same shape for the same reason, not a second, possibly
+        drifted, reimplementation. A `@staticmethod` (not a module-level
+        function, ADR-004 §2d's original home for this) specifically so
+        it's inherited automatically — a new mode subclassing
+        `DiagnosticMode` gets it via `self._xy_series_entry(...)` with no
+        import of `compare_regressions.py` (or anything else
+        `CompareRegressionsMode`-specific) needed at all."""
+        return {
+            "entity": "",
+            "name": name,
+            "type": "scatter",
+            "mode": "markers",
+            "x": [p[0] for p in points],
+            "y": [p[1] for p in points],
+        }

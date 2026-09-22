@@ -378,6 +378,11 @@ class ShadyDiagnosticsSensor(SensorEntity):  # type: ignore[misc]
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        # ADR-004 §5, 2026-09-21 Amendment: no reshaping of any kind —
+        # `entity`/`type`/`mode` in every `series` entry (§2d) are
+        # constants `diagnostics/` bakes in itself, so unlike the
+        # short-lived §2c predecessor (self-`entity_id` injection),
+        # `sensor.py` has nothing left to add here.
         result = self._result()
         if result is None:
             return {}

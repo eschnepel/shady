@@ -4,12 +4,16 @@ one concrete `DiagnosticMode` in scope for TASK-0015b (ADR-004
 
 For each configured string, compares whatever `regression/` strategy is
 actually configured (ADR-001 §2) against the other three, all evaluated
-at one "diagnosed slot" (ADR-004 §2/§2a) — a scatter-chart-ready
-`series` attribute plus a per-method `accuracy` figure
-(one `ShadyDiagnosticsSensor` per string), plus one additional flat
-entry (`sensor_id="sum"`) that pointwise-sums the same comparison
-across every string (§2b, the same `ShadyDiagnosticsSensor` class,
-just another declared `sensor_id` — ADR-004 §5, fifth Amendment).
+at one "diagnosed slot" (ADR-004 §2/§2a) — a `custom:plotly-graph`-ready
+`series` attribute (each entry `{"entity": "", "name": ..., "type":
+"scatter", "mode": "markers", "x": [...], "y": [...]}`, built via the
+inherited `DiagnosticMode._xy_series_entry` — `base.py`, ADR-004 §2d,
+`TASK-0015b-patch-3`; `entity`/`type`/`mode` are constants, so
+`sensor.py` needs no reshaping step at all) plus a per-method `accuracy`
+figure (one `ShadyDiagnosticsSensor` per string), plus one additional
+flat entry (`sensor_id="sum"`) that pointwise-sums the same comparison
+across every string (§2b, the same `ShadyDiagnosticsSensor` class, just
+another declared `sensor_id` — ADR-004 §5, fifth Amendment).
 
 As of ADR-004 §5's 2026-09-03 Amendment, the `"sum"` entry is built
 *here*, inside this same `compute()` call, from each string's raw,
@@ -283,7 +287,11 @@ class CompareRegressionsMode(DiagnosticMode):
         shared by `_compute_sensor` and `_compute_sum_sensor`, which
         differ only in which `predictions`/`fc_selected`/`pv_selected`
         they pass in (ADR-004 §2/§2b): per-string values for one, the
-        pointwise sums across contributing strings for the other."""
+        pointwise sums across contributing strings for the other.
+        Entries are complete `plotly-graph` traces, built via the
+        inherited `DiagnosticMode._xy_series_entry` (ADR-004 §2d,
+        `TASK-0015b-patch-3`) — `sensor.py` performs no further
+        shaping."""
         accuracy: dict[str, float] = {}
         if fc_selected is None:
             return accuracy
@@ -294,9 +302,9 @@ class CompareRegressionsMode(DiagnosticMode):
                 name = f"selected {method} ({round(method_accuracy * 100)}%)"
             else:
                 name = f"selected {method}"
-            series.append({"name": name, "data": [[fc_selected, predicted]]})
+            series.append(self._xy_series_entry(name, [[fc_selected, predicted]]))
         if pv_selected is not None:
-            series.append({"name": "selected actual", "data": [[fc_selected, pv_selected]]})
+            series.append(self._xy_series_entry("selected actual", [[fc_selected, pv_selected]]))
         return accuracy
 
     def _pool_series(
@@ -306,7 +314,11 @@ class CompareRegressionsMode(DiagnosticMode):
         `[FC_i, PV_i]` pair per historical day, `PV_i` the *corrected*
         value (`apply_training_corrections`) — exactly the training
         data `regression/` itself sees for this slot's pool, not the
-        raw recorder reading."""
+        raw recorder reading. Entries are complete `plotly-graph`
+        traces, built via the inherited
+        `DiagnosticMode._xy_series_entry` (ADR-004 §2d,
+        `TASK-0015b-patch-3`) — `sensor.py` performs no further
+        shaping."""
         series: list[dict[str, Any]] = []
         for offset in range(-settings.smoothing_radius, settings.smoothing_radius + 1):
             fc_row = pool.fc_by_offset[offset][0]
@@ -316,7 +328,7 @@ class CompareRegressionsMode(DiagnosticMode):
                 for fc, pv in zip(fc_row, pv_row, strict=True)
                 if not (np.isnan(fc) or np.isnan(pv))
             ]
-            series.append({"name": str(offset), "data": data})
+            series.append(self._xy_series_entry(str(offset), data))
         return series
 
     # -- shared pool gathering ------------------------------------------------
@@ -332,7 +344,11 @@ class CompareRegressionsMode(DiagnosticMode):
         `get_pinned_slot_pool` call per offset — shared by `compute()`'s
         display series and `extra_fit()`'s model fitting alike, so a
         string's pool is only fetched/corrected once per call, not
-        twice."""
+        twice. Passes `reference=self._coordinator.now()` through to
+        `get_pinned_slot_pool` (ADR-007a §6 Amendment, TASK-0037) — the
+        same injectable clock every other diagnostics call already
+        resolves through, rather than that accessor falling back to the
+        real wall clock every time."""
         assert config.baseline_entity_id is not None
         sensor_ids = [config.baseline_entity_id, config.actual_yield_entity_id]
         if config.temperature_entity_id is not None:
@@ -343,10 +359,11 @@ class CompareRegressionsMode(DiagnosticMode):
         temperature_by_offset: dict[int, NDArray[np.float64]] | None = (
             {} if config.temperature_entity_id is not None else None
         )
+        now = self._coordinator.now()
         for offset in range(-settings.smoothing_radius, settings.smoothing_radius + 1):
             offset_slot = (diagnosed.slot_of_day + offset) % SLOTS_PER_DAY
             raw = self._coordinator.cache.get_pinned_slot_pool(
-                sensor_ids, offset_slot, on_invalid="raw"
+                sensor_ids, offset_slot, on_invalid="raw", reference=now
             )
             fc_by_offset[offset] = _to_float_array(raw[config.baseline_entity_id])[None, :]
             pv_by_offset[offset] = _to_float_array(raw[config.actual_yield_entity_id])[None, :]

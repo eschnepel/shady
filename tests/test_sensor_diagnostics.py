@@ -94,6 +94,50 @@ def _make_setup() -> tuple[Any, _CountingDiagnosticMode]:
     return coordinator, fake_mode
 
 
+class _SeriesDiagnosticMode(DiagnosticMode):
+    """A `DiagnosticMode` returning a `series` attribute in the current
+    `diagnostics/`-authored shape — a complete `plotly-graph` trace per
+    entry, `entity`/`type`/`mode` constants included (ADR-004 §2d) —
+    alongside an untouched `accuracy` dict, so
+    `ShadyDiagnosticsSensor.extra_state_attributes`'s pass-through
+    behavior (ADR-004 §5, 2026-09-21 Amendment) can be exercised without
+    a real `CompareRegressionsMode` computation."""
+
+    key = "compare_regressions"
+
+    def fit_cadence(self) -> Any:
+        return "slot"
+
+    def compute_cadence(self) -> Any:
+        return "slot"
+
+    def sensor_ids(self) -> list[tuple[str, str]]:
+        return [("0", "String 0")]
+
+    def compute(self) -> Any:
+        return DiagnosticResult(
+            sensors=[
+                DiagnosticSensorResult(
+                    sensor_id="0",
+                    state="ok",
+                    attributes={
+                        "series": [
+                            {
+                                "entity": "",
+                                "name": "0",
+                                "type": "scatter",
+                                "mode": "markers",
+                                "x": [1.0],
+                                "y": [2.0],
+                            }
+                        ],
+                        "accuracy": {"method_x": 0.5},
+                    },
+                )
+            ]
+        )
+
+
 class TestDiagnosticsSensorUniqueIdDistinctness:
     """Given the two `ShadyDiagnosticsSensor` instances the existing
     two-string `_CountingDiagnosticMode` fixture (`sensor_ids() ->
@@ -190,3 +234,39 @@ class TestDiagnosticsSensorStateWithoutTriggeringCompute:
         assert sensor_1.native_value == "unavailable"
         assert sensor_1.extra_state_attributes == {}
         assert fake_mode.compute_calls == 1
+
+
+class TestDiagnosticsSensorSeriesPassesThroughUnchanged:
+    """ADR-004 §5, 2026-09-21 Amendment: `extra_state_attributes` performs
+    no reshaping at all — every `series` entry (`entity`/`type`/`mode`
+    constants included, ADR-004 §2d) and `accuracy` come straight out of
+    `result.attributes`, byte-for-byte. (Contrast the short-lived
+    `TASK-0015b-patch-1` version of this test, which asserted the
+    opposite: that `sensor.py` *did* rewrite each entry to inject its own
+    `entity_id` — superseded the same day once `entity` became a
+    constant, ADR-004 §2c/§2d.)"""
+
+    def test_series_and_accuracy_pass_through_unchanged(self) -> None:
+        coordinator, _hass, _entry = _make_ready_coordinator()
+        fake_mode = _SeriesDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.diagnostic_result()
+
+        sensor_0 = ShadyDiagnosticsSensor(coordinator, tf._make_entry(), "0", "String 0")
+        # Deliberately *not* set here (contrast the removed
+        # entity-injection test this replaces) — extra_state_attributes
+        # must not depend on entity_id at all any more.
+
+        attrs = sensor_0.extra_state_attributes
+        assert attrs["series"] == [
+            {
+                "entity": "",
+                "name": "0",
+                "type": "scatter",
+                "mode": "markers",
+                "x": [1.0],
+                "y": [2.0],
+            }
+        ]
+        assert attrs["accuracy"] == {"method_x": 0.5}

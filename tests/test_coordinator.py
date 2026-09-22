@@ -1377,6 +1377,83 @@ class TestDiagnosticResultCaching:
         assert fake_mode.compute_calls == 2
 
 
+class TestDiagnosticResultOffEventLoopDispatch:
+    """`diagnostic_result()`'s lazy cache-miss `compute()` call must
+    never run directly on the event loop (module docstring:
+    `mode.compute()` can perform the same blocking recorder read
+    `_fetch_actual_yield_statistics` warns about) — `_running_on_the_
+    event_loop()` is what tells apart every other test in this class
+    above (a plain synchronous call, computed inline exactly as
+    before) from a call reached with a real asyncio event loop running
+    in the current thread, the same situation `sensor.py`'s
+    `native_value` is actually called from in production (this is the
+    exact `RuntimeError: Caught blocking call ... inside the event
+    loop` crash this dispatch fixes)."""
+
+    def test_cache_miss_on_the_event_loop_does_not_compute_inline(self) -> None:
+        """Given a cache miss reached while a loop is running, When
+        `diagnostic_result()` is read, Then `compute()` is not called
+        synchronously here — the read sees `None` (the still-empty
+        cache) rather than a freshly (and potentially blockingly)
+        computed result."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        async def _read_on_the_event_loop() -> None:
+            # No `await` between the read and these assertions — the
+            # dispatched recompute task is merely *scheduled*
+            # (`asyncio.ensure_future`), never run synchronously as
+            # part of this call, so `compute_calls` cannot have
+            # advanced yet at this point in the coroutine's own step,
+            # regardless of how soon the event loop gets around to it
+            # afterwards.
+            result = coordinator.diagnostic_result()
+            assert result is None
+            assert fake_mode.compute_calls == 0
+
+        _run(_read_on_the_event_loop())
+
+    def test_deferred_recompute_populates_the_cache_off_the_event_loop(self) -> None:
+        """Given that same cache miss, When the dispatched
+        `_async_recompute_diagnostic_result` task actually runs (`hass.
+        drain()`, mirroring pumping HA's own event loop), Then
+        `compute()` has run exactly once and the result is cached —
+        the very next read (the next poll, or the next `"slot"`-cadence
+        tick) sees it."""
+        coordinator, hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        async def _read_then_drain() -> None:
+            coordinator.diagnostic_result()
+            await hass.drain()
+
+        _run(_read_then_drain())
+
+        assert fake_mode.compute_calls == 1
+        assert coordinator._diagnostic_result_cache is not None
+        assert coordinator._diagnostic_result_cache.sensors[0].sensor_id == "0"
+
+    def test_async_recompute_is_a_no_op_when_no_mode_is_active(self) -> None:
+        """`_async_recompute_diagnostic_result` mirrors `diagnostic_
+        result()`'s own "off" guard — a mode switched back to `"off"`
+        (or never selected) before the dispatched task actually runs
+        must not call `compute()` on nothing, and must leave the cache
+        at `None` rather than caching a stray result for the wrong
+        mode."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+
+        _run(coordinator._async_recompute_diagnostic_result())
+
+        assert fake_mode.compute_calls == 0
+        assert coordinator._diagnostic_result_cache is None
+
+
 class TestDiagnosticSensorIds:
     """`coordinator.diagnostic_sensor_ids()` (ADR-004 §5, fifth
     Amendment, 2026-09-03): the union of every *registered* mode's own

@@ -168,7 +168,13 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   finding on the prior `TYPE_CHECKING`-guarded `ShadyCoordinator` import (that
   query flags any module-level import regardless of a `TYPE_CHECKING` guard, so
   the guard didn't suppress it); `ShadyCoordinator` satisfies the Protocol
-  structurally, unchanged itself.
+  structurally, unchanged itself. **As of 2026-09-21 (ADR-004 §2e):** also
+  carries `_xy_series_entry(name, points)`, a shared, inherited `@staticmethod`
+  (not abstract — every mode wanting a `plotly-graph`-shaped `series` entry
+  wants the identical shape) every concrete mode can call for its own `series`
+  output — moved here from `CompareRegressionsMode`'s own module the same day it
+  shipped, once it became clear ADR-013's sketched future modes would need the
+  identical shape, not a per-mode reimplementation risking drift.
 - **`cache.py`** — pure, no `hass` import, injected `fetch_fn`. Index-
   addressable time-series store (generic over `sensor_id`) + fitted-model cache
   (`get_model`/`set_model`/`invalidate_models`, explicit validity tracking,
@@ -380,10 +386,14 @@ sensors sharing an identical missing range into one `fetch_fn` call.
 
 - `get_time_range(sensor_ids, start, end, on_invalid="skip"|"raw"|float=0.0, group_by="sensor"|"slot")`
   — contiguous ranges (day arrays, trailing windows). `ADR-007a §5`.
-- `get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid="skip"|"raw"|float="skip") -> dict[sensor_id, list[float]]`
+- `get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid="skip"|"raw"|float="skip", *, reference: datetime|None=None) -> dict[sensor_id, list[float]]`
   — one slot across many days, pin-aware via cache-wide scalar
-  `pinned_reference: date|None` (`pin_reference()`/`clear_reference()`).
-  `ADR-007a §6`.
+  `pinned_reference: date|None` (`pin_reference()`/`clear_reference()`). Caps
+  how far into an auto-tracked/pinned-to-today "today" it validates at
+  `reference` (defaults to the real wall clock) — never further than the last
+  complete slot while auto-tracking, or `reference` itself inclusive while
+  genuinely pinned — so a not-yet-elapsed slot is never permanently frozen at
+  `None` once it does elapse (`TASK-0037`). `ADR-007a §6`.
 - `get_regression_pools(sensor_ids, smoothing_radius) -> dict[sensor_id, NDArray[np.float64]]`
   — full 288-slot sweep, batched `numpy`, shape
   `(288, window_days×(2×radius+1))`. Backed by a shadow `float64` array (NaN =
@@ -418,14 +428,39 @@ wired directly into `cache.py`'s `fetch_fn`.
 - **`ShadyDiagnosticsSensor`** (one per `(sensor_id, name)` pair
   `coordinator.diagnostic_sensor_ids()` declares, ADR-004 §2/§2b, §5 2026-09-03
   — one per configured string plus one `"sum"` id for `CompareRegressionsMode`,
-  no dedicated sum-sensor class) — ApexCharts- shaped `series` (slot-pool
-  scatter + 4 methods' selected-prediction points + actual point) and
-  plain-float `accuracy` dict, set from `coordinator.diagnostic_result()` — a
-  cached accessor over the active `DiagnosticMode`'s `compute()` output (today,
-  always `CompareRegressionsMode`), refreshed once per tick; entities never call
-  `.compute()` directly. Diagnosed slot defaults to "last complete slot";
-  overridable via the `shady.select_diagnostic_slot` service (not
-  entity-targeted — one diagnosed-slot state per **config entry**).
+  no dedicated sum-sensor class) — `custom:plotly-graph`-ready `series`
+  (slot-pool scatter + 4 methods' selected-prediction points + actual point,
+  each entry a complete trace:
+  `{"entity": "", "name": ..., "type": "scatter", "mode": "markers", "x": [...], "y": [...]}`,
+  ADR-004 §2d, 2026-09-21 — `entity`/`type`/`mode` constant on every entry,
+  `x`/`y` the same points as two parallel flat arrays rather than `[x, y]` pairs
+  — supersedes a same-day, short-lived `apexcharts-card`/`data_generator`
+  attempt, §2c, abandoned because that card cannot render a numeric x-axis at
+  all) and plain-float `accuracy` dict (untouched throughout), set from
+  `coordinator.diagnostic_result()` — a cached accessor over the active
+  `DiagnosticMode`'s `compute()` output (today, always
+  `CompareRegressionsMode`), refreshed once per tick; entities never call
+  `.compute()` directly. `sensor.py` performs **no reshaping of any kind** —
+  every `series` entry comes straight from `diagnostics/` (ADR-004 §5 2026-09-21
+  Amendment; §2c briefly required a `sensor.py`-side `entity_id` injection step,
+  removed the same day once `entity` became a constant). The entry itself is
+  built by `DiagnosticMode._xy_series_entry` — a shared, inherited
+  `@staticmethod` on the base class (ADR-004 §2e, 2026-09-21, moved there the
+  same day from a `CompareRegressionsMode`-local function once it became clear
+  every future mode, not just this one, would need the identical shape).
+  Diagnosed slot defaults to "last complete slot"; overridable via the
+  `shady.select_diagnostic_slot` service (not entity-targeted — one
+  diagnosed-slot state per **config entry**). **YAML gotcha (ADR-004 §2d):** the
+  `"y"` key must always be written explicitly quoted in any hand-written YAML
+  representation of this shape — YAML 1.1 resolves a bare `y`/`n`/`yes`/`no` to
+  a boolean, not just `true`/`false`, so an unquoted `y:` silently becomes the
+  boolean key `True`. Python's own `dict`/`str()` round-trip is unaffected
+  (string keys are always quoted on output), so this is a
+  documentation/hand-authoring concern only — covered explicitly in ADR-004 §2d,
+  including why that section's own example is fenced ```` ```yml ```` rather
+  than ```` ```yaml ```` (this repo's own `mdformat` pass reformats
+  `yaml`-tagged fences and silently strips exactly this quoting, not knowing
+  it's load-bearing).
 - **6 aggregate sensors** (one/entry, ADR-005): `ShadyPvSumSensor`,
   `ShadyFcSumSensor`, `ShadyFcDaySumSensor` (288-value day array + energy
   state), `ShadyFcRemainingTodaySensor`, `ShadyPvEnergyIntegralSensor`

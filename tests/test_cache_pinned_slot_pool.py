@@ -112,9 +112,18 @@ class TestGetPinnedSlotPoolNoPinAutoTracksToday:
         slot_of_day = 100
         cache = cache_mod.Cache(window_days=window_days, fetch_fn=_index_valued_fetch_fn)
 
-        result = cache.get_pinned_slot_pool(["fc"], slot_of_day)
-
+        # Anchored late enough in the day (ADR-007a §6 Amendment,
+        # TASK-0037) that `slot_of_day`'s own row for today has already
+        # elapsed as of `reference` -- this test is about window
+        # *resolution* (today-anchored vs. pinned), not the separate
+        # not-yet-elapsed-slot cap the Amendment adds, so it pins
+        # `reference` deep into the day rather than depending on
+        # whatever real time of day the suite happens to run at.
         today = datetime.now(UTC).date()
+        reference = datetime(today.year, today.month, today.day, 23, 55, tzinfo=UTC)
+
+        result = cache.get_pinned_slot_pool(["fc"], slot_of_day, reference=reference)
+
         assert result["fc"] == _expected_window_values(today, window_days, slot_of_day)
 
 
@@ -141,8 +150,13 @@ class TestGetPinnedSlotPoolPastPinAnchorsThere:
         cache = cache_mod.Cache(window_days=window_days, fetch_fn=_index_valued_fetch_fn)
         today = datetime.now(UTC).date()
         cache.pin_reference(today)
+        # Same not-yet-elapsed-slot cap applies to a pin-to-today as it
+        # does to plain auto-tracking (both resolve `anchor = today`) --
+        # anchored late enough in the day that `slot_of_day` has already
+        # elapsed, same reasoning as the auto-tracking test above.
+        reference = datetime(today.year, today.month, today.day, 23, 55, tzinfo=UTC)
 
-        result = cache.get_pinned_slot_pool(["fc"], slot_of_day)
+        result = cache.get_pinned_slot_pool(["fc"], slot_of_day, reference=reference)
 
         assert result["fc"] == _expected_window_values(today, window_days, slot_of_day)
 
@@ -155,15 +169,21 @@ class TestGetPinnedSlotPoolFuturePinFallsBackToToday:
     def test_future_pin_matches_the_unpinned_today_anchored_result(self) -> None:
         window_days = 3
         slot_of_day = 77
+        today = datetime.now(UTC).date()
+        reference = datetime(today.year, today.month, today.day, 23, 55, tzinfo=UTC)
 
         unpinned_cache = cache_mod.Cache(window_days=window_days, fetch_fn=_index_valued_fetch_fn)
-        unpinned_result = unpinned_cache.get_pinned_slot_pool(["fc"], slot_of_day)
+        unpinned_result = unpinned_cache.get_pinned_slot_pool(
+            ["fc"], slot_of_day, reference=reference
+        )
 
         future_pinned_cache = cache_mod.Cache(
             window_days=window_days, fetch_fn=_index_valued_fetch_fn
         )
-        future_pinned_cache.pin_reference(datetime.now(UTC).date() + timedelta(days=30))
-        future_pinned_result = future_pinned_cache.get_pinned_slot_pool(["fc"], slot_of_day)
+        future_pinned_cache.pin_reference(today + timedelta(days=30))
+        future_pinned_result = future_pinned_cache.get_pinned_slot_pool(
+            ["fc"], slot_of_day, reference=reference
+        )
 
         assert future_pinned_result["fc"] == unpinned_result["fc"]
 
@@ -346,6 +366,67 @@ class TestGetPinnedSlotPoolValidatesWholeWindowInOneFetchCall:
         # Same pin, same window -> already validated, no second fetch.
         cache.get_pinned_slot_pool(["fc"], 200)
         assert len(calls) == 1
+
+
+class TestGetPinnedSlotPoolNeverPermanentlyFreezesANotYetElapsedSlot:
+    """ADR-007a §6 Amendment (TASK-0037): while auto-tracking (or
+    pinned to today itself), today's own row for `slot_of_day` must
+    never be validated — and therefore never permanently frozen at
+    `None` — before it has actually elapsed. Before this Amendment,
+    `get_pinned_slot_pool` validated clear through to the end of
+    `anchor` (today) on its very first call of the day, regardless of
+    `slot_of_day`; since `_validate_range` never re-queries an index
+    already inside a validated span, a `slot_of_day` later than
+    whatever real time happened to be at that first call was frozen at
+    whatever the recorder had for it *then* (typically nothing) for the
+    rest of the day, even once real data for it existed."""
+
+    def test_not_yet_elapsed_slot_is_dropped_now_but_populated_once_it_elapses(self) -> None:
+        window_days = 2
+        slot_of_day = 100  # 08:20
+        today = date(2026, 6, 15)
+
+        # A `fetch_fn` that mimics a real recorder: any absolute index
+        # at/after whatever "now" was most recently told to it (via the
+        # closed-over `not_yet_real_from` box) has no data yet.
+        not_yet_real_from = {"index": None}
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            n = round((end - start) / cache_mod.SLOT_DURATION)
+            start_index = cache_mod.Cache.index_for(start)
+            out: list[float | None | str] = []
+            for i in range(n):
+                idx = start_index + i
+                if not_yet_real_from["index"] is not None and idx >= not_yet_real_from["index"]:
+                    out.append(None)
+                else:
+                    out.append(float(idx))
+            return out
+
+        cache = cache_mod.Cache(window_days=window_days, fetch_fn=fetch_fn)
+
+        # First call: "now" is 06:00, well before slot_of_day's own
+        # 08:20 -- today's row genuinely doesn't exist yet.
+        early_reference = datetime(today.year, today.month, today.day, 6, 0, tzinfo=UTC)
+        not_yet_real_from["index"] = cache_mod.Cache.index_for(early_reference)
+
+        early_result = cache.get_pinned_slot_pool(["fc"], slot_of_day, reference=early_reference)
+
+        # Only yesterday's row -- today's is correctly missing, not
+        # synthesized.
+        assert len(early_result["fc"]) == window_days - 1
+
+        # Second call, five minutes (in wall-clock terms) later: "now"
+        # has caught up past slot_of_day's own 08:20, so the recorder
+        # genuinely has a value for it now.
+        later_reference = datetime(today.year, today.month, today.day, 9, 0, tzinfo=UTC)
+        not_yet_real_from["index"] = cache_mod.Cache.index_for(later_reference)
+
+        later_result = cache.get_pinned_slot_pool(["fc"], slot_of_day, reference=later_reference)
+
+        # Both rows now present -- today's slot was re-fetched for
+        # real, not served back a `None` frozen in from the first call.
+        assert len(later_result["fc"]) == window_days
 
 
 # -- AUDIT-0003/TASK-0030 item 3: differential vs. get_regression_pools -----

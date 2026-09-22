@@ -5,12 +5,20 @@
 because the concrete storage scheme and accessor API are a separable, and
 independently heavily cross-referenced, concern from the *decision to extract
 `cache.py` as its own module* in the first place. No behavior changed by this
-split. **Last updated:** 2026-09-08
+split. **Last updated:** 2026-09-22
 
 This ADR is kept current in place: §2/§3's hybrid push/query handling for
 provider-backed predictor series (baseline `FC`, temperature), and §5's
 model-cache accessor design (`get_model`/`set_model`/ `invalidate_models`, not a
-bare `dict`), are both folded directly into their sections below.
+bare `dict`), are both folded directly into their sections below. As of
+2026-09-22 (`TASK-0037`), §6 also describes a bug fix: `get_pinned_slot_pool`
+gained an optional `reference` parameter and now caps how far into "today" it
+validates, rather than always validating clear through to end-of-day regardless
+of what "now" actually is — see §6's own "Never permanently freezing a
+not-yet-elapsed slot" note for the full rationale. Behavior for every
+already-elapsed slot is unchanged; only a not-yet-elapsed slot's handling
+differs, and only in the direction of no longer producing a permanently-`None`
+result for it once it does elapse.
 
 ______________________________________________________________________
 
@@ -336,7 +344,7 @@ Diagnostics gets its own dedicated accessor for this — rather than a
 `pinned: bool` flag bolted onto a shared method — because pin-resolution below
 is a concern unique to this one caller, consistent with `window_days` also not
 being a per-call argument (§5):
-**`get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid: Literal["skip", "raw"] | float = "skip") -> dict[sensor_id, list[float]]`**
+**`get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid: Literal["skip", "raw"] | float = "skip", *, reference: datetime | None = None) -> dict[sensor_id, list[float]]`**
 — "the same slot, across many days" shape (ADR-001 §3a's / ADR-011's training
 pool), scoped to this one caller. Its window is resolved from `pinned_reference`
 **internally**: `[pinned_reference − window_days, pinned_reference]` if a pin is
@@ -363,14 +371,58 @@ Because both branches resolve to the same-shaped
 `[anchor − window_days, anchor]` window and go through the same
 validate-before-read call (§4), whether a given `get_pinned_slot_pool` call
 actually needs a new recorder fetch or is served entirely from cache depends on
-**whether that window is already cached** — not on which branch was taken. In
-the common auto-tracking case, and for any pin to today or a future date, the
-resolved window is `[today − window_days, today]`, exactly what the same day's
-recalibration already fetched moments earlier, so the call is served from
-already-validated entries with no new recorder query. A pin to an older *past*
-date will typically *not* already be cached, so that same call does trigger a
-genuine fetch for the missing range — the underlying mechanism is identical in
-both cases; only whether it happens to find its target already there differs.
+**whether that window is already cached** — not on which branch was taken. A pin
+to an older *past* date will typically *not* already be cached, so that call
+triggers a genuine fetch for the missing range; the auto-tracking (or
+today/future-pin) case is more often already at least partly cached from an
+earlier call the same day — the underlying mechanism is identical in both cases,
+only whether it happens to find its target already there differs.
+
+**Amendment (2026-09-22, `TASK-0037`): never permanently freezing a
+not-yet-elapsed slot.** The auto-tracking/today-pin window's own upper bound —
+`anchor` itself, i.e. the *whole* of today, not just whatever part of it has
+actually happened — used to be exactly what got validated on every call, with no
+adjustment for how much of today had actually elapsed as of that call. That is a
+real bug, not a harmless overreach: §4's `_validate_range` widens a sensor's
+`to_index` permanently once fetched, and never re-queries an index already
+inside a previously-validated span — even if that index came back `None` only
+because it was fetched *before* it had actually happened yet. The very first
+`get_pinned_slot_pool` call of the day therefore validated (and, for a real
+recorder-backed sensor, permanently froze at `None`) every one of today's
+not-yet-elapsed slots, for the *rest* of the day: a later call, once one of
+those slots had genuinely elapsed and the recorder had real data for it, still
+saw it as already validated and never re-fetched it. Concretely, this is what
+made `compare_regressions.py`'s "selected {method}"/"selected actual" series
+entries (ADR-004 §2) go missing and stay missing while auto-tracking —
+`_selected_value`'s `get_time_range` read of the diagnosed slot's own baseline/
+actual-yield value shares the same underlying validated range `_gather_pool`'s
+`get_pinned_slot_pool` call had already poisoned moments earlier in the same
+`compute()`/`extra_fit()` call.
+
+The fix caps how far `get_pinned_slot_pool` validates, rather than changing what
+it *reads* (today's row is still part of the window either way — it just isn't
+force-validated all the way to midnight up front). The cap mirrors
+`ShadyCoordinator.diagnosed_slot()`'s own pinned-vs-auto-tracking split:
+genuinely pinned (`pinned_reference` resolves, not a future-pin/no-pin fallback
+to today), the validated span extends through the caller's own "now" inclusive —
+a pin names a specific moment already meant to be read, matching
+`diagnosed_slot()`'s pinned branch (the pinned index directly, not
+`index_for(now) - 1`). Auto-tracking instead stops one slot short of "now" —
+excluding the currently-in-progress slot, which cannot possibly have elapsed yet
+regardless of what a fetch for it would return, matching `diagnosed_slot()`'s
+own `index_for(now) - 1`. Getting this backwards in the auto-tracking direction
+reproduces the same bug one tick later: validating through the in-progress slot
+inclusive would freeze *that* slot at `None`, and the very next auto-tracking
+call — whose "now" has by then advanced enough that this same slot is
+`diagnosed_slot()`'s own new target — would read back that stale `None` instead
+of the data the slot has by then. `get_pinned_slot_pool` gained an optional
+`reference: datetime | None = None` parameter to make this testable without
+depending on the wall clock, the same pattern `get_regression_pools` (ADR-008
+§2) already established; it defaults to `datetime.now(UTC)`, so no existing
+caller (production or test) is affected unless it opts in —
+`compare_regressions.py`'s `_gather_pool` does, passing
+`self._coordinator.now()` through, the same injectable clock every other
+diagnostics call already resolves via.
 
 **Effect on trimming.** Because there is only one pinned date, not one per
 sensor, trimming does not need any per-sensor bookkeeping for this either:

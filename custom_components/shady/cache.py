@@ -789,6 +789,8 @@ class Cache:
         sensor_ids: list[str],
         slot_of_day: int,
         on_invalid: Literal["skip"] = "skip",
+        *,
+        reference: datetime | None = None,
     ) -> dict[str, list[float | None | str]]: ...
 
     @overload
@@ -797,6 +799,8 @@ class Cache:
         sensor_ids: list[str],
         slot_of_day: int,
         on_invalid: Literal["raw"],
+        *,
+        reference: datetime | None = None,
     ) -> dict[str, list[float | None | str]]: ...
 
     @overload
@@ -805,6 +809,8 @@ class Cache:
         sensor_ids: list[str],
         slot_of_day: int,
         on_invalid: float,
+        *,
+        reference: datetime | None = None,
     ) -> dict[str, list[float | None | str]]: ...
 
     def get_pinned_slot_pool(
@@ -812,6 +818,8 @@ class Cache:
         sensor_ids: list[str],
         slot_of_day: int,
         on_invalid: OnInvalid = "skip",
+        *,
+        reference: datetime | None = None,
     ) -> dict[str, list[float | None | str]]:
         """One value per day in the rolling window, all for the same
         `slot_of_day` (0-287) — `window_days` points per sensor, oldest
@@ -827,6 +835,15 @@ class Cache:
         falls back to the same today-anchored `[today - window_days,
         today]` window an auto-tracking sensor already sees.
 
+        `reference` (ADR-007a §6 Amendment, TASK-0037): anchors "now" the
+        same way `get_regression_pools`'s own `reference` parameter
+        already does — defaults to the real wall clock
+        (`datetime.now(UTC)`) so no existing caller is affected, but
+        lets a caller (`compare_regressions.py`'s `_gather_pool`) thread
+        through the coordinator's own injectable clock instead, and lets
+        this method's own tests stay zero-mocking rather than depending
+        on whatever the real wall clock happens to be when they run.
+
         Default `on_invalid="skip"` — unlike `get_time_range`'s `0.0`
         default — since a scatter/comparison chart should never plot a
         synthetic zero for a day with no data.
@@ -838,12 +855,50 @@ class Cache:
         matching whatever recalibration itself just fetched) this call
         is typically served entirely from already-validated entries,
         with no new recorder query.
+
+        **Never validates a not-yet-elapsed slot** (ADR-007a §6
+        Amendment, TASK-0037), even though the window this method reads
+        from still nominally extends through the end of `anchor` (today,
+        while auto-tracking): unlike `get_regression_pools`, which
+        sidesteps the problem entirely by never anchoring later than
+        yesterday, this method's own window deliberately does include
+        today (so a just-elapsed slot shows up the moment it exists).
+        But `_validate_range` widens a sensor's `to_index` permanently
+        once a range has been fetched — it never re-queries an index
+        that already falls inside a previously validated span, even if
+        that index held `None` only because it was queried *before* it
+        had actually happened yet. Validating clear through to the end
+        of today on the very first call of the day would therefore
+        freeze every one of today's not-yet-elapsed slots at `None` for
+        the rest of the day: a later call, once one of those slots *has*
+        genuinely elapsed and the recorder has real data for it, would
+        still see it as already validated and never re-fetch it.
+
+        The cap itself mirrors `ShadyCoordinator.diagnosed_slot()`'s own
+        pinned-vs-auto-tracking split, for the same reason that method
+        has it: while genuinely pinned (`pinned_reference` resolves,
+        not a future-pin/no-pin fallback to today), the validated span
+        extends through `reference` itself, inclusive — a pin names a
+        specific moment the caller already means to read, mirroring
+        `diagnosed_slot()`'s own pinned branch (the pinned index
+        directly, not `index_for(now) - 1`). While auto-tracking, the
+        span stops one slot short of `reference` instead — excluding
+        `reference`'s own currently-in-progress slot, which cannot
+        possibly have elapsed yet regardless of what a fetch for it
+        returns, matching `diagnosed_slot()`'s own `index_for(now) - 1`.
+        Getting this wrong in the auto-tracking direction would
+        reproduce the exact same permanent-freeze bug one tick later:
+        validating through the in-progress slot inclusive would freeze
+        *it* at `None`, and the very next auto-tracking call — whose
+        `reference` has advanced enough that this same slot is now
+        `diagnosed_slot()`'s own target — would read back that stale
+        `None` instead of the real data the slot has by then.
         """
-        today = datetime.now(UTC).date()
-        if self._pinned_reference is not None and self._pinned_reference <= today:
-            anchor = self._pinned_reference
-        else:
-            anchor = today
+        now = reference if reference is not None else datetime.now(UTC)
+        today = now.date()
+        pinned_reference = self._pinned_reference
+        is_pinned = pinned_reference is not None and pinned_reference <= today
+        anchor = pinned_reference if pinned_reference is not None and is_pinned else today
         window_start_date = anchor - timedelta(days=self.window_days - 1)
 
         def _day_start_index(day: date) -> int:
@@ -851,9 +906,24 @@ class Cache:
 
         window_start_index = _day_start_index(window_start_date)
         window_end_index = _day_start_index(anchor) + SLOTS_PER_DAY - 1
+        # A real pin (`is_pinned`) trusts data through `now` itself,
+        # inclusive -- mirroring `ShadyCoordinator.diagnosed_slot()`'s
+        # own pinned branch, which uses the pinned index directly, not
+        # `index_for(now) - 1`. Auto-tracking (no pin, or a future pin
+        # falling back to today) instead excludes `now`'s own
+        # currently-in-progress slot: that slot has necessarily not
+        # elapsed yet, so validating through it would fetch (and
+        # therefore permanently freeze, per this method's own docstring
+        # above) a `None` for a slot that becomes real data mere moments
+        # later, on the very next auto-tracking call whose own `now` has
+        # advanced past it, exactly as `diagnosed_slot()`'s
+        # `index_for(now) - 1` already avoids by construction.
+        last_readable_index = self.index_for(now) if is_pinned else self.index_for(now) - 1
+        validate_end_index = min(window_end_index, last_readable_index)
 
-        for sensor_id in sensor_ids:
-            self._validate_range(sensor_id, window_start_index, window_end_index)
+        if validate_end_index >= window_start_index:
+            for sensor_id in sensor_ids:
+                self._validate_range(sensor_id, window_start_index, validate_end_index)
 
         result: dict[str, list[float | None | str]] = {}
         for sensor_id in sensor_ids:

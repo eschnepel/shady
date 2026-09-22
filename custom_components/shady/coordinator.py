@@ -29,6 +29,21 @@ services.async_call`, itself only ever reading another integration's
 already-cached in-memory estimate, never blocking I/O of its own — so
 this all still runs directly on the event loop.
 
+`diagnostic_result()`'s own lazy cache-miss `compute()` call (ADR-004
+§5, 2026-09-03 Amendment) shares this same concern from a different
+angle: unlike `_refit_sync`/`_intraday_tick_sync` above, it can be
+reached directly from `sensor.py`'s plain, synchronous `native_value`
+— itself invoked *on* the event loop by HA's own entity polling — so it
+cannot assume it is already off the event loop the way those two can.
+`_running_on_the_event_loop()` is what tells the two apart: off the
+event loop (every test in this file, and the once-per-tick refresh from
+`_diagnostics_tick_sync`, itself only ever reached via
+`_intraday_tick_sync`'s own executor dispatch), it computes inline,
+exactly as before; on the event loop, it instead dispatches the same
+`compute()` call to `_async_recompute_diagnostic_result`'s
+`get_instance(hass).async_add_executor_job` and returns whatever was
+cached before (typically `None`, for a genuine miss) for this one read.
+
 **Temperature derating scope (ADR-003b §1/§1a, ADR-003c):** all three
 tiers are implemented. `weather` (a `weather.*`-domain resolved source)
 reads/forecasts natively, unchanged since the original delivery. `cell`
@@ -109,6 +124,7 @@ blocking-I/O concern as `_fetch_actual_yield_statistics`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -273,6 +289,27 @@ def _tomorrow_end(now: datetime) -> datetime:
     tomorrow — "remainder of today + all of tomorrow"."""
     today_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
     return today_start + timedelta(days=2)
+
+
+def _running_on_the_event_loop() -> bool:
+    """True only when called from a thread that currently has a
+    running asyncio event loop — Home Assistant's own event loop
+    thread, never one of the executor threads
+    `async_add_executor_job` (generic or the recorder's own dedicated
+    one, module docstring) dispatches onto. `diagnostic_result()`
+    below is the one caller that needs this distinction: unlike
+    `_refit_sync`/`_intraday_tick_sync`, which are only ever entered
+    already off the event loop, its lazy cache-miss `compute()` call
+    can be reached directly from a plain, synchronous entity property
+    (`sensor.py`'s `native_value`), itself invoked *on* the event loop
+    by `homeassistant.helpers.entity_platform`'s own polling — so it
+    cannot assume either way and must ask.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _forward_fill_by_day(
@@ -1269,13 +1306,53 @@ class ShadyCoordinator:
         within a single call's own body (ADR-004 §5, fourth Amendment's
         original "one call per configured string" already held; this
         closes the "but one call per *poll*" gap on top).
+
+        `mode.compute()` can perform the same blocking recorder read
+        `_fetch_actual_yield_statistics` warns about (`CompareRegressionsMode
+        ._gather_pool`'s `cache.get_pinned_slot_pool` validates its whole
+        window, which may still be missing entries the first time a mode
+        is switched on or a slot is (re-)pinned) — safe to call directly
+        only off the event loop, the same invariant the module docstring
+        already establishes for `_refit_sync`/`_intraday_tick_sync`. A
+        cache miss reached from *this* method, unlike those two, is not
+        guaranteed to be off the event loop — `sensor.py`'s plain,
+        synchronous `native_value` reaches it directly, from whatever
+        thread HA's own polling happens to call it on. So a cache miss
+        while a loop is running in the current thread does not compute
+        here at all: it hands the same `compute()` call to
+        `_async_recompute_diagnostic_result` below (dispatched onto the
+        recorder's own executor, mirroring `async_refit`) and returns
+        `None`/whatever was cached before for this one read — the next
+        poll (or the next `"slot"`-cadence tick, whichever comes first)
+        sees the freshly cached result instead.
         """
         mode = self.diagnostic_mode()
         if mode is None:
             return None
         if self._diagnostic_result_cache is None:
+            if _running_on_the_event_loop():
+                self.hass.async_create_task(self._async_recompute_diagnostic_result())
+                return None
             self._diagnostic_result_cache = mode.compute()
         return self._diagnostic_result_cache
+
+    async def _async_recompute_diagnostic_result(self) -> None:
+        """Off-event-loop counterpart to `diagnostic_result()`'s lazy
+        cache-miss `compute()` call above — dispatched via
+        `get_instance(self.hass).async_add_executor_job`, the exact
+        same recorder-executor pattern `async_refit`/
+        `_async_intraday_tick` already use (module docstring), since
+        `mode.compute()` may need it too. Whichever of this or another
+        write to `self._diagnostic_result_cache` (a fresh tick, another
+        mode switch, another pin/clear) finishes last simply wins — no
+        stronger ordering guarantee than the previous unguarded
+        synchronous call ever offered either.
+        """
+        mode = self.diagnostic_mode()
+        if mode is None:
+            return
+        result = await get_instance(self.hass).async_add_executor_job(mode.compute)
+        self._diagnostic_result_cache = result
 
     def diagnostic_sensor_ids(self) -> list[tuple[str, str]]:
         """Every `(sensor_id, name)` pair any *registered* diagnostic

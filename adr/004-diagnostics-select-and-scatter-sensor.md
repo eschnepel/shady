@@ -1,6 +1,6 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-14
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-21
 
 This ADR is kept current in place: §1/§1a describe the current
 `ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
@@ -23,8 +23,19 @@ of `diagnostics/` entirely to `coordinator_like.py` next to `coordinator.py`
 itself: what it describes is `ShadyCoordinator`'s own shape, not anything
 diagnostics-owned, `diagnostics/` being only its one consumer so far rather than
 what it's about. §1a's interface itself, and every concrete mode's behavior, is
-unchanged by any of these moves. See ADR-013 for two sketched future modes that
-validate §1a's interface shape against needs beyond this ADR's own scope.
+unchanged by any of these moves. As of 2026-09-21, §2/§2b's `series` entries no
+longer carry a `data` key at all — §2c tried an `apexcharts-card`-ready
+`entity`/`name`/`data_generator` shape first, found that card can't render a
+numeric x-axis at all, and §2d (same day) replaced it with a
+`custom:plotly-graph`-ready `entity`/`name`/`type`/`mode`/`x`/`y` shape instead
+— §2's own example above now shows §2d's shape directly; §5 describes the (now
+reverted-to-none) reshaping this briefly required in `sensor.py`. Same day, §2e
+moved the function building that shape (`_xy_series_entry`) off
+`CompareRegressionsMode`'s own module and onto `DiagnosticMode` itself
+(`base.py`) as a shared, inherited `@staticmethod` — the shape §2d/§2c settled
+on is unchanged by this, only which module's code builds it. See ADR-013 for two
+sketched future modes that validate §1a's interface shape against needs beyond
+this ADR's own scope.
 
 ______________________________________________________________________
 
@@ -330,53 +341,110 @@ mode's module for no reason.
 ### 2 — One scatter-series sensor per configured PV string
 
 Each configured string gets one `ShadyDiagnosticsSensor`, exposing a `series`
-attribute pre-shaped for direct use as an ApexCharts scatter chart `series`
-option — no client-side reshaping needed — and an `accuracy` attribute carrying
-the same numbers in a form other automations or templates can use directly,
-without parsing a series name string. The state itself is a simple timestamp
-(last computed); all the content is in the attributes:
+attribute pre-shaped for direct use in a `custom:plotly-graph` dashboard card —
+no client-side reshaping needed — and an `accuracy` attribute carrying the same
+numbers in a form other automations or templates can use directly, without
+parsing a series name string. The state itself is a simple timestamp (last
+computed); all the content is in the attributes.
+
+As of the 2026-09-21 Amendment (§2c), the whole `series` list is meant to be
+dropped into a dashboard card via a single Jinja template — this is the
+canonical way to view it, and the shape below is designed around it working with
+zero manual reshaping:
+
+```yml
+type: custom:plotly-graph
+title: "{{ entity_name('sensor.string_1_diagnostics') }}"
+raw_plotly_config: true
+entities: "{{ state_attr('sensor.string_1_diagnostics', 'series') | string | indent(2, first=False) }}"
+```
+
+`state_attr(...)` hands the whole `series` list to Jinja as a native Python
+object; `| string` renders it with Python's own `repr`-style formatting
+(single-quoted strings, bare numbers) — which is also valid YAML flow-sequence
+syntax, so the templated `entities:` value parses as a normal YAML list with no
+extra work. This is *why* `series` is a plain list of flat dicts rather than
+anything nested or nested-JS-string-shaped (§2c's short-lived `apexcharts-card`
+predecessor `str()`-formats fine too, but the *card* can't use it — see §2c):
+whatever shape round-trips cleanly through `str()` and `plotly-graph`'s own
+`entities:` schema is the whole design constraint here, not any particular
+visual polish.
+
+Each `series` entry is one `plotly-graph` trace:
+
+```yml
+series:
+  - entity: ""
+    name: "0"
+    type: scatter
+    mode: markers
+    x: [16.4, 21.7, 25.4]
+    "y": [5.4, 2, 3]
+    # ...one point per day in the rolling window (ADR-001 §4);
+    # shown here with 3 instead of window_days points for brevity
+  - entity: ""
+    name: "-1"
+    type: scatter
+    mode: markers
+    x: [] # same shape, this slot's -1 neighbor (ADR-011 §1)
+    "y": []
+  - entity: ""
+    name: "1"
+    type: scatter
+    mode: markers
+    x: [] # same shape, this slot's +1 neighbor
+    "y": []
+  - entity: ""
+    name: selected linear (94%)
+    type: scatter
+    mode: markers
+    x: [21.7]
+    "y": [3.1]
+  - entity: ""
+    name: selected wls2 (96%)
+    type: scatter
+    mode: markers
+    x: [21.7]
+    "y": [3.2]
+  - entity: ""
+    name: selected wls3 (89%)
+    type: scatter
+    mode: markers
+    x: [21.7]
+    "y": [3.3]
+  - entity: ""
+    name: selected kernel (91%)
+    type: scatter
+    mode: markers
+    x: [21.7]
+    "y": [3.4]
+  - entity: ""
+    name: selected actual
+    type: scatter
+    mode: markers
+    x: [21.7]
+    "y": [3.15]
+```
+
+**`"y"` must stay an explicitly-quoted string key, in any YAML rendering of this
+shape — never write it bare as `y:`.** YAML 1.1 (the schema PyYAML's default
+loader uses, and the schema in play wherever the Jinja-rendered `entities:`
+template above actually gets parsed back into structured data) resolves the
+*bare* scalars `y`/`Y`/`yes`/`Yes`/`YES`/`n`/`N`/`no`/`No`/`NO` — not just
+`true`/`false` — to booleans. An unquoted `y:` key is therefore not the string
+key `"y"` at all, but the boolean key `True`, silently breaking `plotly-graph`'s
+own expectation of a `y` field. (Fenced above as ```` ```yml ```` rather than
+```` ```yaml ```` specifically so this ADR's own build tooling — a markdown
+formatter that reflows fenced YAML — doesn't "helpfully" strip the quotes it
+doesn't know are load-bearing here.) On the Python side, `dict` key `"y"` needs
+no special handling — `str()`/`repr()` always quotes a string dict key
+regardless of its content, so `_xy_series_entry` (ADR-004 §2d/§2e,
+`diagnostics/base.py`) is safe by construction; this note exists for any future
+hand-written YAML — in this ADR or a person's own dashboard — representing the
+same shape.
 
 ```js
-series: [
-  {
-    name: '0',
-    data: [
-      [16.4, 5.4],
-      [21.7, 2],
-      [25.4, 3],
-      // ...one point per day in the rolling window (ADR-001 §4);
-      // shown here with 3 instead of window_days points for brevity
-    ],
-  },
-  {
-    name: '-1',
-    data: [ /* same shape, this slot's -1 neighbor (ADR-011 §1) */ ],
-  },
-  {
-    name: '1',
-    data: [ /* same shape, this slot's +1 neighbor */ ],
-  },
-  {
-    name: 'selected linear (94%)',
-    data: [[21.7, 3.1]],
-  },
-  {
-    name: 'selected wls2 (96%)',
-    data: [[21.7, 3.2]],
-  },
-  {
-    name: 'selected wls3 (89%)',
-    data: [[21.7, 3.3]],
-  },
-  {
-    name: 'selected kernel (91%)',
-    data: [[21.7, 3.4]],
-  },
-  {
-    name: 'selected actual',
-    data: [[21.7, 3.15]],
-  },
-],
+// accuracy is a separate, unreshaped attribute on the same entity:
 accuracy: {
   linear: 0.94,
   wls2: 0.96,
@@ -385,8 +453,16 @@ accuracy: {
 },
 ```
 
-Two kinds of series, both keyed by `name` so ApexCharts renders each as its own
-scatter series/color:
+`entity` is a **constant empty string**, not a self-reference to the sensor —
+every point is supplied directly via `x`/`y`, so nothing needs to be looked up
+from any entity's own state at render time; `plotly-graph`'s schema still wants
+the key present per trace, just with nothing in it. `type`/`mode` are likewise
+constant (`"scatter"`/`"markers"`) on every entry. Because none of `entity`,
+`type`, or `mode` vary per entity or per moment, `diagnostics/` builds the
+complete entry itself — `sensor.py` performs no reshaping at all (§5).
+
+Two kinds of series, both keyed by `name` so `plotly-graph` renders each as its
+own scatter trace/color:
 
 - **Slot-pool series**, named by signed slot offset relative to the diagnosed
   slot (`"-1"`, `"0"`, `"1"`, … up to ±`smoothing_radius` from ADR-011 §1) —
@@ -441,9 +517,9 @@ scatter series/color:
   auto-tracking (below) always satisfies this by construction, and so does most
   manual pinning (§2a). The one exception is a manually-pinned slot still in the
   future — there is no `PV` reading yet, so this series is simply **omitted from
-  `series` entirely** (not present with an empty `data`) rather than shown with
-  a placeholder point. See §2a for how a future pin is validated and what the
-  rest of the sensor shows in that case.
+  `series` entirely** (not present with empty `x`/`y` arrays) rather than shown
+  with a placeholder point. See §2a for how a future pin is validated and what
+  the rest of the sensor shows in that case.
 
 **Which slot is "the diagnosed slot"** defaults, for a given moment, to the
 **last complete** 5-minute slot, not the next upcoming one. A not-yet-elapsed
@@ -591,6 +667,132 @@ triggers as the per-string sensors (§2a's 5-minute tick while auto-tracking; a
 pin update; recalibration for the four fitted-model points), gated by the same
 diagnostic-mode select (§1).
 
+### 2c — Amendment (2026-09-21, `TASK-0015b-patch-1`): `apexcharts-card`-ready `series` entries
+
+**Reason:** §2's original `{"name": ..., "data": [[x, y], ...]}` shape was
+"pre-shaped for direct use as an ApexCharts scatter chart `series` option" —
+true for the raw ApexCharts JS library, but not for `apexcharts-card`, the
+Lovelace card almost every install actually uses to render this attribute. That
+card's own `series` config key is a list of per-entity blocks
+(`entity`/`name`/`data_generator`, the last a JS-code string the card
+evaluates), not a raw ApexCharts series array — so every person consuming this
+sensor was reshaping `data` into a `data_generator` string by hand, in their own
+dashboard YAML, the exact reshaping this attribute was meant to make unnecessary
+in the first place.
+
+**Decision:** every `series` entry — both kinds, §2's slot-pool/selected-
+prediction/selected-actual series and §2b's pointwise-summed equivalents alike —
+drops `data` and adds `entity`/`data_generator`, replacing the old shape
+outright rather than carrying both (human's explicit choice: one format this
+attribute emits, matching this attribute's one purpose — dashboard consumption —
+not two shapes for two audiences). `data_generator`'s value is always exactly
+`"return " + json.dumps(points)`, `points` being the identical
+`[[FC_i, PV_i], ...]` array `data` used to carry — same values, same point
+count, same NaN/omission rules, only the container changes. `entity` is that
+same sensor's own `entity_id` (a self-reference — every `apexcharts-card` series
+block names *an* entity even when, as here, every block on one sensor names the
+*same* entity and `data_generator` alone is what actually differentiates each
+block's points). This makes `series` directly pasteable as an `apexcharts-card`
+`series:` list with no manual reshaping at all — literally the property this
+attribute was always meant to have.
+
+`accuracy` is untouched by this amendment — it was never series-shaped to begin
+with, and stays a plain `{method: 0.0-1.0}` dict.
+
+**Decided by:** human (confirmed the exact shape against a running instance
+before this amendment was written), Lead Agent (implementation, Phase 6 Scenario
+C — TASK-0015b itself stays `done`, unedited; see
+`tasks/TASK-0015b-patch-1-apexcharts-card-series-format.md`).
+
+**Superseded same day — see §2d.** `apexcharts-card` turned out not to accept a
+numeric x-axis at all, the one axis type this chart fundamentally needs (`FC` on
+x); no `data_generator` phrasing could have fixed that, since the card itself
+can't render the result. Kept here rather than deleted: it is a real step this
+project took and rejected, for a reason worth knowing (don't retry
+`apexcharts-card` for a numeric-x scatter chart), not merely a design sketch
+abandoned before anyone tried it (contrast the "removed rather than kept" cases
+noted elsewhere in this ADR's own header amendments).
+
+### 2d — Amendment (2026-09-21, `TASK-0015b-patch-2`): `custom:plotly-graph` x/y arrays, superseding §2c
+
+**Reason:** §2c's `apexcharts-card` shape does not render at all — that card
+cannot plot a numeric x-axis, which every series here needs (`FC` values on x,
+never a category or timestamp). The human found `custom:plotly-graph` does
+support it, and confirmed a concrete shape live against a running instance.
+
+**Decision:** every `series` entry drops `data_generator` and instead carries
+`type`/`mode`/`x`/`y` directly —
+`{"entity": "", "name": ..., "type": "scatter", "mode": "markers", "x": [FC_0, FC_1, ...], "y": [PV_0, PV_1, ...]}`
+— the same points as before, split into two parallel flat arrays rather than
+paired `[x, y]` tuples or a JS-templated string, because `plotly-graph` takes
+literal `x`/`y` arrays per trace and needs no templating at all once they're
+supplied. `entity` is a **constant empty string** on every entry, not a
+self-reference — nothing needs to be looked up from any entity's own state when
+the points are already inline, but `plotly-graph`'s own schema still expects the
+key present. `type`/`mode` are likewise constant (`"scatter"`/`"markers"`).
+Because none of `entity`, `type`, `mode` depend on anything `sensor.py` alone
+knows (contrast §2c's `entity_id` self-reference), `diagnostics/` now builds the
+*entire* entry itself — §2c's addition to `sensor.py` (injecting `entity`
+post-hoc) is removed outright, restoring the "straight from the matching entry,
+no further shaping" behavior §5 originally described, now true again rather than
+merely restored-in-name. `accuracy` is untouched, as before.
+
+The canonical dashboard consumption pattern (§2's own example above) is a single
+`custom:plotly-graph` card whose `entities:` key is the *entire* `series` list,
+handed through Jinja's `state_attr(...) | string` — this is why the shape is a
+plain flat list of flat dicts with no nested structures or JS-code strings
+anywhere in it: whatever round-trips cleanly through Python's `str()` into valid
+YAML is the actual constraint this shape has to satisfy, not any one card's
+particular config quirks. (`str()` happens to produce valid YAML here because
+YAML's flow-mapping/-sequence syntax and Python's `repr` overlap almost
+completely for the plain strings, numbers, and lists this attribute is made of —
+no booleans or `None`s involved, where the two would actually diverge.)
+
+**Decided by:** human (confirmed the exact shape, and the dashboard template
+above, against a running instance before this amendment was written), Lead Agent
+(implementation, Phase 6 Scenario C — `TASK-0015b-patch-1` stays `done`,
+unedited; see `tasks/TASK-0015b-patch-2-plotly-graph-xy-series-format.md`).
+
+**Where the entry-building code itself lives moved once more, same day — see
+§2e:** this section's own shape is unchanged by that move; only which module
+owns the function building it is.
+
+### 2e — Amendment (2026-09-21, `TASK-0015b-patch-3`): `_xy_series_entry` moved onto `DiagnosticMode` itself
+
+**Reason:** §2d's `_xy_series_entry` shipped as a private function local to
+`compare_regressions.py` — reasonable when `CompareRegressionsMode` was the only
+concrete `DiagnosticMode` there was, but §2/§5 have always described `series`'s
+shape as belonging to `DiagnosticMode` output in general, not anything specific
+to comparing regression strategies, and ADR-013 already sketches future modes
+(`compare_providers_daily`, a whole-day snapshot mode) that would need this
+exact same shape for the exact same reason. Left where it was, a second mode
+gets a choice between two bad options: reimplement the same dict shape locally
+(risking silent drift from `CompareRegressionsMode`'s version) or reach across
+modules into `compare_regressions.py` for a function with nothing
+`CompareRegressionsMode`-specific left in it once §2d's `entity`-self-reference
+idea (§2c) was already dropped.
+
+**Decision:** `_xy_series_entry` moves onto `DiagnosticMode` (`base.py`) as an
+inherited `@staticmethod` — every concrete mode gets
+`self. _xy_series_entry(name, points)` for free, with no import of
+`compare_regressions.py` or anything else mode-specific required. Not an
+`@abstractmethod`: every mode wanting a `plotly-graph`-shaped `series` entry
+wants the *identical* shape (§2d already nailed that down for good reasons —
+`entity`/`type`/`mode` constant, `x`/`y` split flat arrays), so there is nothing
+for a subclass to meaningfully override; a mode producing `series` entries in
+some entirely different shape simply wouldn't call this method at all, the same
+way a mode producing no `series` attribute whatsoever already doesn't. Purely a
+relocation, not a reshaping: `CompareRegressionsMode`'s own
+`_pool_series`/`_append_selected_series` now call `self._xy_series_entry(...)`
+in place of the bare function call, and every value they receive back is
+byte-identical to before — no test asserting the *shape* `series` entries take
+needed to change, only the import path for reusing the production builder in
+tests.
+
+**Decided by:** human (identified the shared-base-class need directly), Lead
+Agent (implementation, Phase 6 Scenario C — `TASK-0015b-patch-2` stays `done`,
+unedited; see `tasks/TASK-0015b-patch-3-xy-series-entry-on-base-class.md`).
+
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 
 Re-querying the recorder for a slot's full rolling-window history (`window_days`
@@ -709,24 +911,36 @@ cached accessor over the active mode's `.compute()` output, not a direct call �
 and sets `state`/`attributes` straight from the matching entry (the `"sum"`
 entry included: built by the mode itself now, not reassembled here from sibling
 sensors' output); if no mode is active, it reports `disabled` as §1 specifies.
-`sensor.py` no longer assembles anything for the mode to consume, nor knows how
-many entities a mode produces or what any of them represent beyond a
-`(sensor_id, name)` pair — resolving which slot is being diagnosed (reading
-`cache.py`'s `pinned_reference` scalar via its coordinator reference, or falling
-back to the last-complete-slot default when unset, §2a), fetching that slot's
-pool/predicted/actual values, and deciding what aggregate entities (if any) to
-produce alongside the per-string ones are all the mode's own job, done inside
-`compute()`/`extra_fit()`/`sensor_ids()` via the coordinator reference each was
-constructed with. This shaping is pure presentation and does not belong in
-`regression/` or `forecast_adjust.py`. The `shady.select_diagnostic_slot`
-service (§2a) is registered in `__init__.py` (the usual home for service
-registration), is **not** entity-targeted (§2a — there is one diagnosed-slot
-state per config entry, not one per sensor), and its handler is a thin wrapper
-that validates the timestamp and calls that config entry's coordinator, which in
-turn forwards to `cache.py`'s `pin_reference`/`clear_reference` (ADR-007a §6) —
-`cache.py` is still only ever reached through `coordinator.py` (ADR-007 §2), the
-same as every other caller; `__init__.py` does not reach into `cache.py`
-directly, and no new module is needed for a single service handler this small.
+`sensor.py` performs **no reshaping of any kind** on what `diagnostics/` returns
+— every `series` entry's `entity`/`name`/`type`/`mode`/`x`/`y` (§2c/§2d) comes
+straight from `compute()` unchanged. (**2026-09-21, briefly:** between
+`TASK-0015b-patch-1` and `TASK-0015b-patch-2`, the same day, `sensor.py` did add
+one narrow reshaping step — injecting its own `entity_id` into each `series`
+entry, since `entity` was then meant as a self-reference and `compute()` has no
+notion of the HA entity registry at all (§1a's whole point).
+`TASK-0015b-patch-2` made `entity` a constant empty string instead (§2d),
+removing any reason for `sensor.py` to touch `series` at all, and the injection
+was removed along with it — mentioned here only because it happened and because
+it explains why "no reshaping of any kind" is worth stating explicitly rather
+than assumed.) `sensor.py` otherwise no longer assembles anything for the mode
+to consume, nor knows how many entities a mode produces or what any of them
+represent beyond a `(sensor_id, name)` pair — resolving which slot is being
+diagnosed (reading `cache.py`'s `pinned_reference` scalar via its coordinator
+reference, or falling back to the last-complete-slot default when unset, §2a),
+fetching that slot's pool/predicted/actual values, and deciding what aggregate
+entities (if any) to produce alongside the per-string ones are all the mode's
+own job, done inside `compute()`/`extra_fit()`/`sensor_ids()` via the
+coordinator reference each was constructed with. This shaping is pure
+presentation and does not belong in `regression/` or `forecast_adjust.py`. The
+`shady.select_diagnostic_slot` service (§2a) is registered in `__init__.py` (the
+usual home for service registration), is **not** entity-targeted (§2a — there is
+one diagnosed-slot state per config entry, not one per sensor), and its handler
+is a thin wrapper that validates the timestamp and calls that config entry's
+coordinator, which in turn forwards to `cache.py`'s
+`pin_reference`/`clear_reference` (ADR-007a §6) — `cache.py` is still only ever
+reached through `coordinator.py` (ADR-007 §2), the same as every other caller;
+`__init__.py` does not reach into `cache.py` directly, and no new module is
+needed for a single service handler this small.
 
 ______________________________________________________________________
 
