@@ -1,6 +1,6 @@
 # ADR-000 – Code Quality Standards, Programming Style & Core Concepts
 
-**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-19
+**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-24
 
 This ADR is kept current in place: each section below reflects the project's
 present conventions directly, rather than a separate change log. Notable
@@ -140,7 +140,11 @@ never be guessed at.
 
 The HA-facing modules this suppression applies to are `config_flow.py`,
 `sensor.py`, `coordinator.py`, `select.py` (`ShadyDiagnosticModeSelect`, ADR-004
-§1, replacing `switch.py` as of the 2026-08-30 amendment), and `button.py`.
+§1, replacing `switch.py` as of the 2026-08-30 amendment), `button.py`,
+`datetime.py` (`ShadyDiagnosticSlotDateTime`, ADR-004 §2f), and `switch.py`
+again (`ShadyFollowDiagnosticSlotSwitch`, ADR-004 §2g — a new, unrelated use of
+that module name, not a revival of the diagnostics on/off switch `select.py`
+replaced).
 
 The modules held to this full, unsuppressed strict standard are exactly the
 zero-Home-Assistant-import, pure-Python tier — see §6 for the canonical list. A
@@ -162,7 +166,7 @@ flowchart BT
     diagnostics["diagnostics/"]
     cache["cache.py"]
     coordinator["coordinator.py"]
-    entity_glue["sensor.py / config_flow.py / select.py / button.py"]
+    entity_glue["sensor.py / config_flow.py / select.py / button.py / datetime.py / switch.py"]
     init["__init__.py"]
 
     forecast_adjust --> regression
@@ -287,11 +291,13 @@ flowchart BT
   trigger (ADR-004 §1/§5) — a third dispatch shape alongside scheduling triggers
   and provider listeners, all three registered/checked once in `coordinator.py`
   rather than scattered per caller.
-- **`sensor.py` / `config_flow.py` / `select.py` / `button.py`** — HA entity
-  glue. `config_flow.py` implements the flow shape in ADR-010; `select.py` is
-  `ShadyDiagnosticModeSelect` (ADR-004 §1, replacing `switch.py` as of the
-  2026-08-30 amendment); `button.py` is `ShadyRecalculateButton` (ADR-002 §5).
-  Six of `sensor.py`'s nine entity classes read `coordinator.py` wrapper methods
+- **`sensor.py` / `config_flow.py` / `select.py` / `button.py` / `datetime.py` /
+  `switch.py`** — HA entity glue. `config_flow.py` implements the flow shape in
+  ADR-010; `select.py` is `ShadyDiagnosticModeSelect` (ADR-004 §1, replacing
+  `switch.py` as of the 2026-08-30 amendment); `button.py` is
+  `ShadyRecalculateButton` (ADR-002 §5); `datetime.py` and `switch.py` are the
+  diagnosed-slot pin and its auto-follow toggle (ADR-004 §2f/§2g). Six of
+  `sensor.py`'s nine entity classes read `coordinator.py` wrapper methods
   (`pv_sum()`, `fc_sum()`, etc.); `ShadyForecastSensor`,
   `ShadyPvEnergyIntegralSensor`, and `ShadyFcEnergyIntegralSensor` are a
   reviewed exception that instead call `coordinator.cache.<method>(...)`

@@ -1221,18 +1221,35 @@ class _CountingDiagnosticMode(DiagnosticMode):
         return None
 
 
-# -- diagnosed_slot()/pin_diagnostic_slot()/clear_diagnostic_slot() (ADR-004 §2/§2a) --
+# -- diagnosed_slot()/pin_diagnostic_slot()/set_follow_latest_...() (ADR-004 §2/§2a/§2g) --
 
 
 class TestDiagnosedSlotAutoTracking:
-    """Given no pin is set, `diagnosed_slot()` (ADR-004 §2) defaults to
-    the last **complete** 5-minute slot as of `now` — not the next
-    upcoming one."""
+    """Given the diagnosed slot is following (the default, ADR-004
+    §2g), `diagnosed_slot()` is the last **complete** 5-minute slot as
+    of the latest tick — not the next upcoming one — and reads the one
+    stored value unconditionally: nothing re-derives it from `now` at
+    read time."""
 
-    def test_defaults_to_the_last_complete_slot(self) -> None:
+    def test_defaults_to_following(self) -> None:
+        coordinator, _hass = _make_coordinator()
+
+        assert coordinator.is_following_latest_diagnostic_slot() is True
+
+    def test_construction_seeds_the_last_complete_slot(self) -> None:
+        # `ShadyCoordinator`'s own default clock is the real one, so
+        # bracket the construction between two real readings.
+        before = Cache.index_for(datetime.now(UTC)) - 1
+        coordinator, _hass = _make_coordinator()
+        after = Cache.index_for(datetime.now(UTC)) - 1
+
+        assert before <= coordinator.diagnosed_slot().index <= after
+
+    def test_a_tick_sets_the_last_complete_slot(self) -> None:
         coordinator, _hass = _make_coordinator()
         now = datetime(2026, 6, 15, 10, 7, tzinfo=UTC)
 
+        coordinator._advance_followed_diagnostic_slot(now)
         diagnosed = coordinator.diagnosed_slot(now)
 
         # 10:07 -> the slot starting 10:05 is still in progress; the
@@ -1240,13 +1257,113 @@ class TestDiagnosedSlotAutoTracking:
         assert diagnosed.index == Cache.index_for(now) - 1
         assert diagnosed.is_elapsed is True
 
-    def test_uses_coordinators_own_now_when_not_given(self) -> None:
+    def test_uses_coordinators_own_now_when_following_is_switched_on(self) -> None:
         coordinator, _hass = _make_coordinator()
         coordinator._now = lambda: _NOW
 
-        diagnosed = coordinator.diagnosed_slot()
+        coordinator.set_follow_latest_diagnostic_slot(True)
 
-        assert diagnosed.index == Cache.index_for(_NOW) - 1
+        assert coordinator.diagnosed_slot().index == Cache.index_for(_NOW) - 1
+
+    def test_the_clock_moving_on_without_a_tick_does_not_move_the_slot(self) -> None:
+        """The whole point of §2g: every diagnostic computation sees
+        the *configured* slot, the same one `datetime.py` shows —
+        never a fresher one re-derived from `now` behind its back."""
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        configured = coordinator.diagnosed_slot().index
+
+        coordinator._now = lambda: _NOW + timedelta(minutes=4)
+
+        assert coordinator.diagnosed_slot().index == configured
+        assert coordinator.diagnostic_slot_timestamp() == Cache.timestamp_for(configured)
+
+    def test_the_stored_slot_is_shown_by_diagnostic_slot_timestamp(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        coordinator.set_follow_latest_diagnostic_slot(True)
+
+        assert coordinator.diagnostic_slot_timestamp() == datetime(2026, 6, 15, 9, 55, tzinfo=UTC)
+
+
+class TestDiagnosedSlotFollowingTick:
+    """ADR-004 §2g: while following, the 5-minute tick *sets* the stored
+    slot, first thing, whether or not a diagnostic mode is active;
+    while pinned, it never does."""
+
+    def test_the_tick_sets_the_slot_even_with_diagnostics_off(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator.active_diagnostic_mode() == "off"
+        now = datetime(2026, 6, 15, 12, 32, tzinfo=UTC)
+
+        coordinator._intraday_tick_sync(now)
+
+        assert coordinator.diagnosed_slot(now).index == Cache.index_for(now) - 1
+
+    def test_every_tick_advances_the_slot(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        first = datetime(2026, 6, 15, 12, 30, tzinfo=UTC)
+
+        coordinator._intraday_tick_sync(first)
+        before = coordinator.diagnosed_slot(first).index
+        coordinator._intraday_tick_sync(first + timedelta(minutes=5))
+
+        assert coordinator.diagnosed_slot(first).index == before + 1
+
+    def test_a_pinned_slot_is_never_moved_by_a_tick(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        pinned = _NOW - timedelta(hours=3)
+        coordinator.pin_diagnostic_slot(pinned)
+
+        coordinator._intraday_tick_sync(_NOW + timedelta(hours=1))
+
+        assert coordinator.diagnosed_slot().index == Cache.index_for(pinned)
+
+    def test_a_modes_compute_sees_the_slot_the_same_tick_just_set(self) -> None:
+        """The advance runs *before* `_diagnostics_tick_sync`, so
+        `compute()`/`extra_fit()` never work on the previous tick's
+        slot."""
+        coordinator, _hass = _make_coordinator()
+        seen: list[int] = []
+
+        class _RecordingMode(_CountingDiagnosticMode):
+            def extra_fit(self) -> Any:
+                seen.append(self._coordinator.diagnosed_slot().index)
+                return super().extra_fit()
+
+            def compute(self) -> Any:
+                seen.append(self._coordinator.diagnosed_slot().index)
+                return super().compute()
+
+        coordinator._diagnostic_modes["compare_regressions"] = _RecordingMode(coordinator)
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        now = datetime(2026, 6, 15, 12, 32, tzinfo=UTC)
+
+        coordinator._intraday_tick_sync(now)
+
+        expected = Cache.index_for(now) - 1
+        assert seen == [expected, expected]
+
+    def test_the_advance_alone_does_not_invalidate_the_cached_result(self) -> None:
+        """The mode's own `compute_cadence()` decides when its result
+        refreshes — a coarser-than-`"slot"` mode's cached result must
+        survive the tick's slot advance, as it did while the slot was
+        still derived on read."""
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(
+            coordinator, fit_cadence="daily", compute_cadence="daily"
+        )
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        first = coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 1
+
+        coordinator._intraday_tick_sync(_NOW + timedelta(minutes=5))
+
+        assert coordinator.diagnostic_result() is first
+        assert fake_mode.compute_calls == 1
 
 
 class TestPinDiagnosticSlot:
@@ -1283,12 +1400,16 @@ class TestPinDiagnosticSlot:
         # after tomorrow is out of range.
         beyond_horizon = datetime(2026, 6, 17, 0, 0, tzinfo=UTC)
 
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        before = coordinator.diagnosed_slot().index
+
         ok = coordinator.pin_diagnostic_slot(beyond_horizon)
 
         assert ok is False
-        # No state change: still auto-tracking.
-        diagnosed = coordinator.diagnosed_slot()
-        assert diagnosed.index == Cache.index_for(_NOW) - 1
+        # No state change: still following, slot unmoved, cache untouched.
+        assert coordinator.is_following_latest_diagnostic_slot() is True
+        assert coordinator.diagnosed_slot().index == before
+        assert coordinator.cache.pinned_reference is None
 
     def test_accepts_the_last_instant_of_the_horizon(self) -> None:
         coordinator, _hass = _make_coordinator()
@@ -1299,15 +1420,42 @@ class TestPinDiagnosticSlot:
 
         assert ok
 
-    def test_clear_reverts_to_auto_tracking(self) -> None:
+    def test_pinning_switches_following_off(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        coordinator.set_follow_latest_diagnostic_slot(True)
+
+        coordinator.pin_diagnostic_slot(_NOW - timedelta(days=1))
+
+        assert coordinator.is_following_latest_diagnostic_slot() is False
+
+    def test_following_again_reverts_to_the_latest_complete_slot(self) -> None:
         coordinator, _hass = _make_coordinator()
         coordinator._now = lambda: _NOW
         coordinator.pin_diagnostic_slot(_NOW - timedelta(days=1))
 
-        coordinator.clear_diagnostic_slot()
+        coordinator.set_follow_latest_diagnostic_slot(True)
 
-        diagnosed = coordinator.diagnosed_slot()
-        assert diagnosed.index == Cache.index_for(_NOW) - 1
+        assert coordinator.is_following_latest_diagnostic_slot() is True
+        assert coordinator.diagnosed_slot().index == Cache.index_for(_NOW) - 1
+        # `pinned_reference` means "genuinely pinned" (ADR-007a §6) —
+        # never set while following, even though the stored slot is.
+        assert coordinator.cache.pinned_reference is None
+
+    def test_unfollowing_pins_the_slot_as_currently_stored(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        stored = coordinator.diagnosed_slot().index
+
+        # The clock has moved on since — switching off must not
+        # re-derive the slot from it.
+        coordinator._now = lambda: _NOW + timedelta(minutes=30)
+        coordinator.set_follow_latest_diagnostic_slot(False)
+
+        assert coordinator.is_following_latest_diagnostic_slot() is False
+        assert coordinator.diagnosed_slot().index == stored
+        assert coordinator.cache.pinned_reference == Cache.timestamp_for(stored).date()
 
     def test_is_elapsed_false_for_a_future_pin(self) -> None:
         coordinator, _hass = _make_coordinator()
@@ -1443,7 +1591,7 @@ class TestDiagnosticResultCaching:
         coordinator.diagnostic_result()
         assert fake_mode.compute_calls == 2
 
-    def test_clearing_a_pinned_slot_invalidates_the_cache(self) -> None:
+    def test_following_again_invalidates_the_cache(self) -> None:
         coordinator, _hass = _make_coordinator()
         coordinator._now = lambda: _NOW
         fake_mode = _CountingDiagnosticMode(coordinator)
@@ -1453,7 +1601,21 @@ class TestDiagnosticResultCaching:
         coordinator.diagnostic_result()
         assert fake_mode.compute_calls == 1
 
-        coordinator.clear_diagnostic_slot()
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 2
+
+    def test_unfollowing_invalidates_the_cache(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        coordinator.diagnostic_result()
+        assert fake_mode.compute_calls == 1
+
+        coordinator.set_follow_latest_diagnostic_slot(False)
         coordinator.diagnostic_result()
         assert fake_mode.compute_calls == 2
 

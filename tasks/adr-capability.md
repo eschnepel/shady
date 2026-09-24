@@ -170,18 +170,18 @@ forecast-capable entity is configured.
 
 ### 15 — Diagnostics: select-based diagnostic modes & scatter/accuracy sensors
 
-**ADRs:** 004 (Amendment 2026-08-30; §2f 2026-09-23), 007a §6, 013 (Proposed,
-not scheduled) **Scope:** `cache.py`'s `get_pinned_slot_pool` +
+**ADRs:** 004 (Amendment 2026-08-30; §2f 2026-09-23; §2g 2026-09-24), 007a §6,
+013 (Proposed, not scheduled) **Scope:** `cache.py`'s `get_pinned_slot_pool` +
 `pinned_reference` scalar (`pin_reference`/`clear_reference`), `select.py`'s
 `ShadyDiagnosticModeSelect` (replacing the original `ShadyDiagnosticsSwitch`),
 `diagnostics/`'s `DiagnosticMode` base class and `CompareRegressionsMode` (the
 one concrete mode in scope), `sensor.py`'s one generic `ShadyDiagnosticsSensor`
 class (no dedicated sum-sensor class, ADR-004 §5 2026-09-03), the accuracy pure
 function in `aggregation.py` (unchanged, mode-independent), and `datetime.py`'s
-`ShadyDiagnosticSlotDateTime` + `button.py`'s `ShadyClearDiagnosticSlotButton`
-(ADR-004 §2f, superseding the original `shady.select_diagnostic_slot` service
-registered in `__init__.py`). Split into two tasks (base architecture, then the
-concrete mode + entities) — see `tasks/INDEX.md`'s refinement log.
+`ShadyDiagnosticSlotDateTime` + `switch.py`'s `ShadyFollowDiagnosticSlotSwitch`
+(ADR-004 §2f/§2g, superseding the original `shady.select_diagnostic_slot`
+service registered in `__init__.py`). Split into two tasks (base architecture,
+then the concrete mode + entities) — see `tasks/INDEX.md`'s refinement log.
 **Demonstrable via:** zero-mocking pytest for `get_pinned_slot_pool`'s anchor
 resolution, the accuracy calculation, and the `DiagnosticMode` base class's
 contract in isolation; real-`hass`-fixture test for the select gating,

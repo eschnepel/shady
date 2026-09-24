@@ -600,13 +600,22 @@ class ShadyCoordinator:
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
         # -- diagnostics (ADR-004, TASK-0015b) --
-        # Which slot is pinned (§2a) — a full absolute slot index (date
-        # + slot-of-day together), separate from `cache.pinned_
+        # The one currently-configured diagnosed slot (§2a/§2g) — a full
+        # absolute slot index (date + slot-of-day together), **always
+        # set**, whether pinned or following, and read unconditionally
+        # by `diagnosed_slot()` (so by every diagnostic computation and
+        # by `datetime.py`'s entity alike). Separate from `cache.pinned_
         # reference` (a bare `date`, ADR-007a §6's own narrower scope:
-        # just the `get_pinned_slot_pool` window anchor). `None` while
-        # auto-tracking. `pin_diagnostic_slot`/`clear_diagnostic_slot`
-        # below are the only mutators, and keep both in sync.
-        self._pinned_slot_index: int | None = None
+        # just the `get_pinned_slot_pool` window anchor), which is set
+        # only while *genuinely pinned*, never while following.
+        # `_follow_latest_diagnostic_slot` (default `True`) says whether
+        # `_advance_followed_diagnostic_slot` — called first thing on
+        # every 5-minute tick — moves the index to the newest complete
+        # slot. `pin_diagnostic_slot`/`set_follow_latest_diagnostic_slot`
+        # below are the only mutators besides that advance, and keep
+        # the cache's scalar in sync.
+        self._follow_latest_diagnostic_slot: bool = True
+        self._diagnostic_slot_index: int = Cache.index_for(self._now()) - 1
         self._active_diagnostic_mode: str = DEFAULT_DIAGNOSTIC_MODE
         # Per-instance, not module-level (ADR-004 §5, 2026-09-01
         # Amendment: a `DiagnosticMode` now needs `self` at
@@ -1210,11 +1219,10 @@ class ShadyCoordinator:
     # coordinator reference (ADR-004 §5, second Amendment's
     # encapsulation boundary: coordinator-owned data a mode needs gets
     # a public accessor here, rather than the mode reaching into
-    # `_`-prefixed state directly) — plus the diagnosed-slot-pin
-    # methods `datetime.py`'s `ShadyDiagnosticSlotDateTime` and
-    # `button.py`'s `ShadyClearDiagnosticSlotButton` call (ADR-004
-    # §2f), and the active-mode select/lookup `select.py`/`sensor.py`
-    # call.
+    # `_`-prefixed state directly) — plus the diagnosed-slot methods
+    # `datetime.py`'s `ShadyDiagnosticSlotDateTime` and `switch.py`'s
+    # `ShadyFollowDiagnosticSlotSwitch` call (ADR-004 §2f/§2g), and the
+    # active-mode select/lookup `select.py`/`sensor.py` call.
 
     def now(self) -> datetime:
         """Public read of the injectable clock — lets a `DiagnosticMode`
@@ -1226,14 +1234,13 @@ class ShadyCoordinator:
 
     def diagnosed_slot(self, now: datetime | None = None) -> DiagnosedSlot:
         """Which slot is currently "the diagnosed slot" (ADR-004
-        §2/§2a) — the pin if `pin_diagnostic_slot` has set one, else
-        the last complete 5-minute slot as of `now` (defaults to
-        `self.now()`)."""
+        §2/§2a/§2g) — always the one stored, currently-configured slot,
+        whether that is a pin or the newest complete slot as of the
+        latest tick while following: nothing here re-derives "last
+        complete slot" from `now`. `now` (defaults to `self.now()`)
+        only feeds `is_elapsed`."""
         resolved_now = now if now is not None else self._now()
-        if self._pinned_slot_index is not None:
-            index = self._pinned_slot_index
-        else:
-            index = Cache.index_for(resolved_now) - 1
+        index = self._diagnostic_slot_index
         slot_of_day = index % SLOTS_PER_DAY
         is_elapsed = Cache.timestamp_for(index + 1) <= resolved_now
         return DiagnosedSlot(index=index, slot_of_day=slot_of_day, is_elapsed=is_elapsed)
@@ -1249,13 +1256,18 @@ class ShadyCoordinator:
         (returns `True`) and pinned otherwise, including a `timestamp`
         in the past — a past pin is always accepted (ADR-007a §6: it
         may trigger a real recorder fetch outside the live window, but
-        is never rejected for being "too old").
+        is never rejected for being "too old"). Also switches
+        following off (ADR-004 §2g) — a pin the next tick immediately
+        overwrote would be no pin.
         """
         resolved_now = now if now is not None else self._now()
         if timestamp >= _tomorrow_end(resolved_now):
             return False
         index = Cache.index_for(timestamp)
-        self._pinned_slot_index = index
+        # Pinning switches following off (ADR-004 §2g): a chosen slot
+        # that the next tick immediately overwrote would be no pin.
+        self._follow_latest_diagnostic_slot = False
+        self._diagnostic_slot_index = index
         self.cache.pin_reference(Cache.timestamp_for(index).date())
         # A pin changes what the diagnosed slot *is* (§2a), so a
         # `compute()` result cached against the previous diagnosed slot
@@ -1265,21 +1277,58 @@ class ShadyCoordinator:
         self._diagnostic_result_cache = None
         return True
 
-    def clear_diagnostic_slot(self) -> None:
-        """Undo `pin_diagnostic_slot` — every diagnostic sensor goes
-        back to auto-tracking the last complete slot."""
-        self._pinned_slot_index = None
-        self.cache.clear_reference()
+    def set_follow_latest_diagnostic_slot(self, enabled: bool, now: datetime | None = None) -> None:
+        """ADR-004 §2g — `switch.py`'s `ShadyFollowDiagnosticSlotSwitch`.
+
+        `True`: every diagnostic sensor goes back to following the newest
+        complete slot — sets the stored slot to it immediately (rather
+        than waiting for the next tick) and clears `cache.pinned_
+        reference`. `False`: pins the slot *as currently stored* (not a
+        re-derivation from `now` — switching off never moves anything)
+        and sets `cache.pinned_reference` to its date, exactly like
+        `pin_diagnostic_slot` does for a chosen timestamp, minus the
+        horizon check (the stored slot is already in the past, or was
+        accepted by `pin_diagnostic_slot` earlier). Either way the
+        cached `compute()` result is invalidated: a different pinned/
+        following state can mean a different diagnosed slot."""
+        if enabled:
+            resolved_now = now if now is not None else self._now()
+            self._follow_latest_diagnostic_slot = True
+            self._diagnostic_slot_index = Cache.index_for(resolved_now) - 1
+            self.cache.clear_reference()
+        else:
+            self._follow_latest_diagnostic_slot = False
+            self.cache.pin_reference(Cache.timestamp_for(self._diagnostic_slot_index).date())
         self._diagnostic_result_cache = None
 
-    def pinned_diagnostic_slot(self) -> datetime | None:
-        """The currently-pinned slot's own start timestamp, or `None`
-        while auto-tracking (ADR-004 §2a/§2f) — `datetime.py`'s
-        `ShadyDiagnosticSlotDateTime.native_value` reads this directly,
-        rather than re-deriving it from `_pinned_slot_index` itself."""
-        if self._pinned_slot_index is None:
-            return None
-        return Cache.timestamp_for(self._pinned_slot_index)
+    def is_following_latest_diagnostic_slot(self) -> bool:
+        """Whether the diagnosed slot currently follows the newest
+        complete slot (ADR-004 §2g) rather than being pinned —
+        `switch.py`'s `ShadyFollowDiagnosticSlotSwitch.is_on` reads
+        this."""
+        return self._follow_latest_diagnostic_slot
+
+    def diagnostic_slot_timestamp(self) -> datetime:
+        """The currently-configured diagnosed slot's own start
+        timestamp — pinned or followed alike, never `None` (ADR-004
+        §2g). `datetime.py`'s `ShadyDiagnosticSlotDateTime.native_value`
+        reads this directly, so a dashboard shows the "as of" moment
+        by displaying that entity, with no template logic of its own."""
+        return Cache.timestamp_for(self._diagnostic_slot_index)
+
+    def _advance_followed_diagnostic_slot(self, now: datetime) -> None:
+        """ADR-004 §2g: while following, *set* the stored diagnosed
+        slot to the newest complete one as of `now`. Called first thing
+        on every 5-minute tick (`_intraday_tick_sync`), ahead of any
+        `extra_fit()`/`compute()` that reads it, and whether or not a
+        diagnostic mode is active — an integer assignment, not fitting
+        work, so ADR-004 §1's "no extra cost while off" is unaffected.
+        A no-op while pinned. Deliberately does *not* invalidate
+        `_diagnostic_result_cache`: the active mode's own
+        `compute_cadence()` decides when its result refreshes, exactly
+        as it did while this slot was still derived on read."""
+        if self._follow_latest_diagnostic_slot:
+            self._diagnostic_slot_index = Cache.index_for(now) - 1
 
     def active_diagnostic_mode(self) -> str:
         """The currently selected diagnostic mode key (`const.py`'s
@@ -2406,6 +2455,10 @@ class ShadyCoordinator:
         await get_instance(self.hass).async_add_executor_job(self._intraday_tick_sync, now)
 
     def _intraday_tick_sync(self, now: datetime) -> None:
+        # First, before anything below that could raise or take a while
+        # and before `_diagnostics_tick_sync` reads the slot (ADR-004
+        # §2g).
+        self._advance_followed_diagnostic_slot(now)
         for string in self._strings:
             self._advance_intraday_string(string, now)
         self._diagnostics_tick_sync(now)

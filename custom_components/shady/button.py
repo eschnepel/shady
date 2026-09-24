@@ -1,19 +1,17 @@
 """`button.py` — `ShadyRecalculateButton`, one per config entry
 (ADR-002 §1/§5, TASK-0011): a manual trigger for the exact same refit
 routine the midnight schedule calls (`ShadyCoordinator.async_refit`).
-Also `ShadyClearDiagnosticSlotButton`, one per config entry (ADR-004
-§2f): clears `datetime.py`'s `ShadyDiagnosticSlotDateTime` pin, since
-the `datetime` domain itself has no "clear to unknown" affordance in
-its own frontend (see `datetime.py`'s module docstring) — this button
-is that pin's only clear path.
 
-Thin HA glue only (ADR-000 §3): neither button holds business logic of
-its own — both delegate entirely to `coordinator.py`. Any exception
-during `ShadyRecalculateButton`'s refit is logged and swallowed, never
-raised (ADR-000 §8 — a background failure, not a request/response cycle
-with a caller to propagate to); `ShadyClearDiagnosticSlotButton`'s
-`clear_diagnostic_slot()` call cannot itself fail (no timestamp to
-validate, unlike a pin), so it needs no such guard.
+(A second button here, `ShadyClearDiagnosticSlotButton` — ADR-004 §2f —
+was replaced by `switch.py`'s `ShadyFollowDiagnosticSlotSwitch`, ADR-004
+§2g, `TASK-0037-patch-4`: a stateless one-shot action could not show
+whether the diagnosed slot was pinned or following.)
+
+Thin HA glue only (ADR-000 §3): the button holds no business logic of
+its own — it delegates entirely to `coordinator.py`. Any exception
+during the refit is logged and swallowed, never raised (ADR-000 §8 — a
+background failure, not a request/response cycle with a caller to
+propagate to).
 
 Platform-level `async_setup_entry` only (this task's corrected scope —
 see `tasks/TASK-0011-forecast-sensor-and-recalculate-button.md`'s Goal):
@@ -45,20 +43,14 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Add this config entry's buttons: `ShadyRecalculateButton` and
-    `ShadyClearDiagnosticSlotButton`.
+    """Add the one `ShadyRecalculateButton` for this config entry.
 
     Reads the already-constructed `ShadyCoordinator` out of
     `hass.data[DOMAIN][entry.entry_id]` — built by `__init__.py`
     (`TASK-0016`), not by this function.
     """
     coordinator: ShadyCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            ShadyRecalculateButton(coordinator, entry),
-            ShadyClearDiagnosticSlotButton(coordinator, entry),
-        ]
-    )
+    async_add_entities([ShadyRecalculateButton(coordinator, entry)])
 
 
 class ShadyRecalculateButton(ButtonEntity):  # type: ignore[misc]
@@ -78,21 +70,3 @@ class ShadyRecalculateButton(ButtonEntity):  # type: ignore[misc]
             await self._coordinator.async_refit()
         except Exception:  # deliberately broad — ADR-000 §8, logged and swallowed
             _LOGGER.exception("Shady manual recalculation failed for %s", self._attr_unique_id)
-
-
-class ShadyClearDiagnosticSlotButton(ButtonEntity):  # type: ignore[misc]
-    """One button per config entry (ADR-004 §2f) — clears `datetime.py`'s
-    `ShadyDiagnosticSlotDateTime` pin, returning every diagnostic sensor
-    to auto-tracking the last complete slot. The only clear path for
-    that pin (see `datetime.py`'s module docstring for why the
-    `datetime` domain itself cannot offer one)."""
-
-    _attr_name = "Clear Diagnostic Slot"
-
-    def __init__(self, coordinator: ShadyCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
-        self._attr_unique_id = f"{DOMAIN}_clear_diagnostic_slot_{entry.entry_id}"
-        self._attr_device_info = device_info(entry)
-
-    async def async_press(self) -> None:
-        self._coordinator.clear_diagnostic_slot()

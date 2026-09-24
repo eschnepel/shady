@@ -1,6 +1,6 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-23
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-24
 
 This ADR is kept current in place: §1/§1a describe the current
 `ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
@@ -38,8 +38,14 @@ on is unchanged by this, only which module's code builds it. As of 2026-09-23,
 its replacement, a `datetime` domain entity plus a companion clear button; every
 other line of §2a's own text (the pin's validation/rounding rules, the
 one-diagnosed-slot-per-config-entry scope) is otherwise unchanged, only *how* a
-person sets/clears it moved. See ADR-013 for two sketched future modes that
-validate §1a's interface shape against needs beyond this ADR's own scope.
+person sets/clears it moved. As of 2026-09-24, §2g replaces §2f's companion
+clear *button* with an auto-follow `switch` entity and makes the diagnosed slot
+one always-set value that every diagnostic computation reads unconditionally —
+`datetime.py`'s entity now shows it in both modes instead of `unknown` while
+auto-tracking; `clear_diagnostic_slot()` and `ShadyClearDiagnosticSlotButton`
+are gone. §2a/§5 below are updated to match; §2f is left as written and marked
+superseded in part. See ADR-013 for two sketched future modes that validate
+§1a's interface shape against needs beyond this ADR's own scope.
 
 ______________________________________________________________________
 
@@ -154,8 +160,9 @@ class StringComputationConfig:
 @dataclass(frozen=True)
 class DiagnosedSlot:
     """Which slot is currently "the diagnosed slot" (§2/§2a) —
-    resolved from the pin if one is set, else "the last complete
-    slot" as of now (auto-tracking). index is the absolute slot index
+    always the coordinator's one stored, currently-configured slot
+    (§2g): the pin while pinned, or the last complete slot as of the
+    most recent 5-minute tick while auto-tracking. index is the absolute slot index
     (Cache.index_for convention); slot_of_day is index's 0-287
     time-of-day component (get_pinned_slot_pool's own argument);
     is_elapsed is whether this slot's own actual/PV value can exist
@@ -554,36 +561,38 @@ recent. `coordinator.py`'s `pin_diagnostic_slot(timestamp)` takes a single
   accepted: `"selected {method}"` still renders (§2, evaluated against the
   forward-looking `FC` for that slot), but `"selected actual"` is omitted and
   `accuracy` is an empty `{}`, since there is no `PV` yet to compare against —
-  see §2 for the exact shape this takes. `clear_diagnostic_slot()`, taking no
-  parameter, **clears** the pin and returns to auto-tracking "last complete
-  slot".
+  see §2 for the exact shape this takes. Returning to auto-tracking "last
+  complete slot" is `set_follow_latest_diagnostic_slot(True)` (§2g), which
+  replaced the original no-parameter `clear_diagnostic_slot()`; pinning
+  (`pin_diagnostic_slot`) in turn switches auto-tracking off.
 
 **Superseded (mechanism only) — see §2f.** As first written, this section
 described these two coordinator methods called by a single service,
 `shady.select_diagnostic_slot` (omitting its optional `timestamp` parameter was
 that service's own way of calling `clear_diagnostic_slot()`). §2f (2026-09-23)
 replaces that service with a `datetime` domain entity plus a companion clear
-button — `pin_diagnostic_slot`/`clear_diagnostic_slot` themselves, and every
-validation/rounding rule above, are unchanged by that amendment; only which
-HA-facing mechanism calls them did.
+button (itself replaced on 2026-09-24 by §2g's auto-follow `switch`, which also
+retired `clear_diagnostic_slot`) — `pin_diagnostic_slot` itself, and every
+validation/rounding rule above, are unchanged by either amendment; only which
+HA-facing mechanism calls it did.
 
 **There is exactly one diagnosed-slot state per config entry — not one per
 sensor.** Every diagnostic sensor, the per-string `ShadyDiagnosticsSensor`s (§2)
 and the summed `"sum"` entry (§2b, the same class as of the 2026-09-03
-Amendment) alike, shows the *same* moment: whichever slot `cache.py`'s
-`pinned_reference` (ADR-007a §6) currently names, or "last complete slot" if it
-is unset. There is no per-sensor "is this one pinned or still auto-tracking"
-toggle to keep in sync — neither `datetime.py`'s `ShadyDiagnosticSlotDateTime`
-nor `button.py`'s `ShadyClearDiagnosticSlotButton` (§2f) is targeted at any
-diagnostic sensor, since there is only ever one thing, config-entry-wide, for it
-to affect. This is also what makes §2b's sum sensor well-defined in the first
-place: summing `FC`/`PV` values across strings only makes sense if every
-string's diagnostic is looking at the same instant: a per-sensor pin would let
-strings disagree about *when*, making a config-entry-level sum meaningless. In
-practice, one shared moment also matches the motivating use case directly —
-"what did every string look like around 14:00 yesterday" is a cross-string
-comparison at one moment, not several strings each frozen at a different,
-unrelated one.
+Amendment) alike, shows the *same* moment: whichever slot `coordinator.py`'s one
+stored, currently-configured diagnosed slot names (§2g) — the pin while pinned,
+the last complete slot as of the latest tick while auto-tracking. There is no
+per-sensor "is this one pinned or still auto-tracking" toggle to keep in sync —
+neither `datetime.py`'s `ShadyDiagnosticSlotDateTime` nor `switch.py`'s
+`ShadyFollowDiagnosticSlotSwitch` (§2g) is targeted at any diagnostic sensor,
+since there is only ever one thing, config-entry-wide, for it to affect. This is
+also what makes §2b's sum sensor well-defined in the first place: summing
+`FC`/`PV` values across strings only makes sense if every string's diagnostic is
+looking at the same instant: a per-sensor pin would let strings disagree about
+*when*, making a config-entry-level sum meaningless. In practice, one shared
+moment also matches the motivating use case directly — "what did every string
+look like around 14:00 yesterday" is a cross-string comparison at one moment,
+not several strings each frozen at a different, unrelated one.
 
 While pinned, the 5-minute tick (§2's "Refresh cadence") never advances *which*
 slot is diagnosed — the pin, not the clock, decides that. For an already-elapsed
@@ -810,6 +819,14 @@ unedited; see `tasks/TASK-0015b-patch-3-xy-series-entry-on-base-class.md`).
 
 ### 2f — Amendment (2026-09-23): `datetime` domain entity + a companion clear button, superseding the `shady.select_diagnostic_slot` service
 
+**Superseded in part by §2g (2026-09-24).** The `datetime` entity itself, and
+`pin_diagnostic_slot`'s validation/rounding rules, stand. Everything below about
+the clear *button*, `clear_diagnostic_slot()`, `pinned_diagnostic_slot()` and
+`native_value` being `None` while auto-tracking no longer describes the code —
+§2g replaces those. Kept as written, rather than deleted, because the reasoning
+for a `datetime` entity over a service (and for why a `datetime` alone can never
+express "clear") is exactly what §2g builds on.
+
 **Reason:** §2a as first written exposed the diagnosed-slot pin as a single
 service, `shady.select_diagnostic_slot`, called from Developer Tools -> Actions
 (or an automation/script). That does not fit this project's own established
@@ -867,6 +884,82 @@ Assistant either way, so there is nothing left for it to declare.
 **Decided by:** human (identified the service as "not working" and requested a
 `datetime`-based input instead, matching the original pre-ADR intent), AI
 assistant (design + implementation).
+
+### 2g — Amendment (2026-09-24, `TASK-0037-patch-4`): auto-follow `switch` replaces the clear button; the diagnosed slot is always one concrete, always-set value
+
+**Reason:** §2f's clear button modelled the wrong thing. Two problems, both
+found by the human in use: (1) `ShadyDiagnosticSlotDateTime` showed `unknown`
+while auto-tracking — the one state in which a person most wants to know *which*
+slot every diagnostic sensor is currently showing — so a dashboard needed its
+own template logic to work out "last complete slot" and keep it in step with the
+coordinator's separate derivation of the same thing. (2) A button is a one-shot
+action with no state of its own: nothing on a dashboard says whether the
+diagnosed slot is currently pinned or following, and pressing it while already
+auto-tracking is a silent no-op. What was actually being modelled is one
+two-valued piece of state (pinned to a chosen slot / following the newest
+complete one) plus one slot value, and neither `None`-means-following nor a
+button expresses that.
+
+**Decision:**
+
+- **One always-set value, read unconditionally.** `coordinator.py` holds the
+  diagnosed slot as a single stored index (`_diagnostic_slot_index`, always set)
+  plus a boolean (`_follow_latest_diagnostic_slot`, default `True`).
+  `diagnosed_slot()` — and so every diagnostic computation, `compute()` and
+  `extra_fit()` of every mode — reads that stored index whether pinned or
+  auto-tracking; it no longer derives "last complete slot" from `now` at read
+  time. `is_elapsed` is still computed against `now`.
+- **While following, the value is *set* on every tick, not derived on read.**
+  The same 5-minute tick §2's "Refresh cadence" already uses sets it to
+  `index_for(now) − 1` — first thing in the tick, ahead of any `extra_fit()`/
+  `compute()` that reads it, and whether or not a diagnostic mode is active (one
+  integer assignment, not fitting work, so §1's "no extra cost while off" is
+  unaffected). It is also set once at construction and immediately when
+  following is switched on. The cached `compute()` result is *not* invalidated
+  by the tick's advance itself — the mode's own `compute_cadence()` still
+  decides when it refreshes, as before.
+- **`datetime.py`'s `ShadyDiagnosticSlotDateTime.native_value` returns that
+  value in both modes** (the slot's start timestamp) — never `None`. A dashboard
+  shows the as-of timestamp by displaying the entity, with no template logic.
+  `async_set_value` pins exactly as §2a/§2f describe (same rounding, same
+  beyond-the-horizon rejection) and thereby switches following off.
+- **New `switch.py`, `ShadyFollowDiagnosticSlotSwitch`, one per config entry.**
+  `is_on` ⇔ following. Turning it **on** calls
+  `set_follow_latest_diagnostic_slot(True)`: clears `cache.pinned_reference`,
+  sets the slot to the newest complete one immediately, invalidates the cached
+  `compute()` result. Turning it **off** calls
+  `set_follow_latest_diagnostic_slot(False)`: pins the slot *as currently shown*
+  (not a re-derivation from `now`), sets `cache.pinned_reference` to that slot's
+  date, invalidates the cached result — so switching off never moves anything.
+- **`cache.py`'s `pinned_reference` (ADR-007a §6) is deliberately not set while
+  following**, even though the stored slot is: `get_pinned_slot_pool`'s cap
+  (ADR-007a §6, 2026-09-22) keys off "genuinely pinned" vs. not, and its
+  auto-tracking cap `index_for(reference) − 1` is only ever a ceiling on the
+  stored slot (`reference` is never earlier than the tick that set it), so
+  nothing about that cap changes.
+- **Removed outright:** `button.py`'s `ShadyClearDiagnosticSlotButton`, and
+  `coordinator.py`'s `clear_diagnostic_slot()` and `pinned_diagnostic_slot()`
+  (replaced by `set_follow_latest_diagnostic_slot(bool)`,
+  `is_following_latest_diagnostic_slot()` and `diagnostic_slot_timestamp()`).
+  `ShadyRecalculateButton` is untouched. An installation that already registered
+  the clear button is left with a stale, unavailable registry entry, deletable
+  by hand — no migration (one installation exists, same reasoning as ADR-010's).
+- **Polling, not push** — like every other entity here (`sensor.py`'s own scope
+  note), both new/changed entities use Home Assistant's default polling; no
+  coordinator-to-entity push mechanism is added. The as-of timestamp can lag a
+  diagnostic sensor's own attributes by up to one polling interval, exactly as
+  two sensors already can.
+- **Not persisted across restarts** (unchanged: the pin never was) — a restart
+  returns to following the newest complete slot.
+
+**Decided by:** human (rejected the clear button as unhelpful; specified the
+follow/pin toggle, the set-on-every-cadence behaviour, and that diagnostics
+always read the configured slot regardless of mode), Lead Agent (details: switch
+on/off semantics, setting the datetime while following pins, the tick-first
+ordering, `pinned_reference` left unset while following — flagged for the
+human's confirmation in the session summary; implementation, Phase 6 Scenario C
+— `TASK-0037-patch-3` stays `done`, unedited; see
+`tasks/TASK-0037-patch-4-follow-latest-diagnostic-slot-toggle.md`).
 
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 
@@ -1000,21 +1093,21 @@ it explains why "no reshaping of any kind" is worth stating explicitly rather
 than assumed.) `sensor.py` otherwise no longer assembles anything for the mode
 to consume, nor knows how many entities a mode produces or what any of them
 represent beyond a `(sensor_id, name)` pair — resolving which slot is being
-diagnosed (reading `cache.py`'s `pinned_reference` scalar via its coordinator
-reference, or falling back to the last-complete-slot default when unset, §2a),
-fetching that slot's pool/predicted/actual values, and deciding what aggregate
-entities (if any) to produce alongside the per-string ones are all the mode's
-own job, done inside `compute()`/`extra_fit()`/`sensor_ids()` via the
-coordinator reference each was constructed with. This shaping is pure
-presentation and does not belong in `regression/` or `forecast_adjust.py`. As of
-2026-09-23 (§2f), `datetime.py`'s `ShadyDiagnosticSlotDateTime` and
-`button.py`'s `ShadyClearDiagnosticSlotButton` — both entity-scoped to their own
-config entry, unlike the domain-wide service they replace (§2f: no more
+diagnosed (reading `coordinator.diagnosed_slot()`, the one stored,
+currently-configured slot — pinned or auto-tracked alike, §2a/§2g), fetching
+that slot's pool/predicted/actual values, and deciding what aggregate entities
+(if any) to produce alongside the per-string ones are all the mode's own job,
+done inside `compute()`/`extra_fit()`/`sensor_ids()` via the coordinator
+reference each was constructed with. This shaping is pure presentation and does
+not belong in `regression/` or `forecast_adjust.py`. As of 2026-09-23 (§2f) and
+2026-09-24 (§2g), `datetime.py`'s `ShadyDiagnosticSlotDateTime` and
+`switch.py`'s `ShadyFollowDiagnosticSlotSwitch` — both entity-scoped to their
+own config entry, unlike the domain-wide service they replace (§2f: no more
 undocumented broadcast-across-every-loaded-entry reading) — are the only callers
-of `coordinator.py`'s `pin_diagnostic_slot`/`clear_diagnostic_slot`;
-`__init__.py` registers no service of any kind any more, and `cache.py` is still
-only ever reached through `coordinator.py` (ADR-007 §2), the same as every other
-caller.
+of `coordinator.py`'s `pin_diagnostic_slot`/
+`set_follow_latest_diagnostic_slot`; `__init__.py` registers no service of any
+kind any more, and `cache.py` is still only ever reached through
+`coordinator.py` (ADR-007 §2), the same as every other caller.
 
 ______________________________________________________________________
 

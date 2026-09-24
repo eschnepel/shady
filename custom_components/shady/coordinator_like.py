@@ -122,9 +122,10 @@ class StringComputationConfig:
 
 @dataclass(frozen=True)
 class DiagnosedSlot:
-    """Which slot is currently "the diagnosed slot" (ADR-004 §2/§2a) —
-    resolved from the pin if one is set, else "the last complete slot"
-    as of `now` (auto-tracking). `index` is the absolute slot index
+    """Which slot is currently "the diagnosed slot" (ADR-004 §2/§2a/§2g) —
+    always the coordinator's one stored, currently-configured slot: the
+    pin while pinned, or "the last complete slot" as of the most recent
+    5-minute tick while auto-tracking. `index` is the absolute slot index
     (`Cache.index_for` convention); `slot_of_day` is `index`'s 0-287
     time-of-day component (`get_pinned_slot_pool`'s own argument);
     `is_elapsed` is whether this slot's own actual/PV value can exist

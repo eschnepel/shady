@@ -219,10 +219,11 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
 - **`sensor.py`/`config_flow.py`/`select.py`/`button.py`/`datetime.py`** — thin
   HA entity glue, all classes prefixed `Shady`. `select.py`'s
   `ShadyDiagnosticModeSelect` replaces the original `switch.py` as of ADR-004's
-  2026-08-30 amendment; `datetime.py`'s `ShadyDiagnosticSlotDateTime` +
-  `button.py`'s `ShadyClearDiagnosticSlotButton` replace the original
-  `shady.select_diagnostic_slot` service as of ADR-004's 2026-09-23 amendment
-  (§2f).
+  2026-08-30 amendment; `datetime.py`'s `ShadyDiagnosticSlotDateTime` replaces
+  the original `shady.select_diagnostic_slot` service as of ADR-004's 2026-09-23
+  amendment (§2f); `switch.py`'s `ShadyFollowDiagnosticSlotSwitch` (auto-follow
+  on/off) is its companion as of ADR-004's 2026-09-24 amendment (§2g), replacing
+  the short-lived `ShadyClearDiagnosticSlotButton`.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`; registers
   no service of any kind (ADR-004 §2f); owns the startup-ordering guard (ADR-002
   §1a, TASK-0016) — `ConfigEntryNotReady`
@@ -463,20 +464,25 @@ user-selected `entity_id` wired directly into `cache.py`'s `fetch_fn`.
   built by `DiagnosticMode._xy_series_entry` — a shared, inherited
   `@staticmethod` on the base class (ADR-004 §2e, 2026-09-21, moved there the
   same day from a `CompareRegressionsMode`-local function once it became clear
-  every future mode, not just this one, would need the identical shape).
-  Diagnosed slot defaults to "last complete slot"; overridable via
-  `datetime.py`'s `ShadyDiagnosticSlotDateTime`/`button.py`'s
-  `ShadyClearDiagnosticSlotButton` (ADR-004 §2f, superseding the original
-  `shady.select_diagnostic_slot` service — neither entity is targeted at any
-  diagnostic sensor; one diagnosed-slot state per **config entry**). **YAML
-  gotcha (ADR-004 §2d):** the `"y"` key must always be written explicitly quoted
-  in any hand-written YAML representation of this shape — YAML 1.1 resolves a
-  bare `y`/`n`/`yes`/`no` to a boolean, not just `true`/`false`, so an unquoted
-  `y:` silently becomes the boolean key `True`. Python's own `dict`/`str()`
-  round-trip is unaffected (string keys are always quoted on output), so this is
-  a documentation/hand-authoring concern only — covered explicitly in ADR-004
-  §2d, including why that section's own example is fenced ```` ```yml ````
-  rather than ```` ```yaml ```` (this repo's own `mdformat` pass reformats
+  every future mode, not just this one, would need the identical shape). The
+  diagnosed slot is one **always-set** stored value per **config entry**
+  (ADR-004 §2g), read unconditionally by every diagnostic computation: while
+  `switch.py`'s `ShadyFollowDiagnosticSlotSwitch` is on (default) it is *set* to
+  the last complete slot on every 5-minute tick; setting `datetime.py`'s
+  `ShadyDiagnosticSlotDateTime` (which shows the value in both modes, never
+  `unknown`) pins it and switches following off; switching following off pins
+  the slot as currently shown. `cache.py`'s `pinned_reference` is set only while
+  genuinely pinned, never while following. Neither entity is targeted at any
+  diagnostic sensor (ADR-004 §2f, superseding the original
+  `shady.select_diagnostic_slot` service). **YAML gotcha (ADR-004 §2d):** the
+  `"y"` key must always be written explicitly quoted in any hand-written YAML
+  representation of this shape — YAML 1.1 resolves a bare `y`/`n`/`yes`/`no` to
+  a boolean, not just `true`/`false`, so an unquoted `y:` silently becomes the
+  boolean key `True`. Python's own `dict`/`str()` round-trip is unaffected
+  (string keys are always quoted on output), so this is a
+  documentation/hand-authoring concern only — covered explicitly in ADR-004 §2d,
+  including why that section's own example is fenced ```` ```yml ```` rather
+  than ```` ```yaml ```` (this repo's own `mdformat` pass reformats
   `yaml`-tagged fences and silently strips exactly this quoting, not knowing
   it's load-bearing).
 - **6 aggregate sensors** (one/entry, ADR-005): `ShadyPvSumSensor`,

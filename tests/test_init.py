@@ -187,6 +187,16 @@ def _seed_required_entities(hass: FakeHomeAssistant) -> None:
 # -- tests --------------------------------------------------------------
 
 
+class TestPlatforms:
+    """`PLATFORMS` forwards every entity platform this integration ships,
+    the diagnosed-slot `datetime` and its auto-follow `switch` (ADR-004
+    §2f/§2g) included — a platform missing here would silently never be
+    set up, whatever its own module does."""
+
+    def test_forwards_the_diagnosed_slot_datetime_and_follow_switch(self) -> None:
+        assert set(PLATFORMS) == {"sensor", "select", "button", "datetime", "switch"}
+
+
 class TestAsyncSetupEntryGenuineConstructionFailure:
     """AUDIT-0011 item 1: a genuine (non-`ConfigEntryNotReady`)
     exception during `ShadyCoordinator` construction must propagate

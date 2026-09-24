@@ -2,12 +2,12 @@
 
 Integration-level setup: constructs the `ShadyCoordinator`, stores it in
 `hass.data[DOMAIN][entry.entry_id]`, forwards this config entry's
-platforms (`sensor`/`select`/`button`/`datetime`), and restores restart-
+platforms (`sensor`/`select`/`button`/`datetime`/`switch`), and restores restart-
 persisted energy-integral state (ADR-005 §5/§6) — thin HA glue only
 (ADR-000 §3), no business logic of its own. The diagnosed-slot pin
-(ADR-004 §2a/§2f) is entity-only as of `datetime.py`'s
-`ShadyDiagnosticSlotDateTime`/`button.py`'s
-`ShadyClearDiagnosticSlotButton` — this module registers no domain-wide
+(ADR-004 §2a/§2f/§2g) is entity-only as of `datetime.py`'s
+`ShadyDiagnosticSlotDateTime`/`switch.py`'s
+`ShadyFollowDiagnosticSlotSwitch` — this module registers no domain-wide
 service of its own (the original `shady.select_diagnostic_slot` service
 this superseded is gone, not merely deprecated).
 
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "select", "button", "datetime"]
+PLATFORMS = ["sensor", "select", "button", "datetime", "switch"]
 
 # ADR-002 §1a, step 3: a short grace period before handing back to HA's
 # own ConfigEntryNotReady/backoff path once the deferred startup fit
