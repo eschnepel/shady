@@ -58,9 +58,34 @@ _load("aggregation.py", "shady.aggregation")
 _load("string_computation.py", "shady.string_computation")
 _load("diagnostics/__init__.py", "shady.diagnostics")
 _diagnostics_base_mod = _load("diagnostics/base.py", "shady.diagnostics.base")
-_load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
+_compare_regressions_mod = _load(
+    "diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions"
+)
 _load("coordinator_like.py", "shady.coordinator_like")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
+
+# `_DIAGNOSTIC_LOG` (both modules) is `False` in production -- opt-in,
+# hand-flipped debug logging (`coordinator.py`'s `_fit_string`/
+# `_fetch_fn`/`_fetch_provider_history_statistics`/
+# `_diagnostics_tick_sync`; `compare_regressions.py`'s `extra_fit`/
+# `compute_sensor`/`_selected_value`), never exercised by this suite
+# while it stays `False`. Flipped to `True` here, for the whole test
+# run, so every one of those bodies actually executes at least once
+# (most already run *inside* an existing, otherwise-unrelated test,
+# via whatever ordinary path already calls `_fit_string`/`extra_fit`/
+# etc. -- no dedicated test needed for that alone) rather than sitting
+# untested until someone flips the flag on a live deployment to debug
+# something *else* already broken, the worst possible moment to
+# discover a second, unrelated bug in the debug logging itself (a
+# `KeyError`/`IndexError`/wrong `%`-arg count would raise from *inside*
+# `_LOGGER.warning`'s own call, not be silently swallowed). Both
+# modules were already file-path-loaded above for this file's own
+# tests; `test_diagnostics_compare_regressions.py` and every other
+# file that does `from tests import test_coordinator as tc` reuses
+# these same `sys.modules` entries rather than loading its own, so
+# setting this once here covers the whole suite.
+_coordinator_mod._DIAGNOSTIC_LOG = True  # type: ignore[attr-defined]
+_compare_regressions_mod._DIAGNOSTIC_LOG = True  # type: ignore[attr-defined]
 
 # TYPE_CHECKING-only static import mirroring the runtime file-path load
 # above (ADR-000 §6, matching `test_diagnostics_base.py`'s own
@@ -686,6 +711,62 @@ class TestGenericPushNotBeforeIndex:
             [_BASELINE_ENTITY], next_slot_start, next_slot_end, on_invalid="raw"
         )[_BASELINE_ENTITY][0]
         assert raw_next == 500.0
+
+
+class TestGenericPushForwardFillsCoarserGrid:
+    """`_push_provider_series` (ADR-012 §4 Amendment, `TASK-0037-patch-3`,
+    live bug report) must forward-fill a coarser-than-5-minute `forward()`
+    series -- `forecast_solar`/weather-shaped sources report hourly
+    (ADR-009 §1a) -- across every 5-minute slot in each sample's span,
+    not just the exact slot each raw sample happens to land on, mirroring
+    `_recompute_string`'s own `_forward_fill_by_day` handling of the
+    identical concern. Fails against the pre-fix `_push_provider_series`
+    (a plain `{Cache.index_for(ts): value for ts, value in series}`
+    dict), which would leave every slot below `None` — the reported
+    symptom, root-caused directly: the diagnosed "selected" series only
+    ever appeared for a diagnosed slot matching minute 0.
+    """
+
+    def test_hourly_forward_series_fills_every_5_minute_slot(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        provider = coordinator._entity_providers[_BASELINE_ENTITY]
+        hourly_now = _NOW  # 2026-06-15 10:00 -- already hour-aligned itself
+        hourly_series = [(hourly_now + timedelta(hours=h), 500.0) for h in range(1, 3)]
+        provider.forward = lambda now: hourly_series
+
+        coordinator._push_provider_series(_BASELINE_ENTITY, hourly_now)
+
+        # A quarter and half past the hour, and just before the next
+        # hour mark -- never one of `hourly_series`'s own timestamps,
+        # only ever reachable via the forward-fill.
+        for minute_offset in (65, 90, 115):
+            ts = hourly_now + timedelta(minutes=minute_offset)
+            index = Cache.index_for(ts)
+            assert coordinator.cache._read(_BASELINE_ENTITY, index) == 500.0
+        # The second hour's own sample still lands exactly where expected.
+        second_hour_index = Cache.index_for(hourly_now + timedelta(hours=2))
+        assert coordinator.cache._read(_BASELINE_ENTITY, second_hour_index) == 500.0
+
+    def test_forward_fill_stops_at_the_next_raw_sample_not_the_value(self) -> None:
+        """A change in value between two raw samples is still a step
+        function, not interpolated — the forward-filled span ends the
+        instant the next sample's own timestamp starts."""
+        coordinator, _hass = _make_coordinator()
+        provider = coordinator._entity_providers[_BASELINE_ENTITY]
+        hourly_now = _NOW
+        hourly_series = [
+            (hourly_now + timedelta(hours=1), 500.0),
+            (hourly_now + timedelta(hours=2), 0.0),
+        ]
+        provider.forward = lambda now: hourly_series
+
+        coordinator._push_provider_series(_BASELINE_ENTITY, hourly_now)
+
+        just_before_second = hourly_now + timedelta(hours=2) - timedelta(minutes=5)
+        just_before_second_sample = Cache.index_for(just_before_second)
+        assert coordinator.cache._read(_BASELINE_ENTITY, just_before_second_sample) == 500.0
+        at_second_sample = Cache.index_for(hourly_now + timedelta(hours=2))
+        assert coordinator.cache._read(_BASELINE_ENTITY, at_second_sample) == 0.0
 
 
 class TestStringEnumeration:
@@ -1377,6 +1458,63 @@ class TestDiagnosticResultCaching:
         assert fake_mode.compute_calls == 2
 
 
+class TestDiagnosticsTickSyncSwallowsModeExceptions:
+    """ADR-000 §8: background failures are logged and swallowed, not
+    raised. `_diagnostics_tick_sync` previously had no try/except at
+    all around `extra_fit()`/`compute()` — unlike `_refit_sync`'s own
+    per-string one — so an exception from either would propagate all
+    the way up through `_intraday_tick_sync`'s executor dispatch as an
+    unhandled task exception, repeating every single tick for as long
+    as the underlying condition persisted and silently preventing
+    every diagnostic entity from ever updating again, with no
+    attributable trace of why (TASK-0037 follow-up)."""
+
+    def test_extra_fit_exception_does_not_prevent_compute_from_running(self) -> None:
+        coordinator, _hass = _make_coordinator()
+
+        class _RaisingExtraFitMode(_CountingDiagnosticMode):
+            def extra_fit(self) -> Any:
+                self.extra_fit_calls += 1
+                self.call_order.append("extra_fit")
+                raise RuntimeError("boom")
+
+        fake_mode = _RaisingExtraFitMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        coordinator._diagnostics_tick_sync(_NOW)  # must not raise
+
+        assert fake_mode.extra_fit_calls == 1
+        # compute() still ran this same tick despite extra_fit()'s
+        # exception -- one mode method failing does not block the
+        # other.
+        assert fake_mode.compute_calls == 1
+
+    def test_compute_exception_does_not_raise_and_keeps_the_previous_result(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        fake_mode = _CountingDiagnosticMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = fake_mode
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator._diagnostics_tick_sync(_NOW)
+        first_result = coordinator.diagnostic_result()
+        assert first_result is not None
+
+        class _RaisingComputeMode(_CountingDiagnosticMode):
+            def compute(self) -> Any:
+                self.compute_calls += 1
+                self.call_order.append("compute")
+                raise RuntimeError("boom")
+
+        raising_mode = _RaisingComputeMode(coordinator)
+        coordinator._diagnostic_modes["compare_regressions"] = raising_mode
+
+        coordinator._diagnostics_tick_sync(_NOW)  # must not raise
+
+        # The stale-but-not-`None` previous result is still served,
+        # rather than the tick's failure wiping it out.
+        assert coordinator.diagnostic_result() is first_result
+
+
 class TestDiagnosticResultOffEventLoopDispatch:
     """`diagnostic_result()`'s lazy cache-miss `compute()` call must
     never run directly on the event loop (module docstring:
@@ -2058,6 +2196,70 @@ class TestTargetCellTemperatureForSlotEdgeCases:
 
         index = Cache.index_for(_NOW)
         assert coordinator.target_cell_temperature_for_slot(0, index) is None
+
+    def test_fc_array_stays_all_nan_when_no_baseline_resolves(self) -> None:
+        """Weather tier resolved, but neither the string's own nor the
+        global `baseline_entity_id` is set — `fc_array` must stay
+        entirely `NaN` (never touched) rather than raise on a `None`
+        sensor_id, falling through straight to `_predict_target_slot_
+        temperature`, itself still perfectly able to return `None`
+        gracefully for the same reason `test_none_when_predict_target_
+        slot_temperature_returns_none` above does (no `rated_dc_
+        capacity_wp`)."""
+        entry = _make_entry(
+            baseline_entity_id=None,
+            default_temperature_source="weather.home",
+        )
+        hass = FakeHomeAssistant()
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.states.set("weather.home", {"temperature": 20.0, "forecast": []})
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+
+        index = Cache.index_for(_NOW)
+        assert coordinator.target_cell_temperature_for_slot(0, index) is None
+
+    def test_fc_array_slot_stays_nan_when_baseline_value_unavailable(self) -> None:
+        """Weather tier resolved and `baseline_entity_id` is set, but
+        the baseline entity has no `wh_period` data at all for the
+        queried slot — `cache.get_time_range`'s `raw[0]` comes back
+        `None`, not a `float`, so the slot must stay `NaN` rather than
+        assign a non-float into `fc_array`."""
+        entry = _make_entry(default_temperature_source="weather.home")
+        hass = FakeHomeAssistant()
+        hass.states.set(_BASELINE_ENTITY, {})  # no `wh_period` attribute at all
+        hass.states.set(_ACTUAL_YIELD_ENTITY, {})
+        hass.states.set("weather.home", {"temperature": 20.0, "forecast": []})
+        coordinator = ShadyCoordinator(hass, entry)
+        coordinator._now = lambda: _NOW
+
+        index = Cache.index_for(_NOW)
+        assert coordinator.target_cell_temperature_for_slot(0, index) is None
+
+
+class TestHandleActualYieldUpdateWithNoYieldTotal:
+    """`_handle_actual_yield_update` (ADR-005 §5) must skip the PV
+    energy-integral accumulation, not raise, when `pv_sum()` itself
+    comes back `None` (e.g. every configured actual-yield entity is
+    currently unavailable) — the update still gets persisted either
+    way, just without accumulating anything this tick."""
+
+    def test_energy_not_accumulated_when_pv_sum_is_none(self) -> None:
+        coordinator, hass = _make_coordinator()
+        coordinator._now = lambda: _NOW
+        coordinator.pv_sum = lambda: None
+        accumulated: list[tuple[str, Any, float]] = []
+        coordinator._accumulate_energy = lambda kind, now, total: accumulated.append(
+            (kind, now, total)
+        )
+
+        async def _drive() -> None:
+            coordinator._handle_actual_yield_update(None)
+            await hass.drain()
+
+        _run(_drive())
+
+        assert accumulated == []
 
 
 class TestFcSumFcDayArrayNoStrings:

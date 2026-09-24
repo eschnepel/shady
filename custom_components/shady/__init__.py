@@ -2,10 +2,14 @@
 
 Integration-level setup: constructs the `ShadyCoordinator`, stores it in
 `hass.data[DOMAIN][entry.entry_id]`, forwards this config entry's
-platforms (`sensor`/`select`/`button`), restores restart-persisted
-energy-integral state (ADR-005 §5/§6), and registers the domain-wide
-`shady.select_diagnostic_slot` service (ADR-004 §2a/§5) — thin HA glue
-only (ADR-000 §3), no business logic of its own.
+platforms (`sensor`/`select`/`button`/`datetime`), and restores restart-
+persisted energy-integral state (ADR-005 §5/§6) — thin HA glue only
+(ADR-000 §3), no business logic of its own. The diagnosed-slot pin
+(ADR-004 §2a/§2f) is entity-only as of `datetime.py`'s
+`ShadyDiagnosticSlotDateTime`/`button.py`'s
+`ShadyClearDiagnosticSlotButton` — this module registers no domain-wide
+service of its own (the original `shady.select_diagnostic_slot` service
+this superseded is gone, not merely deprecated).
 
 **Startup ordering (ADR-002 §1a, the reason this module exists as a
 real task rather than a trivial wire-up):** a config entry's referenced
@@ -38,20 +42,6 @@ with the result:
   hand back to HA's own `ConfigEntryNotReady`/backoff path via
   `async_schedule_reload` after a short delay, rather than inventing a
   second retry mechanism.
-
-**Service lifetime across unload (ADR-004 §2a/§5):**
-`async_unload_entry` deliberately never unregisters
-`shady.select_diagnostic_slot` on a single config entry's unload. The
-service is registered once per running Home Assistant instance
-(`_register_services`'s own idempotent guard, not once per config
-entry) — unregistering it the moment *any* one entry unloads would
-break every other still-loaded entry relying on it, since the service
-call itself carries no config-entry-selecting parameter and applies
-broadcast-style across every currently-loaded coordinator (see
-`_register_services`'s own handler comment). The service is only ever
-registered, never removed, for the lifetime of the running Home
-Assistant instance — asymmetric with per-entry teardown by design, not
-an oversight.
 """
 
 from __future__ import annotations
@@ -60,29 +50,19 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-import voluptuous as vol
-from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.start import async_at_started
 
 from .const import DOMAIN
 from .coordinator import ShadyCoordinator
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant, ServiceCall
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "select", "button"]
-
-# -- `shady.select_diagnostic_slot` service (ADR-004 §2a) -------------------
-SERVICE_SELECT_DIAGNOSTIC_SLOT = "select_diagnostic_slot"
-ATTR_TIMESTAMP = "timestamp"
-
-_SELECT_DIAGNOSTIC_SLOT_SCHEMA = vol.Schema({vol.Optional(ATTR_TIMESTAMP): cv.datetime})
+PLATFORMS = ["sensor", "select", "button", "datetime"]
 
 # ADR-002 §1a, step 3: a short grace period before handing back to HA's
 # own ConfigEntryNotReady/backoff path once the deferred startup fit
@@ -97,7 +77,6 @@ _MISSING_ENTITIES_RELOAD_DELAY_S: float = 30.0
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Shady from a config entry (ADR-002 §1/§1a/§5)."""
     hass.data.setdefault(DOMAIN, {})
-    _register_services(hass)
 
     coordinator = ShadyCoordinator(hass, entry)
 
@@ -148,50 +127,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if coordinator is not None:
             coordinator.shutdown()
     return unloaded
-
-
-def _register_services(hass: HomeAssistant) -> None:
-    """Register `shady.select_diagnostic_slot` exactly once per Home
-    Assistant instance, not once per config entry (idempotent — a
-    second/third config entry setting up must not raise or duplicate
-    it)."""
-    if hass.services.has_service(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT):
-        return
-
-    async def _async_select_diagnostic_slot(call: ServiceCall) -> None:
-        # ADR-004 §2a: not entity-targeted — there is one diagnosed-slot
-        # state per config entry, not one per sensor, and the service
-        # itself carries no config-entry-selecting parameter. No ADR or
-        # task text addresses what a domain-wide service call should do
-        # across more than one loaded config entry; this handler applies
-        # the same pin/clear to every currently-loaded Shady coordinator
-        # (broadcast), the only reading that needs no additional,
-        # undocumented parameter — see this task's own Delivered
-        # Artifacts for the full note.
-        timestamp: datetime | None = call.data.get(ATTR_TIMESTAMP)
-        coordinators = [
-            value
-            for value in hass.data.get(DOMAIN, {}).values()
-            if isinstance(value, ShadyCoordinator)
-        ]
-        if timestamp is None:
-            for coordinator in coordinators:
-                coordinator.clear_diagnostic_slot()
-            return
-        rejected = [
-            coordinator.entry.entry_id
-            for coordinator in coordinators
-            if not coordinator.pin_diagnostic_slot(timestamp)
-        ]
-        if rejected:
-            raise ServiceValidationError(
-                f"{timestamp.isoformat()} is beyond the available forecast "
-                f"horizon for config entries: {', '.join(rejected)}"
-            )
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SELECT_DIAGNOSTIC_SLOT,
-        _async_select_diagnostic_slot,
-        schema=_SELECT_DIAGNOSTIC_SLOT_SCHEMA,
-    )

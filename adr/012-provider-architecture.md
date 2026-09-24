@@ -1,15 +1,17 @@
 # ADR-012 – Provider Architecture: Shared Base Class and Cache Reuse for External Series
 
-**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-09-19 — §4b
-amended (last-good-response fallback via `cache.py`'s new
-`ServiceResponseCache`, `TASK-0036`); previously updated 2026-09-15 — §4a
-(weather forecast subscription push, ADR-009 §1a Amendment) and §4b
-(Forecast.Solar polling push, ADR-009 §1b Amendment) added 2026-09-14; §1
-(Amendment: fourth optional `Provider` method, `history_entity_id()`) and §2a
-(recorder-backed history backfill via it, ADR-009 §1c Amendment, `TASK-0034`)
-added below, extending §2's actual-yield recorder-read precedent to any provider
-that resolves a linked history entity — generically, not only
-`BaselineProvider`.
+**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-09-23 — §4
+amended (the generic push loop's raw-series conversion now forward-fills a
+coarser-than-5-minute sample across every slot in its span, mirroring ADR-009
+§1a's own `_recompute_string` handling, `TASK-0037-patch-3`); previously updated
+2026-09-19 — §4b amended (last-good-response fallback via `cache.py`'s new
+`ServiceResponseCache`, `TASK-0036`); before that, 2026-09-15 — §4a (weather
+forecast subscription push, ADR-009 §1a Amendment) and §4b (Forecast.Solar
+polling push, ADR-009 §1b Amendment) added 2026-09-14; §1 (Amendment: fourth
+optional `Provider` method, `history_entity_id()`) and §2a (recorder-backed
+history backfill via it, ADR-009 §1c Amendment, `TASK-0034`) added below,
+extending §2's actual-yield recorder-read precedent to any provider that
+resolves a linked history entity — generically, not only `BaselineProvider`.
 
 This ADR is kept current in place: §1 already describes `providers/base.py` as
 an actual base class (not a structural protocol) with the optional
@@ -327,6 +329,40 @@ recalibration or recompute triggers is that document's decision alone, scoped to
 what actually feeds the corrected-forecast output today; this section only
 establishes that the provider's own raw series gets captured either way,
 regardless of what else that update does or does not trigger.
+
+**Amendment (2026-09-23, `TASK-0037-patch-3`):** "convert it to `cache.py`'s
+absolute-index scheme" above is now a forward-fill, not a 1:1 timestamp match —
+the same "hold each sample's value forward across every 5-minute slot from its
+own timestamp up to (not including) the next sample's timestamp" step ADR-009
+§1a already establishes for `_recompute_string`'s own reading of the identical
+`forward()` series (`coordinator.py`'s module-level `_forward_fill_by_day`),
+reused here rather than reimplemented. Root cause: `forward()`'s own series
+commonly reports on a grid coarser than `FC`'s own 5-minute cache grid
+(`_PUSH_SOURCED_SHAPES` — `weather_sunshine`/`weather_cloud`/`forecast_solar` —
+are always hourly, ADR-009 §1a), so a plain
+`{Cache.index_for(ts): value for ts, value in series}` conversion (this
+section's original text) only ever populates the one exact slot each raw sample
+happens to land on, leaving every other slot in that sample's span permanently
+`None` — `to_index=None` once pushed, so `_validate_range` never re-queries it
+later (§2). This is invisible to the corrected-forecast output itself
+(`_recompute_string` already forward-fills its own, separate read of the same
+`forward()` series before predicting), but it is exactly what every other reader
+of the provider's *raw* pushed series sees directly:
+`diagnostics/compare_regressions.py`'s `_selected_value`/`_gather_pool`, reading
+`config.baseline_entity_id`'s cached series for `FC_selected` and the training
+pool alike (ADR-004 §2/§2a) — for a `weather_sunshine`/`weather_cloud` baseline,
+or a `forecast_solar` baseline whose companion history entity never resolved
+(ADR-009 §1c), the push-based cache is the *only* source for any index, elapsed
+or not, so the reported symptom ("the diagnostic sensors contain the selected
+series only if the evaluated slot is the first slot of the hour") was
+unconditional, not limited to a future pin. `TASK-0037`/`-patch-1`/`-patch-2`'s
+own fixes (validation timing, fitting exceptions, recorder-backfill opt-in) left
+this one undisturbed — a distinct root cause in the push conversion itself, not
+in anything downstream of it. The forward-fill's own `start`/`end` bounds mirror
+`_recompute_string`'s (`now` through `_tomorrow_end(now)`, ADR-002 §3's horizon)
+— nothing legitimately reads a pushed slot beyond that horizon either
+(`pin_diagnostic_slot` itself already rejects any pin at or past it), so capping
+the push there is a tightening, not a behavior loss.
 
 **Two provider-backed predictors exist today** — baseline `FC` (ADR-002 §4) and
 temperature (ADR-003c §7) — each documenting its own concrete `sensor_id` and

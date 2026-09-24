@@ -1,58 +1,52 @@
 """Tests for `__init__.py`'s `async_setup_entry`/`async_unload_entry`
-and the `shady.select_diagnostic_slot` service (ADR-002 §1/§1a/§5,
-ADR-004 §2a/§5, TASK-0016).
+(ADR-002 §1/§1a/§5, TASK-0016). The diagnosed-slot pin this module used
+to expose via the `shady.select_diagnostic_slot` service (ADR-004 §2a)
+is entity-only now (ADR-004 §2f) — see `tests/test_datetime.py` and
+`tests/test_button.py` for its coverage; `__init__.py` itself registers
+no service at all any more.
 
 `__init__.py` is HA-facing (real, non-`TYPE_CHECKING` imports of
-`homeassistant.exceptions`, `homeassistant.helpers.start`,
-`homeassistant.helpers.config_validation`, on top of everything
-`coordinator.py` itself already needs) — outside ADR-000 §6's zero-
-mocking pure tier. This file extends `tests/test_button.py`'s hand-
-written `homeassistant` stub convention (a real, non-`Mock` stand-in,
-registered directly in `sys.modules` before file-path-loading the
-module under test) with the additional surface `__init__.py` touches:
-`ConfigEntryNotReady`/`ServiceValidationError`, `async_at_started`,
-`cv.datetime`, and `hass.config_entries`/`hass.services` as real
-(non-module) objects on `FakeHomeAssistant`, since ADR-002 §1a's own
-behavior hinges on `hass.is_running` and the two exceptions above,
-which need real stand-ins, not mocks, to exercise meaningfully. Fully
-self-contained, per that same established convention.
+`homeassistant.exceptions`, `homeassistant.helpers.start`, on top of
+everything `coordinator.py` itself already needs) — outside ADR-000
+§6's zero-mocking pure tier. This file extends `tests/test_button.py`'s
+hand-written `homeassistant` stub convention (a real, non-`Mock`
+stand-in, registered directly in `sys.modules` before file-path-loading
+the module under test) with the additional surface `__init__.py`
+touches: `ConfigEntryNotReady`, `async_at_started`, and
+`hass.config_entries` as a real (non-module) object on
+`FakeHomeAssistant`, since ADR-002 §1a's own behavior hinges on
+`hass.is_running` and that exception, which needs a real stand-in, not
+a mock, to exercise meaningfully. Fully self-contained, per that same
+established convention.
 """
 
 from __future__ import annotations
 
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from tests.support import _SHADY_DIR, _load, _run
+from tests.support import _load, _run
 from tests.support_ha import FakeHomeAssistant, _install_ha_stub
 
 
 def _install_init_extras_stub() -> None:
     """Extends the already-installed core stub (call `_install_ha_stub()`
-    first) with `homeassistant.exceptions` (`ConfigEntryNotReady`,
-    `ServiceValidationError`), `homeassistant.helpers.start`
-    (`async_at_started`), and `homeassistant.helpers.config_validation`
-    (`datetime`) — this file's own additions, the only consumer of any
-    of the three."""
+    first) with `homeassistant.exceptions` (`ConfigEntryNotReady`) and
+    `homeassistant.helpers.start` (`async_at_started`) — this file's own
+    additions, the only consumer of either."""
     ha = sys.modules["homeassistant"]
     ha_helpers = sys.modules["homeassistant.helpers"]
     ha_exceptions = ModuleType("homeassistant.exceptions")
     ha_helpers_start = ModuleType("homeassistant.helpers.start")
-    ha_helpers_config_validation = ModuleType("homeassistant.helpers.config_validation")
 
     # -- `homeassistant.exceptions` --
 
     class ConfigEntryNotReady(Exception):
         pass
 
-    class ServiceValidationError(Exception):
-        pass
-
     ha_exceptions.ConfigEntryNotReady = ConfigEntryNotReady  # type: ignore[attr-defined]
-    ha_exceptions.ServiceValidationError = ServiceValidationError  # type: ignore[attr-defined]
 
     # -- `homeassistant.helpers.start` --
     # Real HA fires immediately if `hass.is_running` is already True by
@@ -68,29 +62,11 @@ def _install_init_extras_stub() -> None:
 
     ha_helpers_start.async_at_started = async_at_started  # type: ignore[attr-defined]
 
-    # -- `homeassistant.helpers.config_validation` -- real `cv.datetime`
-    # accepts either an already-parsed `datetime` or an ISO-8601 string;
-    # this stub mirrors exactly that narrow slice, not the full
-    # validator library.
-    def cv_datetime(value: Any) -> datetime:
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value)
-            except ValueError:
-                pass
-        raise ValueError(f"Invalid datetime specified: {value}")
-
-    ha_helpers_config_validation.datetime = cv_datetime  # type: ignore[attr-defined]
-
     ha.exceptions = ha_exceptions  # type: ignore[attr-defined]
     ha_helpers.start = ha_helpers_start  # type: ignore[attr-defined]
-    ha_helpers.config_validation = ha_helpers_config_validation  # type: ignore[attr-defined]
 
     sys.modules["homeassistant.exceptions"] = ha_exceptions
     sys.modules["homeassistant.helpers.start"] = ha_helpers_start
-    sys.modules["homeassistant.helpers.config_validation"] = ha_helpers_config_validation
 
 
 _install_ha_stub()
@@ -130,10 +106,8 @@ DOMAIN = _const_mod.DOMAIN
 async_setup_entry = _init_mod.async_setup_entry
 async_unload_entry = _init_mod.async_unload_entry
 PLATFORMS = _init_mod.PLATFORMS
-SERVICE_SELECT_DIAGNOSTIC_SLOT = _init_mod.SERVICE_SELECT_DIAGNOSTIC_SLOT
 
 ConfigEntryNotReady = sys.modules["homeassistant.exceptions"].ConfigEntryNotReady
-ServiceValidationError = sys.modules["homeassistant.exceptions"].ServiceValidationError
 
 # -- shared test fixture (mirrors test_button.py's own) ---------------------
 
@@ -249,90 +223,6 @@ class TestAsyncSetupEntryGenuineConstructionFailure:
         # the failed construction never got that far.
         assert entry.entry_id not in hass.data.get(DOMAIN, {})
         assert hass.config_entries.forwarded == []
-
-
-class TestServicePersistsAcrossPartialUnload:
-    """AUDIT-0011 item 2: `async_unload_entry` deliberately never
-    unregisters the domain-wide service on a single entry's unload --
-    see `__init__.py`'s own module docstring for the reasoning this
-    test verifies. Reuses `TestServiceRegistration`'s own two-entry
-    construction pattern for consistency."""
-
-    def test_service_stays_registered_after_unloading_one_of_two_entries(self) -> None:
-        hass = FakeHomeAssistant()
-        entry_a = _make_entry()
-        _seed_required_entities(hass)
-        _run(async_setup_entry(hass, entry_a))
-
-        second_yield_entity = "sensor.string_b_yield"
-        entry_b = _make_entry(
-            **{
-                CONF_STRINGS: {
-                    second_yield_entity: {
-                        "name": "Dach Nord",
-                        "baseline_entity_id": None,
-                        "baseline_attribute": None,
-                        "baseline_shape": None,
-                        "converter_limit_w": None,
-                        "temperature_source_entity_id": None,
-                        "temperature_coefficient_pct_per_c": -0.4,
-                        "rated_dc_capacity_wp": None,
-                    }
-                }
-            }
-        )
-        hass.states.set(second_yield_entity, {})
-        # `_make_entry()` always hard-codes the same "test_entry" id --
-        # a real second config entry has a distinct one; without this,
-        # entry_b's setup would silently overwrite entry_a's
-        # hass.data[DOMAIN] slot instead of adding a second one.
-        entry_b.entry_id = "test_entry_b"
-        _run(async_setup_entry(hass, entry_b))
-        assert hass.services.has_service(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
-
-        _run(async_unload_entry(hass, entry_a))
-
-        assert entry_a.entry_id not in hass.data[DOMAIN]
-        # entry_b is still loaded ...
-        assert entry_b.entry_id in hass.data[DOMAIN]
-        # ... and the domain-wide service was not touched by entry_a's
-        # unload, exactly the asymmetry the module docstring documents.
-        assert hass.services.has_service(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
-
-
-class TestServicesYamlMatchesRegisteredHandlers:
-    """AUDIT-0011 item 3: the executable version of the manual
-    `services.yaml`-vs-registered-handlers check the audit performed by
-    hand, mirroring `test_translations.py`'s own dynamic-introspection
-    pattern. Deliberately does not add a PyYAML dependency for this one
-    file-structure read (real Home Assistant instances always provide
-    PyYAML at runtime for this exact file, but this project declares no
-    such dependency for its own test suite) -- `services.yaml`'s own
-    shape is simple enough (one service, all its fields indented
-    beneath it) that a top-level-key scan is sufficient and exact."""
-
-    @staticmethod
-    def _services_yaml_top_level_keys(path: Path) -> set[str]:
-        keys: set[str] = set()
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line or line[0] in (" ", "\t", "#"):
-                continue
-            if ":" not in line:
-                continue
-            key = line.split(":", 1)[0].strip()
-            if key:
-                keys.add(key)
-        return keys
-
-    def test_declared_and_registered_service_names_match(self) -> None:
-        services_yaml_path = _SHADY_DIR / "services.yaml"
-        declared = self._services_yaml_top_level_keys(services_yaml_path)
-
-        hass = FakeHomeAssistant()
-        _init_mod._register_services(hass)
-        registered = {service for (domain, service) in hass.services._handlers if domain == DOMAIN}
-
-        assert declared == registered
 
 
 class TestAsyncSetupEntryHassRunning:
@@ -480,115 +370,3 @@ class TestAsyncUnloadEntry:
 
         assert result is True
         assert entry.entry_id not in hass.data[DOMAIN]
-
-
-class TestServiceRegistration:
-    """ADR-004 §2a/§5: `shady.select_diagnostic_slot` registered exactly
-    once per Home Assistant instance, not once per config entry."""
-
-    def test_registered_exactly_once_across_two_config_entries(self) -> None:
-        hass = FakeHomeAssistant()
-        entry_a = _make_entry()
-        _seed_required_entities(hass)
-        _run(async_setup_entry(hass, entry_a))
-        assert hass.services.has_service(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
-        handler_after_first, _schema = hass.services._handlers[
-            (DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
-        ]
-
-        second_yield_entity = "sensor.string_b_yield"
-        entry_b = _make_entry(
-            **{
-                CONF_STRINGS: {
-                    second_yield_entity: {
-                        "name": "Dach Nord",
-                        "baseline_entity_id": None,
-                        "baseline_attribute": None,
-                        "baseline_shape": None,
-                        "converter_limit_w": None,
-                        "temperature_source_entity_id": None,
-                        "temperature_coefficient_pct_per_c": -0.4,
-                        "rated_dc_capacity_wp": None,
-                    }
-                }
-            }
-        )
-        hass.states.set(second_yield_entity, {})
-        # Re-setup (a second config entry) must not raise on
-        # re-registration, and must not replace the existing handler.
-        _run(async_setup_entry(hass, entry_b))
-
-        handler_after_second, _schema2 = hass.services._handlers[
-            (DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT)
-        ]
-        assert handler_after_first is handler_after_second
-
-    def test_service_clears_pin_when_called_with_no_timestamp(self) -> None:
-        hass = FakeHomeAssistant()
-        entry = _make_entry()
-        _seed_required_entities(hass)
-        _run(async_setup_entry(hass, entry))
-        coordinator = hass.data[DOMAIN][entry.entry_id]
-        coordinator.pin_diagnostic_slot(_NOW, now=_NOW)
-        assert coordinator.diagnosed_slot(now=_NOW).index == coordinator._pinned_slot_index
-
-        _run(hass.services.async_call(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT, {}))
-
-        assert coordinator._pinned_slot_index is None
-
-    def test_service_pins_a_valid_in_horizon_timestamp(self) -> None:
-        hass = FakeHomeAssistant()
-        entry = _make_entry()
-        _seed_required_entities(hass)
-        _run(async_setup_entry(hass, entry))
-        coordinator = hass.data[DOMAIN][entry.entry_id]
-        coordinator._now = lambda: _NOW  # deterministic horizon check
-        target = datetime(2026, 6, 15, 14, 0, tzinfo=UTC)
-
-        _run(
-            hass.services.async_call(
-                DOMAIN,
-                SERVICE_SELECT_DIAGNOSTIC_SLOT,
-                {"timestamp": target.isoformat()},
-            )
-        )
-
-        from shady.cache import Cache as _Cache
-
-        assert coordinator._pinned_slot_index == _Cache.index_for(target)
-
-    def test_service_raises_validation_error_beyond_horizon(self) -> None:
-        hass = FakeHomeAssistant()
-        entry = _make_entry()
-        _seed_required_entities(hass)
-        _run(async_setup_entry(hass, entry))
-        coordinator = hass.data[DOMAIN][entry.entry_id]
-        coordinator._now = lambda: _NOW  # deterministic horizon check
-        far_future = datetime(2026, 7, 1, tzinfo=UTC)
-
-        raised = False
-        try:
-            _run(
-                hass.services.async_call(
-                    DOMAIN,
-                    SERVICE_SELECT_DIAGNOSTIC_SLOT,
-                    {"timestamp": far_future.isoformat()},
-                )
-            )
-        except ServiceValidationError:
-            raised = True
-
-        assert raised
-        # Rejected -- no state change.
-        assert coordinator._pinned_slot_index is None
-
-    def test_service_call_with_no_loaded_entries_is_a_safe_no_op(self) -> None:
-        hass = FakeHomeAssistant()
-        hass.data.setdefault(DOMAIN, {})
-        # See the note in the reload test above on why this is
-        # `_init_mod` (this file's own captured reference), not a
-        # fresh `import shady`.
-        _init_mod._register_services(hass)
-
-        _run(hass.services.async_call(DOMAIN, SERVICE_SELECT_DIAGNOSTIC_SLOT, {}))
-        # No exception -- nothing to iterate over.

@@ -18,7 +18,14 @@ of what "now" actually is — see §6's own "Never permanently freezing a
 not-yet-elapsed slot" note for the full rationale. Behavior for every
 already-elapsed slot is unchanged; only a not-yet-elapsed slot's handling
 differs, and only in the direction of no longer producing a permanently-`None`
-result for it once it does elapse.
+result for it once it does elapse. Same day (`TASK-0037-patch-2`), §4's
+`allow_historical_backfill` opt-in — until now exclusive to
+`get_regression_pools` — is threaded through `get_time_range` too (a new
+keyword-only parameter, default `False`, no existing caller affected unless it
+opts in) and `get_pinned_slot_pool` now always opts in internally: see §4's own
+new note for why a push-sourced (`forecast_solar`-shaped) baseline's
+already-elapsed "today" was never fetched by *any* caller before this,
+`TASK-0037`'s own not-yet-elapsed-slot fix notwithstanding.
 
 ______________________________________________________________________
 
@@ -209,6 +216,30 @@ reads from it:
   deliberately, since the *number* of distinct missing ranges in practice is
   small, usually one).
 
+**`allow_historical_backfill` (ADR-012 §2a Amendment, `TASK-0034`; threaded
+through `get_time_range` too as of `TASK-0037-patch-2`, 2026-09-22).** A sensor
+Shady actively pushes to (`to_index=None`) is otherwise never (re-)queried at
+all, full stop (§2's own guarantee for a purely push-owned output series like
+`forecast_sensor_id`). A `forecast_solar`-shaped baseline is a hybrid: pushed
+forward-only (so its future is always current) *and* backed by a real external
+history source (`history_entity_id()`) that nothing fetches unless a caller
+explicitly says it may. `_validate_range`'s `allow_historical_backfill`
+parameter (default `False`, preserving the plain push-only guarantee for every
+caller that doesn't pass it) is that explicit opt-in — originally exclusive to
+`get_regression_pools` (ADR-008 §2), since recalibration needs real calendar
+history regardless of whether the same sensor is also being pushed to.
+`get_time_range` gained the identical parameter (also default `False`) once a
+second need for it emerged: `diagnostics/compare_regressions.py`'s
+`_selected_value` and `coordinator.py`'s `target_cell_temperature_for_slot` both
+read a single already-elapsed slot of a possibly push-sourced baseline, and had
+no way to ask for the same backfill `get_regression_pools` already gets — a
+push-sourced baseline's already-elapsed history was therefore never fetched by
+*either* of them, at all, since `get_regression_pools`'s own window never
+reaches "today" (§2, ADR-008 §2). `get_pinned_slot_pool` (§6) always passes it
+internally rather than exposing it as a parameter — that accessor has exactly
+one purpose (diagnostic history) and exactly one caller, so there is nothing to
+default `False` for.
+
 ### 5 — Accessor methods
 
 `cache.py` exposes one generically-shaped accessor for the "contiguous range"
@@ -332,13 +363,14 @@ not one per string.** `cache.py` holds it as a single scalar,
 `clear_reference()` — no `sensor_id` argument to either, in the same spirit as
 `window_days` (see Context above) being one setup-level value rather than
 something re-supplied, or re-scoped, per call. `coordinator.py` calls these in
-direct response to the `shady.select_diagnostic_slot` service (ADR-004 §2a),
-which is itself not entity-targeted — there is no per- `ShadyDiagnosticsSensor`
-"am I pinned" state anywhere, in `cache.py` or otherwise. Every diagnostics
-sensor (each string's, and ADR-004 §2b's summed one) simply reads whether
-`pinned_reference` is currently set each time it needs to know which slot to
-show: `cache.py`'s one scalar is the *complete* answer, not one input alongside
-separate per-entity state.
+direct response to `datetime.py`'s `ShadyDiagnosticSlotDateTime`/`button.py`'s
+`ShadyClearDiagnosticSlotButton` (ADR-004 §2a/§2f), neither of which is
+entity-targeted at any `ShadyDiagnosticsSensor` — there is no per-
+`ShadyDiagnosticsSensor` "am I pinned" state anywhere, in `cache.py` or
+otherwise. Every diagnostics sensor (each string's, and ADR-004 §2b's summed
+one) simply reads whether `pinned_reference` is currently set each time it needs
+to know which slot to show: `cache.py`'s one scalar is the *complete* answer,
+not one input alongside separate per-entity state.
 
 Diagnostics gets its own dedicated accessor for this — rather than a
 `pinned: bool` flag bolted onto a shared method — because pin-resolution below

@@ -1,6 +1,11 @@
 # ADR-008 – Numeric Backend for `regression/`, and a Batched Cache Accessor
 
-**Date:** 2026-08-13 **Status:** Accepted
+**Date:** 2026-08-13 **Status:** Accepted **Last updated:** 2026-09-22
+
+This ADR is kept current in place: §1's own text is unchanged, but see its
+"Batching's shared-failure edge" note (added 2026-09-22, `TASK-0037`) — a real
+bug fix to the batched `numpy.linalg.solve` call §1 describes, not a design
+change to batching itself.
 
 ______________________________________________________________________
 
@@ -75,6 +80,32 @@ ground between "no numpy" and "batched numpy."
 (`numpy>=1.26.0`, so Home Assistant installs it for the integration) and
 `pyproject.toml`'s `[project.dependencies]` (so it's present for local dev,
 mypy, and tests too).
+
+**Batching's shared-failure edge (Amendment, 2026-09-22, `TASK-0037`).**
+Batching every slot into one `numpy.linalg.solve` call (this section's own
+"across all slots in one call") has a sharp edge this ADR did not originally
+call out: a *single* singular matrix anywhere in the batch aborts the *entire*
+call — confirmed directly (`np.linalg.solve` on a stack containing one
+zero/singular matrix alongside otherwise-healthy ones raises
+`LinAlgError: Singular matrix` for the whole stack, not just its own slot). For
+`coordinator.py`'s 288-slot recalibration sweep, that means one degenerate slot
+(e.g. a short history window, or a slot whose `FC` rarely varies) can fail a
+*whole string's* fit, not just that slot's; for
+`diagnostics/compare_regressions.py`'s single-slot batch, it means the one
+diagnosed slot. This was previously masked by `fit_weighted_polynomial`'s ridge
+term being an *absolute* constant (`1e-8`) rather than one scaled to each slot's
+own matrix magnitude — negligible, and therefore ineffective, once
+`wls2`/`wls3`'s own `FC²`/`FC³` design columns push `xt_w_x`'s entries well past
+`O(1)` for any ordinary, real-world `FC` value, at which point a training window
+with little `FC` variety (plausible, not pathological) is genuinely
+rank-deficient and the fixed ridge does nothing to rescue it. Fixed by scaling
+the ridge to each slot's own `xt_w_x` magnitude (`regression/base.py`'s
+`_ridge_term`) — see that function's own docstring for the full mechanism.
+Batching itself is unchanged and still the right call per this section's own
+benchmark data; this amendment only makes the regularization that protects it
+actually effective at real-world `FC` scales, closing a genuine `ADR-000 §8`
+violation (a pure calculation module raising an exception in its normal
+operating range, not just a clamp).
 
 ### 2 — Regression fitting's accessor: a batched, `numpy`-returning method for the full sweep
 

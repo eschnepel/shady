@@ -37,10 +37,15 @@ from numpy.typing import NDArray
 # e.g. 0.25 for the 25% default) already uses.
 RESCALE_SENTINEL = -0.01
 
-# Tiny ridge term added to every batched normal-equations solve purely for
-# numerical stability (a genuinely zero-weight row would otherwise be an
-# exactly-singular matrix) — negligible next to any real weighted sum,
-# never meant to bias a well-populated slot's fit.
+# Tiny *relative* ridge term added to every batched normal-equations
+# solve purely for numerical stability (a genuinely zero-weight row
+# would otherwise be an exactly-singular matrix) — negligible next to
+# any real weighted sum, never meant to bias a well-populated slot's
+# fit. Scaled per-slot against that slot's own `xt_w_x` magnitude
+# (`fit_weighted_polynomial`'s own `_ridge_term` helper) rather than
+# used as a bare additive constant (TASK-0037 follow-up, 2026-09-22) —
+# see that helper's docstring for why a fixed constant alone is not
+# actually safe.
 _RIDGE_EPSILON = 1e-8
 
 
@@ -300,6 +305,50 @@ def build_pool(
     return SamplePool(fc=fc_pool, pv=pv_pool, weight=weight_pool, confidence=confidence)
 
 
+def _ridge_term(xt_w_x: NDArray[np.float64], degree: int) -> NDArray[np.float64]:
+    """Per-slot ridge regularization term, shape `(n_slots, degree+1,
+    degree+1)` — added to `xt_w_x` before solving (TASK-0037 follow-up,
+    2026-09-22, root-causing a genuine, reproducible
+    `numpy.linalg.LinAlgError: Singular matrix` for `wls2`/`wls3`).
+
+    A *fixed* `_RIDGE_EPSILON` (the original design) only prevents an
+    exactly-singular matrix when `xt_w_x`'s own entries are near `O(1)`
+    — true for a cold-start, all-zero-weight row, the one case the
+    original comment named. It stops being true once `xt_w_x`'s entries
+    are large: `design`'s cubic (`wls3`) column is `FC**3`, so `xt_w_x`'s
+    own entries reach `FC**6` — for an ordinary few-hundred-watt `FC`,
+    that is already `~1e14-1e16`. A `1e-8` ridge added to entries of that
+    magnitude is not a "tiny nudge next to a real weighted sum" any
+    more — it is many orders of magnitude *smaller* than floating-point
+    rounding error already present in those entries, so it does nothing
+    to rescue a genuinely rank-deficient matrix (every training day
+    sharing the same, or a near-identical, `FC` — plausible for a short
+    history window, or a slot where `FC` rarely varies, not a
+    pathological input). `np.linalg.solve` then raises for real, for the
+    *entire* batched call (confirmed directly: a single singular slot in
+    an otherwise-healthy batch aborts every slot's result, not just its
+    own) — for `diagnostics/compare_regressions.py`'s single-slot batch,
+    that means the one slot; for `coordinator.py`'s 288-slot recalibration
+    sweep, that means the whole string.
+
+    The fix scales the ridge to each slot's own `xt_w_x` magnitude
+    (its mean diagonal entry), floored at `1.0` so a near-zero-magnitude
+    slot (the original cold-start case) still gets exactly the original
+    `_RIDGE_EPSILON` constant, unchanged. A large-magnitude slot instead
+    gets a proportionally larger ridge — still `_RIDGE_EPSILON` (`1e-8`)
+    *relative* to that slot's own scale, so it stays negligible next to
+    a well-conditioned fit's real weighted sum, but now large enough in
+    absolute terms to actually perturb a rank-deficient matrix back to
+    invertible.
+    """
+    mean_diagonal = np.einsum("nii->n", xt_w_x) / (degree + 1)
+    scale = np.maximum(mean_diagonal, 1.0)
+    ridge: NDArray[np.float64] = (
+        np.eye(degree + 1)[None, :, :] * (_RIDGE_EPSILON * scale)[:, None, None]
+    )
+    return ridge
+
+
 def fit_weighted_polynomial(pool: SamplePool, degree: int) -> NDArray[np.float64]:
     """Batched weighted-least-squares polynomial fit (ADR-008 §1): one
     `numpy.linalg.solve` call for every slot in the batch at once, never
@@ -317,8 +366,7 @@ def fit_weighted_polynomial(pool: SamplePool, degree: int) -> NDArray[np.float64
     xt_w_x = np.einsum("npi,np,npj->nij", design, weight, design)
     xt_w_y = np.einsum("npi,np,np->ni", design, weight, pool.pv)
 
-    ridge = np.eye(degree + 1) * _RIDGE_EPSILON
-    xt_w_x_regularized = xt_w_x + ridge[None, :, :]
+    xt_w_x_regularized = xt_w_x + _ridge_term(xt_w_x, degree)
 
     # numpy >= 2.0: `b` is only treated as a shape-(M,) vector if it is
     # *exactly* 1-D; otherwise it's a stack of (M, K) matrices, not an

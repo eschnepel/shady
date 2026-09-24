@@ -606,6 +606,8 @@ class Cache:
         end: datetime,
         on_invalid: OnInvalid = 0.0,
         group_by: Literal["sensor"] = "sensor",
+        *,
+        allow_historical_backfill: bool = False,
     ) -> dict[str, list[float | None | str]]: ...
 
     @overload
@@ -617,6 +619,7 @@ class Cache:
         on_invalid: OnInvalid = 0.0,
         *,
         group_by: Literal["slot"],
+        allow_historical_backfill: bool = False,
     ) -> list[dict[str, float | None | str]]: ...
 
     def get_time_range(
@@ -626,6 +629,8 @@ class Cache:
         end: datetime,
         on_invalid: OnInvalid = 0.0,
         group_by: Literal["sensor", "slot"] = "sensor",
+        *,
+        allow_historical_backfill: bool = False,
     ) -> dict[str, list[float | None | str]] | list[dict[str, float | None | str]]:
         """Every slot in a contiguous range (ADR-007a §5): whole-day
         arrays, trailing rolling windows.
@@ -638,11 +643,34 @@ class Cache:
         Validates before reading (§4): fetches on-demand anything not
         already fresh for `sensor_ids` over `[start, end]`, for every
         `on_invalid` mode alike.
+
+        `allow_historical_backfill` (ADR-007a §4 Amendment, `TASK-0037`
+        follow-up): defaults to `False`, the original "never (re-)query
+        a sensor Shady actively pushes to" guarantee (`_validate_range`'s
+        own contract, §4) — unaffected for every caller that doesn't
+        pass it. A `forecast_solar`-shaped baseline is `_validate_range`'s
+        own documented hybrid case: pushed forward-only (so its future
+        is always current) but *also* backed by a real external history
+        source that is never queried unless a caller opts in. Only
+        `get_regression_pools` (ADR-008 §2) did, until now — this
+        accessor's own callers (`diagnostics/compare_regressions.py`'s
+        `_selected_value`, reading `FC_selected`/`PV_selected` for the
+        diagnosed slot) need exactly the same real calendar history for
+        such a baseline and had no way to ask for it, so a push-sourced
+        baseline's already-elapsed slot was never resolvable via this
+        method at all — permanently `None`, not because of any timing
+        race (ADR-007a §6's own Amendment fixed that one), but because
+        nothing ever fetched it in the first place.
         """
         start_index = self.index_for(start)
         end_index = self.index_for(end)
         for sensor_id in sensor_ids:
-            self._validate_range(sensor_id, start_index, end_index)
+            self._validate_range(
+                sensor_id,
+                start_index,
+                end_index,
+                allow_historical_backfill=allow_historical_backfill,
+            )
 
         if group_by == "sensor":
             sensor_result: dict[str, list[float | None | str]] = {}
@@ -854,7 +882,16 @@ class Cache:
         its own window, so while auto-tracking (the resolved window
         matching whatever recalibration itself just fetched) this call
         is typically served entirely from already-validated entries,
-        with no new recorder query.
+        with no new recorder query. Always passes
+        `allow_historical_backfill=True` (ADR-007a §4 Amendment,
+        `TASK-0037` follow-up) — this accessor's one purpose is real
+        calendar history for a diagnostic scatter/comparison, the exact
+        same rationale `get_regression_pools` (ADR-008 §2) already opts
+        in for; without it, a `forecast_solar`-shaped (push-sourced)
+        baseline's already-elapsed "today" slots were never fetched at
+        all, by any caller, since `get_regression_pools`'s own window
+        never reaches today and nothing else backfills a push-marked
+        sensor's history unless explicitly asked to.
 
         **Never validates a not-yet-elapsed slot** (ADR-007a §6
         Amendment, TASK-0037), even though the window this method reads
@@ -923,7 +960,12 @@ class Cache:
 
         if validate_end_index >= window_start_index:
             for sensor_id in sensor_ids:
-                self._validate_range(sensor_id, window_start_index, validate_end_index)
+                self._validate_range(
+                    sensor_id,
+                    window_start_index,
+                    validate_end_index,
+                    allow_historical_backfill=True,
+                )
 
         result: dict[str, list[float | None | str]] = {}
         for sensor_id in sensor_ids:

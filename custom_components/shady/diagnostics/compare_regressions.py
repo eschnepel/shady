@@ -44,6 +44,7 @@ attribute.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -61,6 +62,15 @@ from .base import (
     DiagnosticResult,
     DiagnosticSensorResult,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+# Temporary diagnostic instrumentation (TASK-0037 follow-up) -- mirrors
+# `coordinator.py`'s own `_DIAGNOSTIC_LOG` flag/convention. Flip to
+# `True`, restart, and check the log for why `_selected_value` is (or
+# isn't) resolving a real float for the diagnosed slot -- remove once
+# the "selected ..." series-missing report is root-caused for real.
+_DIAGNOSTIC_LOG = False
 
 if TYPE_CHECKING:
     # Same reasoning as base.py's own ShadyCoordinatorLike import: this module
@@ -168,14 +178,54 @@ class CompareRegressionsMode(DiagnosticMode):
         for string_index, _name in self._coordinator.strings():
             config = self._coordinator.string_computation_config(string_index)
             if config.baseline_entity_id is None:
+                if _DIAGNOSTIC_LOG:
+                    _LOGGER.warning(
+                        "DIAG extra_fit: string_index=%d has no baseline_entity_id -- skipped",
+                        string_index,
+                    )
                 continue
-            fc_selected = self._selected_value(config.baseline_entity_id, diagnosed.index)
-            if fc_selected is None:
+            try:
+                fc_selected = self._selected_value(config.baseline_entity_id, diagnosed.index)
+                if fc_selected is None:
+                    if _DIAGNOSTIC_LOG:
+                        _LOGGER.warning(
+                            "DIAG extra_fit: string_index=%d diagnosed.index=%d"
+                            " fc_selected=None -- skipped",
+                            string_index,
+                            diagnosed.index,
+                        )
+                    continue
+                pool = self._gather_pool(config, settings, diagnosed)
+                predictions = self._predict_all_methods(
+                    string_index, config, diagnosed, settings, pool, fc_selected
+                )
+                if _DIAGNOSTIC_LOG:
+                    _LOGGER.warning(
+                        "DIAG extra_fit: string_index=%d diagnosed.index=%d"
+                        " fc_selected=%r predictions=%r",
+                        string_index,
+                        diagnosed.index,
+                        fc_selected,
+                        predictions,
+                    )
+            except Exception:
+                # ADR-000 §8: a background failure is logged and
+                # swallowed, not raised — mirrors `_refit_sync`'s own
+                # per-string isolation (`coordinator.py`), "leaving it
+                # unmodeled, not aborting the remaining strings". Without
+                # this, one string's fit failure (e.g. a transient
+                # recorder/data hiccup) would blow up this whole
+                # `extra_fit()` call, uncaught all the way up through
+                # `_diagnostics_tick_sync` (which has no try/except of
+                # its own either) — silently preventing *every* string's
+                # predictions from ever being cached that tick, not just
+                # this one's.
+                _LOGGER.exception(
+                    "Diagnostic extra_fit failed for string %d — leaving it"
+                    " unmodeled this tick, not aborting the remaining strings",
+                    string_index,
+                )
                 continue
-            pool = self._gather_pool(config, settings, diagnosed)
-            predictions = self._predict_all_methods(
-                string_index, config, diagnosed, settings, pool, fc_selected
-            )
             if predictions:
                 by_sensor[str(string_index)] = predictions
         if not by_sensor:
@@ -209,6 +259,17 @@ class CompareRegressionsMode(DiagnosticMode):
 
         predictions = self._coordinator.cache.diagnostic_fit(sensor_id) or {}
         accuracy = self._append_selected_series(series, predictions, fc_selected, pv_selected)
+
+        if _DIAGNOSTIC_LOG:
+            _LOGGER.warning(
+                "DIAG compute_sensor: sensor_id=%r fc_selected=%r pv_selected=%r"
+                " predictions=%r accuracy=%r",
+                sensor_id,
+                fc_selected,
+                pv_selected,
+                predictions,
+                accuracy,
+            )
 
         attributes: dict[str, Any] = {"series": series, "accuracy": accuracy}
         state = self._coordinator.now().isoformat()
@@ -436,10 +497,29 @@ class CompareRegressionsMode(DiagnosticMode):
         validate-before-read already handles both an elapsed (recorder-
         backed) and a not-yet-elapsed (push-extended provider) slot
         transparently (`adr-summary.md` §5's hybrid validated-range
-        note) — this needs no branching of its own on `is_elapsed`."""
+        note) — this needs no branching of its own on `is_elapsed`.
+        Passes `allow_historical_backfill=True` (ADR-007a §4 Amendment,
+        TASK-0037 follow-up): without it, a `forecast_solar`-shaped
+        (push-sourced) `sensor_id` — `config.baseline_entity_id`, for a
+        string on that provider — never gets its already-elapsed
+        history fetched at all, since `get_regression_pools` (the only
+        other caller that opts in) never reaches "today", and no other
+        caller backfills a push-marked sensor's history unless asked."""
         slot_start = self._coordinator.cache.timestamp_for(index)
         raw = self._coordinator.cache.get_time_range(
-            [sensor_id], slot_start, slot_start, on_invalid="raw"
+            [sensor_id], slot_start, slot_start, on_invalid="raw", allow_historical_backfill=True
         )[sensor_id]
         value = raw[0]
-        return value if isinstance(value, float) else None
+        result = value if isinstance(value, float) else None
+        if _DIAGNOSTIC_LOG:
+            _LOGGER.warning(
+                "DIAG selected_value: sensor_id=%r index=%d slot_start=%s"
+                " raw=%r (type=%s) -> result=%r",
+                sensor_id,
+                index,
+                slot_start,
+                value,
+                type(value).__name__,
+                result,
+            )
+        return result

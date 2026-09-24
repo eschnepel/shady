@@ -39,6 +39,14 @@ _string_computation_mod = sys.modules["shady.string_computation"]
 # drift. As of `TASK-0015b-patch-3`, it's a `DiagnosticMode` static
 # method (`base.py`), not a `compare_regressions.py`-local function.
 _xy_series_entry = sys.modules["shady.diagnostics.base"].DiagnosticMode._xy_series_entry
+# TestSelectedValuePassesAllowHistoricalBackfill below constructs a
+# `CompareRegressionsMode` directly against a lightweight fake
+# coordinator, rather than a full `ShadyCoordinator` -- already loaded
+# into `sys.modules` by `test_coordinator.py`'s own harness import
+# above.
+_CompareRegressionsMode = sys.modules[
+    "shady.diagnostics.compare_regressions"
+].CompareRegressionsMode
 
 # A 3-day window, no smoothing (single offset "0") — small enough to hand
 # -verify, big enough to demonstrate a real gap-pattern mismatch across
@@ -308,6 +316,177 @@ class TestExtraFitAcrossAllRegressionStrategies:
         assert diagnosed is not None
         assert coordinator.target_cell_temperature_for_slot(0, diagnosed.index) is not None
 
+    def test_temperature_tier_predicts_without_adjustment_when_unresolved(self) -> None:
+        """The `resolved is not None` branch's counterpart: a
+        temperature-tier string (`config.temperature_tier is not
+        None`) whose `target_cell_temperature_for_slot` itself comes
+        back `None` must still predict -- just without a `target_cell_
+        temperature` array fed into `fit_string_model`/`predict` -- not
+        raise. `fc_selected` itself must still resolve normally here
+        (unlike the sibling tests above), or `extra_fit()`'s earlier
+        `fc_selected is None` skip would prevent this call from ever
+        reaching the branch under test at all -- hence a direct
+        monkeypatch of `target_cell_temperature_for_slot` alone, rather
+        than reusing one of `TestTargetCellTemperatureForSlotEdgeCases`'
+        own real-data setups (`coordinator.py`, `tests/test_
+        coordinator.py`), every one of which also happens to starve
+        `fc_selected` of the same underlying baseline data."""
+        coordinator, _hass = tc._make_temperature_aware_coordinator()
+        coordinator.target_cell_temperature_for_slot = lambda *args, **kwargs: None
+        ok = coordinator.pin_diagnostic_slot(tc._NOW)
+        assert ok
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+
+        coordinator._diagnostics_tick_sync(tc._NOW)  # must not raise
+
+        predictions = coordinator.cache.diagnostic_fit("0")
+        assert predictions is not None
+        assert set(predictions) == set(_string_computation_mod.REGRESSION_STRATEGIES)
+
+
+class TestSelectedValuePassesAllowHistoricalBackfill:
+    """`_selected_value` must opt into `cache.get_time_range`'s
+    `allow_historical_backfill` (ADR-007a §4 Amendment, TASK-0037
+    follow-up) — without it, a `forecast_solar`-shaped (push-sourced)
+    baseline's already-elapsed history is never fetched by *any*
+    caller at all: `get_regression_pools`'s own opt-in (ADR-008 §2)
+    never reaches "today", so a push-sourced `config.baseline_entity_id`
+    would have had no way to resolve `FC_selected` for the diagnosed
+    slot — permanently `None`, and therefore no `"selected ..."` series
+    entry and an empty `accuracy` dict, exactly the reported symptom.
+    A lightweight fake `cache`/coordinator rather than a full
+    `ShadyCoordinator` — this is about *which keyword argument*
+    `_selected_value` passes through, not about resolving a real
+    push-sourced series end-to-end (`TestGetTimeRangeThreadsAllowHisto
+    ricalBackfill`, `tests/test_cache_core.py`, already covers that)."""
+
+    def test_get_time_range_receives_the_flag(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        class _FakeCache:
+            def timestamp_for(self, index: int) -> datetime:
+                return _PIN
+
+            def get_time_range(
+                self, sensor_ids: list[str], start: datetime, end: datetime, **kwargs: Any
+            ) -> dict[str, list[Any]]:
+                calls.append(kwargs)
+                return {sensor_ids[0]: [123.0]}
+
+        class _FakeCoordinator:
+            cache = _FakeCache()
+
+        mode = _CompareRegressionsMode(_FakeCoordinator())
+
+        result = mode._selected_value("fs_entry_1", 0)
+
+        assert result == 123.0
+        assert len(calls) == 1
+        assert calls[0]["allow_historical_backfill"] is True
+
+
+class TestExtraFitPerStringIsolation:
+    """One string's fit failure must not prevent every other string's
+    predictions from being cached the same tick — mirrors
+    `_refit_sync`'s own "leaving it unmodeled, not aborting the
+    remaining strings" per-string isolation (`coordinator.py`), applied
+    here to `extra_fit()`'s own per-string loop (ADR-000 §8, TASK-0037
+    follow-up). Before this, one string raising inside `extra_fit()`
+    (e.g. a transient data hiccup) blew up the whole call, uncaught —
+    no other string's prediction got cached that tick either."""
+
+    def test_one_string_raising_does_not_block_the_other(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 500.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 300.0})
+        _activate(coordinator)
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        original_predict = mode._predict_all_methods
+
+        def _raise_for_string_0(string_index: int, *args: Any, **kwargs: Any) -> Any:
+            if string_index == 0:
+                raise RuntimeError("boom")
+            return original_predict(string_index, *args, **kwargs)
+
+        mode._predict_all_methods = _raise_for_string_0
+
+        coordinator._diagnostics_tick_sync(_PIN)  # must not raise
+
+        assert coordinator.cache.diagnostic_fit("0") is None
+        assert coordinator.cache.diagnostic_fit("1") is not None
+
+
+class TestExtraFitSkipsStringWhenSelectedValueUnresolved:
+    """`extra_fit()`'s other per-string skip (distinct from `config.
+    baseline_entity_id is None`, already covered by `TestSumEntry
+    UnavailableWhenNothingContributes.test_extra_fit_returns_none_and_
+    caches_nothing`): a string *with* a resolved `baseline_entity_id`
+    whose `_selected_value` still comes back `None` for the diagnosed
+    slot -- a genuinely reachable state (e.g. brand-new install, not a
+    single slot fetched/pushed yet) -- must `continue` gracefully, not
+    raise, and must not block any other string's own fit the same tick
+    (same per-string isolation as `TestExtraFitPerStringIsolation`
+    above, different trigger)."""
+
+    def test_string_with_unresolved_fc_selected_is_skipped_not_raised(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 500.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 300.0})
+        _activate(coordinator)
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        original_selected_value = mode._selected_value
+        calls = {"n": 0}
+
+        def _none_on_first_call(entity_id: str, index: int) -> Any:
+            # `self._coordinator.strings()` is dict-ordered (string "0"
+            # first) and `extra_fit()`'s loop calls `_selected_value`
+            # at most once per string, so the first call is always
+            # string "0"'s own -- deterministic, not order-fragile.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None
+            return original_selected_value(entity_id, index)
+
+        mode._selected_value = _none_on_first_call
+
+        coordinator._diagnostics_tick_sync(_PIN)  # must not raise
+
+        assert coordinator.cache.diagnostic_fit("0") is None
+        assert coordinator.cache.diagnostic_fit("1") is not None
+
+
+class TestAppendSelectedSeriesEmptyWhenForecastUnresolved:
+    """`_append_selected_series`'s own guard (distinct from every
+    scenario above, all of which resolve a real `fc_selected`): when
+    `fc_selected` itself is `None` -- a resolved `baseline_entity_id`
+    whose `_selected_value` still can't produce a number for the
+    diagnosed slot -- it returns immediately, appending *nothing* to
+    `series` (not even a pool-less "selected {method}" placeholder) and
+    `accuracy` stays `{}`. This was the original `TASK-0037` report's
+    own failure mode end-to-end, before any of its three patches;
+    confirmed here to still degrade gracefully rather than raise now
+    that all three have landed."""
+
+    def test_no_selected_entries_and_empty_accuracy(self) -> None:
+        coordinator, _hass = tc._make_coordinator()
+        coordinator._now = lambda: _PIN
+        _activate(coordinator)
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        mode._selected_value = lambda entity_id, index: None
+
+        coordinator.cache.set_diagnostic_fit("0", {"method_x": 500.0})
+        result = coordinator.diagnostic_result()
+        assert result is not None
+        string_0 = _sensor(result, "0")
+
+        assert not any(
+            entry["name"].startswith("selected") for entry in string_0.attributes["series"]
+        )
+        assert string_0.attributes["accuracy"] == {}
+
 
 class TestFuturePinnedSlotOmitsSelectedActual:
     """Given a future-pinned slot (ADR-004 §2/§2a), When rendered, Then
@@ -342,3 +521,55 @@ class TestFuturePinnedSlotOmitsSelectedActual:
         assert any(entry["name"].startswith("selected method_x") for entry in selected_series)
         assert not any(entry["name"] == "selected actual" for entry in selected_series)
         assert string_0.attributes["accuracy"] == {}
+
+
+class TestFuturePinnedSlotSelectedResolvesOffHourAlignment:
+    """Live bug report (`TASK-0037-patch-3`): the `\"selected {method}\"`
+    series only ever appeared when the diagnosed slot happened to land on
+    minute 0. Root cause was in `_push_provider_series` (`coordinator.py`,
+    ADR-012 §4 Amendment) — it pushed a `forward()` series straight into
+    `cache.py` with a 1:1 timestamp match instead of forward-filling it,
+    so a coarser-than-5-minute source (`forecast_solar`/weather-shaped —
+    always hourly, ADR-009 §1a) only ever populated the exact slot each
+    raw sample happened to land on, leaving `FC_selected` permanently
+    `None` everywhere else. A future pin (as in
+    `TestFuturePinnedSlotOmitsSelectedActual` above) is the cleanest way
+    to isolate this: `_selected_value` has no recorder-backed fallback
+    for a not-yet-elapsed slot, so it depends entirely on the pushed
+    series, with nothing else able to mask the bug.
+
+    Fails against the pre-fix `_push_provider_series`: pinning to a
+    quarter past the hour, against an hourly-only `forward()` series,
+    would leave `\"selected method_x\"` absent from `series` entirely
+    (the same absence `TASK-0037`'s own original report described).
+    """
+
+    def test_selected_method_appears_for_a_quarter_past_the_hour_pin(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 480.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 50.0})
+
+        # Simulate an hourly-resolution baseline source: `forward()`
+        # only ever reports exactly on the hour, same as a real
+        # `forecast_solar`/weather-shaped provider (ADR-009 §1a).
+        provider = coordinator._entity_providers[tc._BASELINE_ENTITY]
+        hourly_series = [(_PIN + timedelta(hours=h), 500.0) for h in range(5)]
+        provider.forward = lambda now: hourly_series
+        coordinator._push_provider_series(tc._BASELINE_ENTITY, _PIN)
+
+        # A quarter past the hour, still within the pushed horizon --
+        # never itself one of `hourly_series`'s own timestamps.
+        off_hour_pin = _PIN + timedelta(hours=3, minutes=25)
+        ok = coordinator.pin_diagnostic_slot(off_hour_pin)
+        assert ok
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.cache.set_diagnostic_fit("0", {"method_x": 500.0})
+
+        result = coordinator.diagnostic_result()
+        assert result is not None
+        string_0 = _sensor(result, "0")
+
+        selected_series = [
+            entry for entry in string_0.attributes["series"] if entry["name"].startswith("selected")
+        ]
+        assert any(entry["name"].startswith("selected method_x") for entry in selected_series)

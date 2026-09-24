@@ -249,6 +249,58 @@ class TestValidateRangeHistoricalBackfillOptIn:
         assert len(calls) == 1  # no second fetch — the head is already validated
 
 
+class TestGetTimeRangeThreadsAllowHistoricalBackfill:
+    """`get_time_range` itself (not just `_validate_range` directly, as
+    `TestValidateRangeHistoricalBackfillOptIn` above already covers) now
+    accepts and threads through `allow_historical_backfill` (ADR-007a §4
+    Amendment, TASK-0037 follow-up) — the accessor
+    `diagnostics/compare_regressions.py`'s `_selected_value` and
+    `coordinator.py`'s `target_cell_temperature_for_slot` both actually
+    call, for reading a single already-elapsed slot of a possibly
+    push-sourced (`forecast_solar`-shaped) baseline. Without this, such
+    a baseline's already-elapsed history was never fetched by *any*
+    caller — `get_regression_pools`'s own opt-in never reaches "today"."""
+
+    def test_default_still_never_queries_a_push_marked_sensor(self) -> None:
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            raise AssertionError("must not be queried without opting in")
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        base = cache_mod.Cache.index_for(datetime(2026, 1, 10, tzinfo=UTC))
+        cache.push("baseline", {base: 10.0}, not_before_index=base)
+
+        result = cache.get_time_range(
+            ["baseline"],
+            cache_mod.Cache.timestamp_for(base - 1),
+            cache_mod.Cache.timestamp_for(base - 1),
+            on_invalid="raw",
+        )
+
+        assert result == {"baseline": [None]}  # nothing ever fetched for it
+
+    def test_opt_in_resolves_an_already_elapsed_slot_of_a_push_sourced_sensor(self) -> None:
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            n = round((end - start) / cache_mod.SLOT_DURATION)
+            return [42.0] * n
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        base = cache_mod.Cache.index_for(datetime(2026, 1, 10, tzinfo=UTC))
+        # Only the *future* was ever pushed -- exactly a forecast_solar
+        # -shaped baseline's own shape: `push()` only ever writes
+        # forward from `not_before_index`, never an already-elapsed slot.
+        cache.push("baseline", {base: 10.0}, not_before_index=base)
+
+        result = cache.get_time_range(
+            ["baseline"],
+            cache_mod.Cache.timestamp_for(base - 1),
+            cache_mod.Cache.timestamp_for(base - 1),
+            on_invalid="raw",
+            allow_historical_backfill=True,
+        )
+
+        assert result == {"baseline": [42.0]}  # fetched for real, not left `None`
+
+
 class TestGetTimeRangeGroupByShapes:
     """Given get_time_range(..., group_by="sensor") vs group_by="slot"
     against the same data, the two return the documented complementary

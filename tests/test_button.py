@@ -1,5 +1,5 @@
 """Tests for `button.py`'s `ShadyRecalculateButton` (ADR-002 §1/§5,
-TASK-0011).
+TASK-0011) and `ShadyClearDiagnosticSlotButton` (ADR-004 §2f).
 
 `button.py` is HA-facing (real, non-`TYPE_CHECKING` import of
 `homeassistant.components.button`) — outside ADR-000 §6's zero-mocking
@@ -76,6 +76,7 @@ CONF_STRINGS = _const_mod.CONF_STRINGS
 DOMAIN = _const_mod.DOMAIN
 async_setup_entry = _button_mod.async_setup_entry
 ShadyRecalculateButton = _button_mod.ShadyRecalculateButton
+ShadyClearDiagnosticSlotButton = _button_mod.ShadyClearDiagnosticSlotButton
 
 # -- shared test fixture (mirrors test_coordinator.py's own) ---------------
 
@@ -167,9 +168,10 @@ class _FakeAddEntities:
 class TestAsyncSetupEntry:
     """Given `button.py`'s `async_setup_entry` runs for a config entry,
     When entities are added, Then exactly one `ShadyRecalculateButton`
-    is added (one per config entry, not per string)."""
+    and one `ShadyClearDiagnosticSlotButton` are added (one of each per
+    config entry, not per string)."""
 
-    def test_exactly_one_button_per_entry(self) -> None:
+    def test_exactly_one_of_each_button_per_entry(self) -> None:
         coordinator, hass = _make_coordinator()
         entry = coordinator.entry
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
@@ -177,10 +179,13 @@ class TestAsyncSetupEntry:
 
         _run(async_setup_entry(hass, entry, add_entities))
 
-        assert len(add_entities.added) == 1
-        assert isinstance(add_entities.added[0], ShadyRecalculateButton)
+        assert len(add_entities.added) == 2
+        recalculate = [e for e in add_entities.added if isinstance(e, ShadyRecalculateButton)]
+        clear_pin = [e for e in add_entities.added if isinstance(e, ShadyClearDiagnosticSlotButton)]
+        assert len(recalculate) == 1
+        assert len(clear_pin) == 1
 
-    def test_multiple_configured_strings_still_yield_one_button(self) -> None:
+    def test_multiple_configured_strings_still_yield_one_of_each_button(self) -> None:
         second_yield_entity = "sensor.string_b_yield"
         entry = _make_entry(
             **{
@@ -222,7 +227,7 @@ class TestAsyncSetupEntry:
 
         _run(async_setup_entry(hass, entry, add_entities))
 
-        assert len(add_entities.added) == 1
+        assert len(add_entities.added) == 2
 
 
 class TestRecalculateButtonPress:
@@ -255,5 +260,39 @@ class TestRecalculateButtonPress:
     def test_unique_id_is_entry_scoped(self) -> None:
         coordinator, _hass = _make_coordinator()
         button = ShadyRecalculateButton(coordinator, coordinator.entry)
+
+        assert coordinator.entry.entry_id in button._attr_unique_id
+
+
+class TestClearDiagnosticSlotButtonPress:
+    """Given `ShadyClearDiagnosticSlotButton.async_press()` is called
+    (ADR-004 §2f), When pressed, Then it clears any pin set via
+    `datetime.py`'s `ShadyDiagnosticSlotDateTime`, returning to
+    auto-tracking the last complete slot — the only way to clear that
+    pin, since the `datetime` domain itself offers no such affordance
+    (see `datetime.py`'s module docstring)."""
+
+    def test_press_clears_an_active_pin(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator.pin_diagnostic_slot(_NOW, now=_NOW)
+        assert coordinator._pinned_slot_index is not None
+        button = ShadyClearDiagnosticSlotButton(coordinator, coordinator.entry)
+
+        _run(button.async_press())
+
+        assert coordinator._pinned_slot_index is None
+
+    def test_press_with_no_active_pin_is_a_safe_no_op(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator._pinned_slot_index is None
+        button = ShadyClearDiagnosticSlotButton(coordinator, coordinator.entry)
+
+        _run(button.async_press())  # must not raise
+
+        assert coordinator._pinned_slot_index is None
+
+    def test_unique_id_is_entry_scoped(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        button = ShadyClearDiagnosticSlotButton(coordinator, coordinator.entry)
 
         assert coordinator.entry.entry_id in button._attr_unique_id

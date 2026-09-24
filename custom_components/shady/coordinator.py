@@ -732,6 +732,18 @@ class ShadyCoordinator:
             # a no-op and falls through to `provider.fetch()` exactly as
             # before this amendment.
             history_entity_id = provider.history_entity_id()
+            if _DIAGNOSTIC_LOG:
+                _LOGGER.warning(
+                    "DIAG fetch_fn: sensor_id=%r start=%s end=%s"
+                    " history_entity_id=%r -> routing to %s",
+                    sensor_id,
+                    start,
+                    end,
+                    history_entity_id,
+                    "_fetch_provider_history_statistics"
+                    if history_entity_id is not None
+                    else "provider.fetch()",
+                )
             if history_entity_id is not None:
                 return self._fetch_provider_history_statistics(history_entity_id, start, end)
             return provider.fetch(start, end)
@@ -1199,9 +1211,10 @@ class ShadyCoordinator:
     # encapsulation boundary: coordinator-owned data a mode needs gets
     # a public accessor here, rather than the mode reaching into
     # `_`-prefixed state directly) — plus the diagnosed-slot-pin
-    # service methods `__init__.py`'s `shady.select_diagnostic_slot`
-    # handler calls, and the active-mode select/lookup `select.py`/
-    # `sensor.py` call.
+    # methods `datetime.py`'s `ShadyDiagnosticSlotDateTime` and
+    # `button.py`'s `ShadyClearDiagnosticSlotButton` call (ADR-004
+    # §2f), and the active-mode select/lookup `select.py`/`sensor.py`
+    # call.
 
     def now(self) -> datetime:
         """Public read of the injectable clock — lets a `DiagnosticMode`
@@ -1258,6 +1271,15 @@ class ShadyCoordinator:
         self._pinned_slot_index = None
         self.cache.clear_reference()
         self._diagnostic_result_cache = None
+
+    def pinned_diagnostic_slot(self) -> datetime | None:
+        """The currently-pinned slot's own start timestamp, or `None`
+        while auto-tracking (ADR-004 §2a/§2f) — `datetime.py`'s
+        `ShadyDiagnosticSlotDateTime.native_value` reads this directly,
+        rather than re-deriving it from `_pinned_slot_index` itself."""
+        if self._pinned_slot_index is None:
+            return None
+        return Cache.timestamp_for(self._pinned_slot_index)
 
     def active_diagnostic_mode(self) -> str:
         """The currently selected diagnostic mode key (`const.py`'s
@@ -1440,8 +1462,20 @@ class ShadyCoordinator:
         baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id
         if baseline_entity_id is not None:
             slot_start = Cache.timestamp_for(index)
+            # `allow_historical_backfill=True` (ADR-007a §4 Amendment,
+            # TASK-0037 follow-up): `baseline_entity_id` may be a
+            # `forecast_solar`-shaped, push-sourced sensor (ADR-012 §2a)
+            # whose already-elapsed history is never fetched without
+            # this — same reasoning as `diagnostics/compare_regressions
+            # .py`'s `_selected_value`, which reads this same kind of
+            # sensor_id for the same "one slot, possibly already
+            # elapsed" need.
             raw = self.cache.get_time_range(
-                [baseline_entity_id], slot_start, slot_start, on_invalid="raw"
+                [baseline_entity_id],
+                slot_start,
+                slot_start,
+                on_invalid="raw",
+                allow_historical_backfill=True,
             )[baseline_entity_id]
             if raw and isinstance(raw[0], float):
                 fc_array[slot_of_day] = raw[0]
@@ -2428,13 +2462,55 @@ class ShadyCoordinator:
         mode = self._diagnostic_modes.get(self._active_diagnostic_mode)
         if mode is None:
             return
+        if _DIAGNOSTIC_LOG:
+            _LOGGER.warning(
+                "DIAG diagnostics_tick_sync: now=%s active_mode=%r fit_cadence=%s"
+                " compute_cadence=%s",
+                now,
+                self._active_diagnostic_mode,
+                mode.fit_cadence(),
+                mode.compute_cadence(),
+            )
         if mode.fit_cadence() == "slot":
-            result = mode.extra_fit()
+            try:
+                result = mode.extra_fit()
+            except Exception:
+                # ADR-000 §8: background failures are logged and
+                # swallowed, not raised. Without this, an uncaught
+                # exception here — this method previously had no
+                # try/except at all, unlike `_refit_sync`'s own
+                # per-string one — would propagate all the way up
+                # through `_intraday_tick_sync`'s executor dispatch as
+                # an unhandled task exception every single tick for as
+                # long as the underlying condition persists, silently
+                # preventing `extra_fit()`'s predictions from *ever*
+                # being cached (and therefore every "selected {method}"
+                # series entry from ever appearing) without leaving an
+                # obvious, attributable trace of why.
+                _LOGGER.exception(
+                    "Diagnostic mode %r extra_fit() failed — its predictions"
+                    " are not refreshed this tick",
+                    mode.key,
+                )
+                result = None
+            if _DIAGNOSTIC_LOG:
+                _LOGGER.warning("DIAG diagnostics_tick_sync: extra_fit() result=%r", result)
             if result is not None:
                 for sensor_id, predictions in result.by_sensor.items():
                     self.cache.set_diagnostic_fit(sensor_id, dict(predictions))
         if mode.compute_cadence() == "slot":
-            self._diagnostic_result_cache = mode.compute()
+            try:
+                self._diagnostic_result_cache = mode.compute()
+            except Exception:
+                # Same rationale as `extra_fit()`'s own try/except just
+                # above — swallow and keep whatever was cached before
+                # (stale, but not permanently `None`) rather than an
+                # uncaught exception silently repeating every tick.
+                _LOGGER.exception(
+                    "Diagnostic mode %r compute() failed — serving the"
+                    " previously cached result, if any, until it recovers",
+                    mode.key,
+                )
 
     def intraday_attributes(self, string_index: int) -> dict[str, Any]:
         """ADR-006 §4's four scalar transparency attributes
@@ -2504,6 +2580,21 @@ class ShadyCoordinator:
             )
 
     def _push_provider_series(self, entity_id: str, now: datetime) -> None:
+        """Push `entity_id`'s provider's current `forward()` series into
+        `cache.py` (ADR-012 §4). Forward-fills first (§4 Amendment,
+        `TASK-0037-patch-3`), the same `_forward_fill_by_day` step
+        `_recompute_string` already applies to its own, separate read of
+        this identical series — `forward()`'s raw samples commonly land
+        on a grid coarser than `FC`'s own 5-minute cache grid (always
+        hourly for every `_PUSH_SOURCED_SHAPES` member, ADR-009 §1a), so
+        without this, only the one exact slot each raw sample happens to
+        land on would ever be written, leaving every other slot in that
+        sample's span permanently `None` for every reader of this raw
+        pushed series (`diagnostics/compare_regressions.py`'s
+        `_selected_value`/`_gather_pool` chief among them) — not just
+        until the next push, since a pushed sensor's `to_index=None`
+        means nothing ever re-queries an already-written index later.
+        """
         provider = self._entity_providers.get(entity_id)
         if provider is None:
             return
@@ -2511,7 +2602,12 @@ class ShadyCoordinator:
         if not series:
             _LOGGER.info("Provider %s returned no forward series to push", entity_id)
             return
-        values = {Cache.index_for(ts): value for ts, value in series}
+        by_day = _forward_fill_by_day(series, now, _tomorrow_end(now))
+        values = {
+            Cache.index_for(datetime(day.year, day.month, day.day, tzinfo=UTC)) + slot: value
+            for day, slot_values in by_day.items()
+            for slot, value in slot_values.items()
+        }
         if not values:
             return
         not_before_index = Cache.index_for(now) + 1

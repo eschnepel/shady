@@ -1,6 +1,6 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-21
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-23
 
 This ADR is kept current in place: §1/§1a describe the current
 `ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
@@ -33,9 +33,13 @@ reverted-to-none) reshaping this briefly required in `sensor.py`. Same day, §2e
 moved the function building that shape (`_xy_series_entry`) off
 `CompareRegressionsMode`'s own module and onto `DiagnosticMode` itself
 (`base.py`) as a shared, inherited `@staticmethod` — the shape §2d/§2c settled
-on is unchanged by this, only which module's code builds it. See ADR-013 for two
-sketched future modes that validate §1a's interface shape against needs beyond
-this ADR's own scope.
+on is unchanged by this, only which module's code builds it. As of 2026-09-23,
+§2a's `shady.select_diagnostic_slot` service is gone entirely — §2f describes
+its replacement, a `datetime` domain entity plus a companion clear button; every
+other line of §2a's own text (the pin's validation/rounding rules, the
+one-diagnosed-slot-per-config-entry scope) is otherwise unchanged, only *how* a
+person sets/clears it moved. See ADR-013 for two sketched future modes that
+validate §1a's interface shape against needs beyond this ADR's own scope.
 
 ______________________________________________________________________
 
@@ -536,23 +540,32 @@ default can be overridden to inspect a specific past **or future** slot instead
 Auto-tracking "the last complete slot" is the default, but a person debugging a
 specific event (e.g. "why did the forecast look off around 14:00 yesterday")
 needs to inspect *that* slot specifically, not whatever is currently most
-recent. A service, `shady.select_diagnostic_slot`, takes a single optional
-parameter:
+recent. `coordinator.py`'s `pin_diagnostic_slot(timestamp)` takes a single
+`timestamp`:
 
-- **`timestamp`** (optional, ISO-8601 datetime): pins the diagnosed slot to the
-  slot containing this timestamp, rounded *down* to the nearest 5-minute
-  boundary (matching the slot grid, ADR-001 §3a). Rejected with a validation
-  error if the resulting slot falls **beyond the available `FC` data** — i.e.
-  past ADR-002 §3's forecast horizon (the remainder of today, plus tomorrow if
-  and only if the baseline provider has published that far) — since beyond that
-  point there is no `FC` value of any kind, not even a forecasted one, for the
-  four methods to evaluate. A slot that has not yet elapsed but *is* within that
-  horizon is accepted: `"selected {method}"` still renders (§2, evaluated
-  against the forward-looking `FC` for that slot), but `"selected actual"` is
-  omitted and `accuracy` is an empty `{}`, since there is no `PV` yet to compare
-  against — see §2 for the exact shape this takes. Omitting `timestamp` entirely
-  (or calling the service with no parameters) **clears** the pin and returns to
-  auto-tracking "last complete slot".
+- **`timestamp`** (a `datetime`): pins the diagnosed slot to the slot containing
+  this timestamp, rounded *down* to the nearest 5-minute boundary (matching the
+  slot grid, ADR-001 §3a). Rejected (returns `False`, no state change) if the
+  resulting slot falls **beyond the available `FC` data** — i.e. past ADR-002
+  §3's forecast horizon (the remainder of today, plus tomorrow if and only if
+  the baseline provider has published that far) — since beyond that point there
+  is no `FC` value of any kind, not even a forecasted one, for the four methods
+  to evaluate. A slot that has not yet elapsed but *is* within that horizon is
+  accepted: `"selected {method}"` still renders (§2, evaluated against the
+  forward-looking `FC` for that slot), but `"selected actual"` is omitted and
+  `accuracy` is an empty `{}`, since there is no `PV` yet to compare against —
+  see §2 for the exact shape this takes. `clear_diagnostic_slot()`, taking no
+  parameter, **clears** the pin and returns to auto-tracking "last complete
+  slot".
+
+**Superseded (mechanism only) — see §2f.** As first written, this section
+described these two coordinator methods called by a single service,
+`shady.select_diagnostic_slot` (omitting its optional `timestamp` parameter was
+that service's own way of calling `clear_diagnostic_slot()`). §2f (2026-09-23)
+replaces that service with a `datetime` domain entity plus a companion clear
+button — `pin_diagnostic_slot`/`clear_diagnostic_slot` themselves, and every
+validation/rounding rule above, are unchanged by that amendment; only which
+HA-facing mechanism calls them did.
 
 **There is exactly one diagnosed-slot state per config entry — not one per
 sensor.** Every diagnostic sensor, the per-string `ShadyDiagnosticsSensor`s (§2)
@@ -560,15 +573,17 @@ and the summed `"sum"` entry (§2b, the same class as of the 2026-09-03
 Amendment) alike, shows the *same* moment: whichever slot `cache.py`'s
 `pinned_reference` (ADR-007a §6) currently names, or "last complete slot" if it
 is unset. There is no per-sensor "is this one pinned or still auto-tracking"
-toggle to keep in sync — the service is not entity- targeted at all, since there
-is only ever one thing, config-entry-wide, for it to affect. This is also what
-makes §2b's sum sensor well-defined in the first place: summing `FC`/`PV` values
-across strings only makes sense if every string's diagnostic is looking at the
-same instant: a per-sensor pin would let strings disagree about *when*, making a
-config-entry-level sum meaningless. In practice, one shared moment also matches
-the motivating use case directly — "what did every string look like around 14:00
-yesterday" is a cross-string comparison at one moment, not several strings each
-frozen at a different, unrelated one.
+toggle to keep in sync — neither `datetime.py`'s `ShadyDiagnosticSlotDateTime`
+nor `button.py`'s `ShadyClearDiagnosticSlotButton` (§2f) is targeted at any
+diagnostic sensor, since there is only ever one thing, config-entry-wide, for it
+to affect. This is also what makes §2b's sum sensor well-defined in the first
+place: summing `FC`/`PV` values across strings only makes sense if every
+string's diagnostic is looking at the same instant: a per-sensor pin would let
+strings disagree about *when*, making a config-entry-level sum meaningless. In
+practice, one shared moment also matches the motivating use case directly —
+"what did every string look like around 14:00 yesterday" is a cross-string
+comparison at one moment, not several strings each frozen at a different,
+unrelated one.
 
 While pinned, the 5-minute tick (§2's "Refresh cadence") never advances *which*
 slot is diagnosed — the pin, not the clock, decides that. For an already-elapsed
@@ -793,6 +808,66 @@ tests.
 Agent (implementation, Phase 6 Scenario C — `TASK-0015b-patch-2` stays `done`,
 unedited; see `tasks/TASK-0015b-patch-3-xy-series-entry-on-base-class.md`).
 
+### 2f — Amendment (2026-09-23): `datetime` domain entity + a companion clear button, superseding the `shady.select_diagnostic_slot` service
+
+**Reason:** §2a as first written exposed the diagnosed-slot pin as a single
+service, `shady.select_diagnostic_slot`, called from Developer Tools -> Actions
+(or an automation/script). That does not fit this project's own established
+pattern for per-config-entry, always-present state — every other piece of
+config-entry-scoped, person-facing state (the active diagnostic mode, §1; a
+manual recalibration trigger, ADR-002 §1/§5) is a thin HA *entity* (`select.py`,
+`button.py`), directly pickable from a dashboard or the entity's own more-info
+dialog, not a bespoke service with no entity of its own to represent it. A
+service is also strictly worse UX for the one thing §2a's `timestamp` parameter
+actually is — a date and time to pick — since Developer Tools -> Actions has no
+dedicated date/time picker widget for a service field the way a dashboard does
+for a `datetime` domain entity's own more-info dialog.
+
+**Decision:** `datetime.py`'s new `ShadyDiagnosticSlotDateTime`
+(`DateTimeEntity`), one per config entry, replaces §2a's service for *setting*
+the pin: `native_value` reads `coordinator.py`'s `pinned_diagnostic_slot()`
+(`None` while auto-tracking, the pinned slot's own start timestamp otherwise);
+`async_set_value` pins via the same `pin_diagnostic_slot()` §2a already
+described, rejecting (raising `HomeAssistantError`) exactly the same
+beyond-the-horizon timestamps the service used to reject via
+`ServiceValidationError` — the validation/rounding rules themselves (rounded
+down to the nearest 5-minute boundary, rejected only beyond ADR-002 §3's
+forecast horizon, a past timestamp always accepted) are entirely unchanged, only
+which HA mechanism surfaces the rejection.
+
+Home Assistant's own `datetime` domain has no "clear to unknown" affordance
+anywhere in its frontend, however — its more-info dialog
+(`more-info-datetime.ts`) always constructs a new `Date` from the entity's
+*current* state and feeds that straight to `datetime.set_value`; there is no
+control that ever calls back with "no value" the way omitting §2a's service
+parameter used to. A single `datetime` entity therefore cannot reproduce "omit
+to clear" on its own. `button.py`'s new `ShadyClearDiagnosticSlotButton`, one
+per config entry alongside the existing `ShadyRecalculateButton`, is the clear
+path instead: pressing it calls `coordinator.clear_diagnostic_slot()` directly,
+the same method the old service's no-`timestamp` branch already called. Two
+entities, not one, because Home Assistant's own entity model has no single
+domain that is both "pick a value" and "clear to no value" — splitting the
+concern across a `datetime` and a `button` mirrors how this project already
+splits "pick one of several options" (`select.py`) from "trigger a one-shot
+action" (`button.py`) rather than inventing a third entity domain of its own.
+
+Neither entity is service-broadcast across every loaded config entry the way the
+old domain-wide service was — each is entry-scoped from the start (one
+`ShadyDiagnosticSlotDateTime`/`ShadyClearDiagnosticSlotButton` pair per config
+entry, following the device grouping every other entity already uses,
+`device.py`), so a person with more than one Shady config entry pins/clears each
+one independently by picking the entity for that entry's own device, rather than
+one call silently applying to every entry as the service's own undocumented
+broadcast reading (§5) used to.
+
+`services.yaml` is deleted along with it — this project registers no service of
+any kind any more, and an empty or absent `services.yaml` is equivalent to Home
+Assistant either way, so there is nothing left for it to declare.
+
+**Decided by:** human (identified the service as "not working" and requested a
+`datetime`-based input instead, matching the original pre-ADR intent), AI
+assistant (design + implementation).
+
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 
 Re-querying the recorder for a slot's full rolling-window history (`window_days`
@@ -931,16 +1006,15 @@ fetching that slot's pool/predicted/actual values, and deciding what aggregate
 entities (if any) to produce alongside the per-string ones are all the mode's
 own job, done inside `compute()`/`extra_fit()`/`sensor_ids()` via the
 coordinator reference each was constructed with. This shaping is pure
-presentation and does not belong in `regression/` or `forecast_adjust.py`. The
-`shady.select_diagnostic_slot` service (§2a) is registered in `__init__.py` (the
-usual home for service registration), is **not** entity-targeted (§2a — there is
-one diagnosed-slot state per config entry, not one per sensor), and its handler
-is a thin wrapper that validates the timestamp and calls that config entry's
-coordinator, which in turn forwards to `cache.py`'s
-`pin_reference`/`clear_reference` (ADR-007a §6) — `cache.py` is still only ever
-reached through `coordinator.py` (ADR-007 §2), the same as every other caller;
-`__init__.py` does not reach into `cache.py` directly, and no new module is
-needed for a single service handler this small.
+presentation and does not belong in `regression/` or `forecast_adjust.py`. As of
+2026-09-23 (§2f), `datetime.py`'s `ShadyDiagnosticSlotDateTime` and
+`button.py`'s `ShadyClearDiagnosticSlotButton` — both entity-scoped to their own
+config entry, unlike the domain-wide service they replace (§2f: no more
+undocumented broadcast-across-every-loaded-entry reading) — are the only callers
+of `coordinator.py`'s `pin_diagnostic_slot`/`clear_diagnostic_slot`;
+`__init__.py` registers no service of any kind any more, and `cache.py` is still
+only ever reached through `coordinator.py` (ADR-007 §2), the same as every other
+caller.
 
 ______________________________________________________________________
 

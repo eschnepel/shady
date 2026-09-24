@@ -124,7 +124,14 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   `linear`/`kernel`/`wls2` (default)/`wls3`. Shared `base.py` protocol:
   `fit(samples) -> FittedModel`,
   `predict(fc) -> (adjusted_forecast, confidence)`. Also reused unchanged for
-  ADR-003c's learned temperature-forecast model.
+  ADR-003c's learned temperature-forecast model. `fit_weighted_polynomial`'s
+  ridge regularization (`linear`/`wls2`/`wls3`'s shared batched
+  `numpy.linalg.solve`) is scaled to each slot's own matrix magnitude, not a
+  bare constant (ADR-008 §1 Amendment, `TASK-0037`) — a fixed epsilon is
+  negligible, and therefore ineffective, once `wls2`/`wls3`'s `FC²`/`FC³`
+  columns push the matrix well past `O(1)`, at which scale a training window
+  with little `FC` variety is genuinely rank-deficient and previously raised
+  `numpy.linalg.LinAlgError` for real.
 - **`forecast_adjust.py`** — applies a string's fitted per-slot model to its raw
   baseline series; calls back into `yield_correction.py`'s reverse transform.
 - **`string_computation.py`** (new 2026-08-31, ADR-014) — pure, shared
@@ -209,12 +216,16 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
   `self`, so a module-level constant no longer works), dispatching to the
   select-chosen `DiagnosticMode`'s `extra_fit()` at the recalibration trigger
   and caching whatever it returns (ADR-004 §5).
-- **`sensor.py`/`config_flow.py`/`select.py`/`button.py`** — thin HA entity
-  glue, all classes prefixed `Shady`. `select.py`'s `ShadyDiagnosticModeSelect`
-  replaces the original `switch.py` as of ADR-004's 2026-08-30 amendment.
+- **`sensor.py`/`config_flow.py`/`select.py`/`button.py`/`datetime.py`** — thin
+  HA entity glue, all classes prefixed `Shady`. `select.py`'s
+  `ShadyDiagnosticModeSelect` replaces the original `switch.py` as of ADR-004's
+  2026-08-30 amendment; `datetime.py`'s `ShadyDiagnosticSlotDateTime` +
+  `button.py`'s `ShadyClearDiagnosticSlotButton` replace the original
+  `shady.select_diagnostic_slot` service as of ADR-004's 2026-09-23 amendment
+  (§2f).
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`; registers
-  the `shady.select_diagnostic_slot` service; owns the startup-ordering guard
-  (ADR-002 §1a, TASK-0016) — `ConfigEntryNotReady`
+  no service of any kind (ADR-004 §2f); owns the startup-ordering guard (ADR-002
+  §1a, TASK-0016) — `ConfigEntryNotReady`
   - `async_at_started` + a bounded `async_schedule_reload` bridge for a config
     entry whose referenced entities haven't loaded yet.
 
@@ -405,10 +416,15 @@ class (not `Protocol`) with `fetch(start,end)` (required, pull), `identify()`
 (optional, discovery), `forward(now)` (optional, push path — returns the
 provider's current forward-looking belief). `coordinator.py` runs **one generic
 loop**: for every provider whose `forward()` is overridden, register a listener
-that calls `forward(now)`, converts to cache's index scheme, and `push(...)`.
-Two concrete providers today: baseline (discovery+normalize) and temperature; PV
-(actual yield) needs **no provider** — it's a plain user-selected `entity_id`
-wired directly into `cache.py`'s `fetch_fn`.
+that calls `forward(now)`, **forward-fills** it across every 5-minute slot in
+each raw sample's span through `_tomorrow_end(now)` (`_forward_fill_by_day`,
+ADR-012 §4 Amendment/`TASK-0037-patch-3`, mirroring ADR-009 §1a's identical
+`_recompute_string` handling — `forward()`'s own series commonly reports on a
+grid coarser than `FC`'s 5-minute cache grid, e.g. hourly for every
+`_PUSH_SOURCED_SHAPES` member), converts to cache's index scheme, and
+`push(...)`. Two concrete providers today: baseline (discovery+normalize) and
+temperature; PV (actual yield) needs **no provider** — it's a plain
+user-selected `entity_id` wired directly into `cache.py`'s `fetch_fn`.
 
 ## 6 — Sensors & entities
 
@@ -448,17 +464,19 @@ wired directly into `cache.py`'s `fetch_fn`.
   `@staticmethod` on the base class (ADR-004 §2e, 2026-09-21, moved there the
   same day from a `CompareRegressionsMode`-local function once it became clear
   every future mode, not just this one, would need the identical shape).
-  Diagnosed slot defaults to "last complete slot"; overridable via the
-  `shady.select_diagnostic_slot` service (not entity-targeted — one
-  diagnosed-slot state per **config entry**). **YAML gotcha (ADR-004 §2d):** the
-  `"y"` key must always be written explicitly quoted in any hand-written YAML
-  representation of this shape — YAML 1.1 resolves a bare `y`/`n`/`yes`/`no` to
-  a boolean, not just `true`/`false`, so an unquoted `y:` silently becomes the
-  boolean key `True`. Python's own `dict`/`str()` round-trip is unaffected
-  (string keys are always quoted on output), so this is a
-  documentation/hand-authoring concern only — covered explicitly in ADR-004 §2d,
-  including why that section's own example is fenced ```` ```yml ```` rather
-  than ```` ```yaml ```` (this repo's own `mdformat` pass reformats
+  Diagnosed slot defaults to "last complete slot"; overridable via
+  `datetime.py`'s `ShadyDiagnosticSlotDateTime`/`button.py`'s
+  `ShadyClearDiagnosticSlotButton` (ADR-004 §2f, superseding the original
+  `shady.select_diagnostic_slot` service — neither entity is targeted at any
+  diagnostic sensor; one diagnosed-slot state per **config entry**). **YAML
+  gotcha (ADR-004 §2d):** the `"y"` key must always be written explicitly quoted
+  in any hand-written YAML representation of this shape — YAML 1.1 resolves a
+  bare `y`/`n`/`yes`/`no` to a boolean, not just `true`/`false`, so an unquoted
+  `y:` silently becomes the boolean key `True`. Python's own `dict`/`str()`
+  round-trip is unaffected (string keys are always quoted on output), so this is
+  a documentation/hand-authoring concern only — covered explicitly in ADR-004
+  §2d, including why that section's own example is fenced ```` ```yml ````
+  rather than ```` ```yaml ```` (this repo's own `mdformat` pass reformats
   `yaml`-tagged fences and silently strips exactly this quoting, not knowing
   it's load-bearing).
 - **6 aggregate sensors** (one/entry, ADR-005): `ShadyPvSumSensor`,

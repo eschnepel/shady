@@ -142,6 +142,78 @@ class TestClampInvariantAcrossAllStrategies:
                 )
 
 
+# -- Ridge regularization scale robustness (TASK-0037 follow-up) -----------
+
+
+class TestRidgeRegularizationHandlesLargeMagnitudeCollinearData:
+    """A fixed, absolute ridge epsilon only prevents an exactly-singular
+    normal-equations matrix while that matrix's own entries stay near
+    `O(1)` — real `FC` values (hundreds of watts) raised to the `wls3`
+    cubic power make `xt_w_x`'s own entries reach `~1e14-1e16`, at which
+    scale a `1e-8` ridge is negligible and a genuinely rank-deficient
+    matrix (every training day sharing the same, or a near-identical,
+    `FC` — plausible for a short history window or a slot where `FC`
+    rarely varies) raises `numpy.linalg.LinAlgError: Singular matrix`
+    for real, not just in theory (confirmed while root-causing this:
+    `wls3.fit()` raised exactly this for a realistic 3-day, single-value
+    `FC` pool). `base_mod.fit_weighted_polynomial`'s ridge is scaled to
+    each slot's own matrix magnitude specifically to fix this."""
+
+    def test_identical_fc_across_every_training_day_does_not_raise(self) -> None:
+        # Every training day (and every neighbor offset) sees the exact
+        # same FC — the worst-case fully rank-deficient design matrix a
+        # real slot could plausibly produce (e.g. a short history
+        # window, or FC genuinely constant for this time of day).
+        window_days = 3
+        n_slots = 1
+        fc_value = 500.0
+        fc_by_offset = {0: np.full((n_slots, window_days), fc_value)}
+        pv_by_offset = {0: np.full((n_slots, window_days), fc_value)}
+
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)  # must not raise LinAlgError
+            adjusted, confidence = model.predict(np.full(n_slots, fc_value))
+            assert adjusted.shape == (n_slots,)
+            assert confidence.shape == (n_slots,)
+            assert np.all(np.isfinite(adjusted))
+
+    def test_cold_start_all_zero_weight_still_regularized(self) -> None:
+        """The original ridge's own named case (an all-zero-weight
+        row, e.g. every sample invalid) must still be handled — the
+        scaled ridge falls back to exactly the original constant
+        behavior for a near-zero-magnitude matrix, not just for a
+        large one."""
+        window_days = 3
+        n_slots = 1
+        fc_by_offset = {0: np.full((n_slots, window_days), np.nan)}
+        pv_by_offset = {0: np.full((n_slots, window_days), np.nan)}
+
+        pool = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=0,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.0,
+        )
+        assert np.all(pool.confidence == 0.0)  # confirms the cold-start case
+
+        for strategy in ALL_STRATEGIES:
+            model = strategy.fit(pool)  # must not raise LinAlgError
+            adjusted, _confidence = model.predict(np.full(n_slots, 500.0))
+            # Cold-start passthrough (regression/base.py's
+            # `passthrough_where_no_confidence`) — falls back to FC
+            # unmodified, not a numerically-arbitrary regularized fit.
+            assert adjusted[0] == pytest.approx(500.0)
+
+
 # -- AC2: wls2/wls3 extrapolation safety ------------------------------------
 
 
