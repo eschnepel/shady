@@ -1,16 +1,127 @@
-"""Constants for the Shady integration."""
+"""Constants for the Shady integration.
+
+Config-entry data keys and defaults below mirror ADR-010's field list
+exactly (§7 of `tasks/adr-summary.md`). Grouped in the same order ADR-010
+presents them: global (`baseline`/`regression_tuning`/`advanced_optional`)
+fields first, then per-string (`string_settings_edit`) fields.
+"""
+
+from __future__ import annotations
 
 DOMAIN = "shady"
 
-# Placeholder for config-flow keys, to be finalized as the config flow is
-# implemented (see adr/001-empirical-shading-model.md §6 ff.), e.g.:
-# CONF_BASELINE_ENTITY = "baseline_entity"
-# CONF_BASELINE_ATTRIBUTE = "baseline_attribute"
-# CONF_TEMPERATURE_AWARE = "temperature_aware"
-# CONF_TRAINING_WINDOW_DAYS = "training_window_days"
-# CONF_REGRESSION_METHOD = "regression_method"
-# CONF_SMOOTHING_RADIUS = "smoothing_radius"
-# CONF_NEIGHBOR_CUTOFF = "neighbor_cutoff"
-# CONF_INTRADAY_CUTOFF = "intraday_cutoff"
-# CONF_ACTUAL_YIELD_ENTITY = "actual_yield_entity"  # per string
-# CONF_CONVERTER_LIMIT = "converter_limit"  # per string, optional
+# `hass.data` key for the shared, restart-persisted service-response cache
+# (ADR-007 §1a, `TASK-0036`) — one instance per `hass`, shared by
+# `coordinator.py`'s Forecast.Solar poll (ADR-012 §4b) and
+# `providers/discovery.py`'s config-flow-time candidate sampling (ADR-009
+# §4 Amendment), the latter running with no config entry (and so no
+# coordinator, no per-entry `Cache`) yet in existence.
+SERVICE_RESPONSE_CACHE_HASS_KEY = f"{DOMAIN}_service_response_cache"
+
+# Regression methods shared by the shading model (ADR-001 §2) and the
+# temperature-forecast learned model (ADR-003c §2) — same four
+# `regression/` strategies, two independent method choices.
+REGRESSION_METHODS: tuple[str, ...] = ("linear", "kernel", "wls2", "wls3")
+DEFAULT_REGRESSION_METHOD = "wls2"
+
+# Intraday deviation-correction modes (ADR-006 §1).
+INTRADAY_CORRECTION_MODES: tuple[str, ...] = ("off", "ramping", "blending")
+DEFAULT_INTRADAY_CORRECTION_MODE = "off"
+
+# Diagnostic modes (ADR-004 §1, TASK-0015b) — `select.py`'s
+# `ShadyDiagnosticModeSelect` option list, `coordinator.py`'s
+# `_diagnostic_modes` registry, and `sensor.py`'s per-mode lookup all
+# key off this one list rather than any hard-coded mode name; adding a
+# second entry here (ADR-013's sketched future modes) needs no other
+# code change beyond registering that mode's own `DiagnosticMode`
+# subclass. `"off"` is reserved — never registered in
+# `coordinator._diagnostic_modes` (ADR-004 §1: the absence of an active
+# mode, not a subclass with a no-op body).
+DIAGNOSTIC_MODES: tuple[str, ...] = ("off", "compare_regressions")
+DEFAULT_DIAGNOSTIC_MODE = "off"
+
+# Sentinel used by a config-flow "baseline candidate" dropdown to mean
+# "none of these — enter the entity/attribute manually" (ADR-009 §3),
+# and by a per-string "baseline candidate override" dropdown to mean
+# "no override — use the global default" (ADR-010's `add_string` step).
+BASELINE_CANDIDATE_MANUAL = "__manual__"
+BASELINE_CANDIDATE_NONE = "__none__"
+
+# Sentinel used by the `string_settings_hub` step's dropdown (`TASK-0035`)
+# to mean "done editing strings, move on" — distinct from any real
+# entity_id, which is always domain-qualified (`sensor.foo`) and can
+# therefore never collide with this sentinel.
+STRING_SETTINGS_HUB_DONE = "__done__"
+
+# Sentinel used by a per-string "temperature source override" field to
+# mean "explicitly disable derating for this string", distinct from
+# leaving the field empty ("use the global default") — ADR-010's
+# `add_string_advanced` step / ADR-003b §1a.
+TEMPERATURE_SOURCE_NONE = "none"
+
+# --- "settings" step (global, first) — ADR-010 ---
+CONF_BASELINE_ENTITY_ID = "baseline_entity_id"
+CONF_BASELINE_ATTRIBUTE = "baseline_attribute"
+CONF_BASELINE_SHAPE = "baseline_shape"
+# ADR-009 §1c Amendment / ADR-012 §2a Amendment (2026-09-15, `TASK-0034`):
+# a `forecast_solar`-shaped baseline candidate's linked, recorder-backed
+# history entity_id — never user-entered, always derived alongside
+# `entity_id`/`attribute`/`shape` from the confirmed `BaselineCandidate`.
+# `None` for every other shape. Not a distinct config-flow form field (see
+# `config_flow.py`'s `_normalize_settings`/`_build_current_string`).
+CONF_BASELINE_HISTORY_ENTITY_ID = "baseline_history_entity_id"
+CONF_TEMPERATURE_AWARE = "temperature_aware"
+CONF_WINDOW_DAYS = "window_days"
+CONF_REGRESSION_METHOD = "regression_method"
+CONF_SMOOTHING_RADIUS = "smoothing_radius"
+CONF_NEIGHBOR_FITTING_CUTOFF = "neighbor_fitting_cutoff"
+CONF_RECENCY_DECAY_MAX = "recency_decay_max"
+CONF_CLIPPING_THRESHOLD = "clipping_threshold"
+CONF_DEFAULT_TEMPERATURE_SOURCE = "default_temperature_source"
+CONF_MAX_UPLIFT_C = "max_uplift_c"
+CONF_WEATHER_FORECAST_TEMPERATURE_ENTITY = "weather_forecast_temperature_entity"
+CONF_TEMPERATURE_REGRESSION_METHOD = "temperature_regression_method"
+CONF_INTRADAY_CORRECTION_MODE = "intraday_correction_mode"
+CONF_INTRADAY_CORRECTION_CUTOFF = "intraday_correction_cutoff"
+CONF_WINDOW_SLOTS = "window_slots"
+CONF_RAMP_SLOTS = "ramp_slots"
+
+DEFAULT_WINDOW_DAYS = 28
+DEFAULT_SMOOTHING_RADIUS = 1
+DEFAULT_NEIGHBOR_FITTING_CUTOFF = 0.25
+DEFAULT_RECENCY_DECAY_MAX = 0.5
+DEFAULT_CLIPPING_THRESHOLD = 0.98
+DEFAULT_MAX_UPLIFT_C = 25
+DEFAULT_INTRADAY_CORRECTION_CUTOFF = 0.10
+DEFAULT_WINDOW_SLOTS = 24
+DEFAULT_RAMP_SLOTS = 12
+
+# --- per-string settings, ADR-010's `string_settings_edit` step. Stored
+# under CONF_STRINGS on the config entry as a dict keyed by each string's
+# own `entity_id` (`TASK-0035`) — not a list: the entity_id *is* the
+# string's identity, resolved once in the "strings" multi-select step.
+CONF_STRINGS = "strings"
+
+# `CONF_STRING_NAME` is `vol.Optional` (`TASK-0035`) — a string's identity
+# is its `entity_id` (the `CONF_STRINGS` dict key below), not this label.
+CONF_STRING_NAME = "name"
+CONF_STRING_BASELINE_ENTITY_ID = "baseline_entity_id"
+CONF_STRING_BASELINE_ATTRIBUTE = "baseline_attribute"
+CONF_STRING_BASELINE_SHAPE = "baseline_shape"
+# Per-string override counterpart of `CONF_BASELINE_HISTORY_ENTITY_ID` above
+# (ADR-009 §1c Amendment / ADR-012 §2a Amendment, `TASK-0034`) — same key
+# string, different (per-string) dict namespace, matching the existing
+# `CONF_STRING_BASELINE_*` trio's own convention.
+CONF_STRING_BASELINE_HISTORY_ENTITY_ID = "baseline_history_entity_id"
+CONF_STRING_TEMPERATURE_AWARE = "temperature_aware"
+# No `CONF_STRING_ACTUAL_YIELD_ENTITY`/`CONF_STRING_CONFIGURE_ADVANCED` here
+# (`TASK-0035`, ADR-010): a string's actual-yield entity is the `CONF_STRINGS`
+# dict key itself, not a stored field — never duplicated inside its own
+# settings dict — and the "configure advanced corrections?" gate is gone,
+# every `string_settings_edit` field is always shown.
+CONF_STRING_CONVERTER_LIMIT_W = "converter_limit_w"
+CONF_STRING_TEMPERATURE_SOURCE = "temperature_source_entity_id"
+CONF_STRING_TEMPERATURE_COEFFICIENT = "temperature_coefficient_pct_per_c"
+CONF_STRING_RATED_DC_CAPACITY_WP = "rated_dc_capacity_wp"
+
+DEFAULT_STRING_TEMPERATURE_COEFFICIENT = -0.4

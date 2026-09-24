@@ -1,314 +1,594 @@
 # ADR Summary — Architectural Ground Truth for Shady
 
-**Project:** Shady — a Home Assistant custom integration (`custom_components/shady`)
-that adjusts an existing PV yield forecast for local shading, learned
-empirically (no horizon-profile input, no sun-geometry calculation).
-**Source of truth:** `adr/INDEX.md` lists every ADR and its status. This
-file is a condensed, implementation-facing digest — when in doubt, the
-ADR text wins. All 17 ADRs are `Accepted` except ADR-003, which is
-`Superseded` (split into ADR-003a/ADR-003b, content fully absorbed).
-**Current repo state:** brainstorming-phase skeleton only —
-`custom_components/shady/__init__.py`, `const.py`, `manifest.json`,
-`translations/{en,de}.json` exist as placeholders with TODOs; no other
-module exists yet. `tests/__init__.py` is empty.
+**Project:** Shady — a Home Assistant custom integration
+(`custom_components/shady`) that adjusts an existing PV yield forecast for local
+shading, learned empirically (no horizon-profile input, no sun-geometry
+calculation). **Source of truth:** `adr/INDEX.md` lists every ADR and its
+status. This file is a condensed, implementation-facing digest — when in doubt,
+the ADR text wins. All 17 ADRs are `Accepted` except ADR-003, which is
+`Superseded` (split into ADR-003a/ADR-003b, content fully absorbed). **Current
+repo state (as of 2026-09-05):** every task in `tasks/INDEX.md` is `done` (or
+`superseded`, slug retired) — the full module chain in §2 below exists, tested,
+`mypy --strict`/`ruff` clean, 414/414 tests passing. `TASK-0016` (this file's
+own last dependency) closed out `__init__.py`, the final module; no
+`todo`/`in-progress` work remains anywhere in the project.
 
----
+______________________________________________________________________
 
 ## 1 — Tech stack & tooling
 
-- **Language:** Python ≥3.14 (repo), mypy target 3.14 — raised from
-  ≥3.11/3.12 by ADR-000 Amendment (2026-08-22), which is the required
-  minimum since HA 2026.3.x. Home Assistant custom integration, `iot_class:
-  local_polling`, HACS-packaged (`hacs.json` `homeassistant` minimum
-  raised to `2026.3` for the same reason).
+- **Language:** Python ≥3.14 (repo), mypy target 3.14 — raised from ≥3.11/3.12
+  by ADR-000 Amendment (2026-08-22), which is the required minimum since HA
+  2026.3.x. Home Assistant custom integration, `iot_class: local_polling`,
+  HACS-packaged (`hacs.json` `homeassistant` minimum raised to `2026.3` for the
+  same reason).
 - **Numeric backend:** `numpy>=1.26.0`, declared in `manifest.json`
-  `requirements` and `pyproject.toml` — batched (never naive per-slot)
-  across all four `regression/` strategies, both `fit()` and `predict()`
-  (ADR-008). Benchmarked on the real target platform (Raspberry Pi 5),
-  not just dev x86.
+  `requirements` and `pyproject.toml` — batched (never naive per-slot) across
+  all four `regression/` strategies, both `fit()` and `predict()` (ADR-008).
+  Benchmarked on the real target platform (Raspberry Pi 5), not just dev x86.
+  **Every `numpy.ndarray`-valued type is written
+  `numpy.typing.NDArray[np.float64]`, never a bare `np.ndarray`** — ADR-000 §4
+  Amendment (2026-08-22); TASK-0005/TASK-0007 retrofitted via patch tasks
+  (Scenario C), every task from TASK-0006 on uses it from the outset.
 - **Config-flow validation:** `voluptuous` (dev dependency; standard HA
   pattern).
-- **Gate (CI, `ADR-000 §1`):** `ruff format`, `ruff check`, `mypy --strict`
-  (`mypy.ini`, `--config-file mypy.ini`), `pytest` — all four must pass
-  with zero errors. `mypy --strict`: every function/method fully
-  annotated, including private helpers and `-> None`.
+- **Gate (CI, `ADR-000 §1`, `.github/workflows/code_checker.yml`):**
+  `ruff format`, `ruff check`, `mypy --strict` (config from `mypy.ini`, read
+  automatically — not passed as an explicit `--config-file` flag), `pytest` —
+  the first three run via `.pre-commit-config.yaml`'s hooks
+  (`pre-commit run --all-files`), `pytest` as a separate step; all four must
+  pass with zero errors. `mypy --strict`: every function/method fully annotated,
+  including private helpers and `-> None`.
 - **HA-stub gap handling (`ADR-000 §2`):** untyped HA base classes cause
-  `misc`/`untyped-decorator` mypy noise. Suppressed **per-file** via
-  `mypy.ini` (`warn_unused_ignores = False` on exactly the HA-facing
-  modules: `config_flow`, `sensor`, `coordinator`, `switch`, `button`)
-  plus targeted `# type: ignore[<code>]` on the *exact* flagged line
-  (class statement for `misc`, the `@callback` line itself for
-  `untyped-decorator`). Never a bare `# type: ignore`, never a global
-  `disable_error_code`.
+  `misc`/`untyped-decorator` mypy noise. Suppressed **per-file** via `mypy.ini`
+  (`warn_unused_ignores = False` on exactly the HA-facing modules:
+  `config_flow`, `sensor`, `coordinator`, `select`, `button` — `select.py`
+  replaces `switch.py` as of ADR-004's 2026-08-30 amendment) plus targeted
+  `# type: ignore[<code>]` on the *exact* flagged line (class statement for
+  `misc`, the `@callback` line itself for `untyped-decorator`). Never a bare
+  `# type: ignore`, never a global `disable_error_code`.
+- **Static analysis (`ADR-000 §1a`, added 2026-09-19):** CodeQL
+  (`+security-and-quality`) via `.github/workflows/codeql.yml`, split into a
+  `main`/`tests` path-scoped matrix (`codeql-config-main.yml` /
+  `codeql-config-tests.yml`) so `query-filters` — which match on rule id only,
+  never file path — can differ per surface. Two rules excluded, each on one
+  surface only: `py/ineffectual-statement` (main only — `...`-bodied
+  `@overload`/`Protocol` stubs in `cache.py`/`coordinator_like.py`, a known
+  CodeQL false positive) and `py/catch-base-exception` (tests only — one
+  deliberate broad catch in `test_init.py`; inline `codeql[...]` suppression
+  comments do not actually work with this toolchain, so the query-filter is the
+  real suppression, not the code comment).
 
 ## 2 — Module boundaries & dependency direction (`ADR-000 §3`, updated by ADR-003b/007/012)
 
-Dependencies point **upward only** (pure logic never imports HA-facing
-code or `homeassistant.*`, except `providers/discovery.py` and
-`providers/temperature.py`, which read `hass.states` only — no writes):
+Dependencies point **upward only** (pure logic never imports HA-facing code or
+`homeassistant.*`, except `providers/discovery.py` and
+`providers/temperature.py`, which read `hass.states`/`hass.config_entries`/
+`hass.services`/the entity registry only — no writes, no recorder access, which
+stays `coordinator.py`'s alone; ADR-009 §4/§1c-Amendment, ADR-012 §2a/§5):
 
 ```
 providers/ (discovery.py, normalize.py, base.py, temperature.py)
   → yield_correction.py
     → regression/ (base.py, kernel.py, linear.py, wls2.py, wls3.py)
       → forecast_adjust.py  -- (reverse edge back into yield_correction.py, ADR-003b §1b)
-        → aggregation.py
-          → cache.py
-            → coordinator.py
-              → sensor.py / config_flow.py / switch.py / button.py
-                → __init__.py
+        → string_computation.py  -- also reads regression/, forecast_adjust.py, yield_correction.py directly (ADR-014)
+          → aggregation.py
+            → diagnostics/ (base.py, compare_regressions.py)  -- also reads string_computation.py directly (ADR-014); as of 2026-09-01, DiagnosticMode holds a construction-time coordinator reference, typed since 2026-09-13 as a local ShadyCoordinatorLike Protocol (ADR-004 §1a) rather than an import of coordinator.py itself, TYPE_CHECKING-guarded or otherwise -- diagnostics/ is no longer in the zero-mocking tier; that Protocol plus RegressionSettings/StringComputationConfig/DiagnosedSlot (moved from coordinator.py 2026-09-13 -- they exist only to cross this boundary, and don't map 1:1 onto string_computation.py/regression/base.py despite the names) live in coordinator_like.py, next to coordinator.py itself (split out of diagnostics/base.py 2026-09-14, then moved out of diagnostics/ entirely the same day -- what it describes is ShadyCoordinator's own shape, diagnostics/ just being its one consumer so far)
+            → cache.py  -- providers/discovery.py also imports ServiceResponseCache/service_call_key directly (2026-09-19, TASK-0036), the same narrow exception diagnostics/compare_regressions.py's own SLOTS_PER_DAY import already established
+              → coordinator.py  -- reads diagnostics/ via a per-instance mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014); passes itself into each DiagnosticMode at construction (ADR-004 §5, 2026-09-01)
+                → sensor.py / config_flow.py / select.py / button.py
+                  → __init__.py
 ```
 
 - **`providers/`** — `discovery.py`+`normalize.py`: baseline (unshaded FC)
-  discovery/scoring/normalization (ADR-009). `base.py`: shared provider
-  base class + two HA-agnostic helpers (ADR-012 §1/§1a). `temperature.py`:
+  discovery/scoring/normalization (ADR-009). Two `weather.*` proxy-baseline
+  shapes: sunshine-duration (used directly, unscaled — a linear regression
+  absorbs an arbitrary scale on its own, ADR-009 §1-Amendment) and
+  cloud-coverage (sign-inverted via `invert_cloud_coverage`, since a scale
+  change alone cannot flip a series' sign). `base.py`: shared provider base
+  class + two HA-agnostic helpers (ADR-012 §1/§1a). `temperature.py`:
   temperature-source resolution (ADR-003b §1a, ADR-012). Pure-ish tier;
   zero-mocking tested except `discovery.py`/`temperature.py` (real `hass`
-  fixture).
-- **`yield_correction.py`** — optional per-string clipping exclusion
-  (ADR-003a) + temperature derating (ADR-003b), no-op if unconfigured.
-  Called forward (training prep) by `regression/` callers and in reverse
-  (prediction finishing) by `forecast_adjust.py`.
+  fixture). **2026-09-15 (ADR-009 §1c/ADR-012 §2a Amendment, `TASK-0034`):** a
+  `forecast_solar`-shaped `BaselineCandidate`/`BaselineProvider` now also
+  carries an optional `history_entity_id` — that config entry's own companion
+  "power production now" sensor, resolved via the entity registry at discovery
+  time (never by name-guessing) — giving that shape's cold-start training pool a
+  genuine recorder-backed history source instead of relying solely on Shady's
+  own future-looking pushes aging into the past. Every other shape leaves
+  `history_entity_id` unset (`None`); see ADR-009 §1c for why (a linked entity
+  is only safe when it demonstrably shares the same physical quantity,
+  continuously sampled — true for Forecast.Solar's own companion sensor, not
+  assumed true for a third-party `sensor_dict`/ `sensor_list` candidate's own
+  state). `coordinator.py`'s `_fetch_fn` routes a resolved `history_entity_id`
+  to a new, recorder-backed `_fetch_provider_history_statistics` method instead
+  of `provider.fetch()` — mirrors `_fetch_actual_yield_statistics` (§2 below is
+  `cache.py`'s design; the recorder-read pattern itself is ADR-012 §2/§2a) never
+  a second, bespoke recorder-read path. **2026-09-17 (ADR-009 §1c further
+  Amendment, `TASK-0034-patch-1`):** that discovery-time resolution is one-shot
+  and gets persisted into config entry data — if it lost a one-time race against
+  Forecast.Solar's own companion-sensor registration, `None` was what got
+  persisted, forever, regardless of the sensor existing by any later restart.
+  `coordinator.py`'s `async_startup` now retries once
+  (`_resolve_stale_forecast_solar_history_entities`, before that same run's own
+  backfill) and self-heals the persisted `None` on success — never a new,
+  ongoing poll, just closing the one gap a one-time-only resolution left open.
+  rather than sharing or modifying it. `forward()`/the live push path (ADR-012
+  §4b) is unaffected.
+- **`yield_correction.py`** — optional per-string clipping exclusion (ADR-003a)
+  \+ temperature derating (ADR-003b), no-op if unconfigured. Called forward
+  (training prep) by `string_computation.py` and in reverse (prediction
+  finishing) by `forecast_adjust.py`. Has no internal imports of its own.
 - **`regression/`** — pluggable per-string, per-5-min-slot strategy:
   `linear`/`kernel`/`wls2` (default)/`wls3`. Shared `base.py` protocol:
-  `fit(samples) -> FittedModel`, `predict(fc) -> (adjusted_forecast, confidence)`.
-  Also reused unchanged for ADR-003c's learned temperature-forecast model.
-- **`forecast_adjust.py`** — applies a string's fitted per-slot model to
-  its raw baseline series; calls back into `yield_correction.py`'s reverse
-  transform.
+  `fit(samples) -> FittedModel`,
+  `predict(fc) -> (adjusted_forecast, confidence)`. Also reused unchanged for
+  ADR-003c's learned temperature-forecast model. `fit_weighted_polynomial`'s
+  ridge regularization (`linear`/`wls2`/`wls3`'s shared batched
+  `numpy.linalg.solve`) is scaled to each slot's own matrix magnitude, not a
+  bare constant (ADR-008 §1 Amendment, `TASK-0037`) — a fixed epsilon is
+  negligible, and therefore ineffective, once `wls2`/`wls3`'s `FC²`/`FC³`
+  columns push the matrix well past `O(1)`, at which scale a training window
+  with little `FC` variety is genuinely rank-deficient and previously raised
+  `numpy.linalg.LinAlgError` for real.
+- **`forecast_adjust.py`** — applies a string's fitted per-slot model to its raw
+  baseline series; calls back into `yield_correction.py`'s reverse transform.
+- **`string_computation.py`** (new 2026-08-31, ADR-014) — pure, shared
+  per-string fit/predict computation, extracted from `coordinator.py`:
+  `REGRESSION_STRATEGIES` registry, `apply_training_corrections` (clipping +
+  temperature derating, per offset), `fit_string_model` (build-pool + strategy
+  fit), `predict_string_forecast` (reverse-transform + final clamp, in that
+  order). Slot-count-agnostic — serves both `coordinator.py`'s 288-slot sweep
+  and `diagnostics/`'s single diagnosed slot with the same functions, no branch
+  needed.
 - **`aggregation.py`** — pure cross-string sums, day arrays, trapezoidal
-  energy-increment calc, diagnostic accuracy calc, intraday-correction
-  math (ADR-005, ADR-006 §5).
+  energy-increment calc, diagnostic accuracy calc (mode-independent, called by
+  `diagnostics/`, ADR-004 §5), intraday-correction math (ADR-005, ADR-006 §5).
+- **`diagnostics/`** (`base.py`, `compare_regressions.py`, new 2026-08-30) —
+  `DiagnosticMode` base class (mirrors `providers/base.py`'s `Provider` ABC,
+  ADR-012 §1) + one concrete mode, `CompareRegressionsMode` (ADR-004
+  §1/§2/§2a/§2b/§4, moved here verbatim from the original inline design).
+  `compute()` (required) shapes the sensor payload — as of the 2026-09-03
+  amendment, including a `sensor_id="sum"` entry it builds itself, not
+  `sensor.py`; `extra_fit()` (optional, default `None`) does whatever extra
+  per-slot fitting the mode needs, via `string_computation.py` directly
+  (ADR-014). Also declares `fit_cadence()`/`compute_cadence()` (required,
+  `"daily" | "hourly" | "slot"` — ADR-004 §5, 2026-09-01; `compute_cadence()`
+  now actually read by `coordinator.py` to drive its own `compute()`-result
+  cache, ADR-004 §5, 2026-09-03) and `sensor_ids()` (required, ADR-004 §5,
+  2026-09-03 — every `(sensor_id, name)` pair the mode will ever produce,
+  without calling `compute()`). **As of the 2026-09-01 amendment, no longer
+  pure:** every `DiagnosticMode` is constructed with a coordinator reference
+  (`self._coordinator`, typed as the `ShadyCoordinatorLike` Protocol below since
+  2026-09-13 — in practice the owning `ShadyCoordinator`), and reaches its
+  public interface directly (`cache`, `strings()`, …) for whatever a mode needs
+  — `coordinator.py` no longer pre-builds a mode's full input context, only
+  persists whatever `extra_fit()` returns. Still reuses `aggregation.py`'s
+  accuracy function unmodified — see ADR-013 (Proposed, not scheduled) for two
+  further modes sketched to confirm this base class doesn't need to change again
+  for a whole-day scope (ADR-013's own 2026-09-01 note confirms the
+  cadence-getter/coordinator-access change doesn't affect that conclusion). **As
+  of 2026-09-13:** `DiagnosticMode.__init__` takes `ShadyCoordinatorLike`, a
+  `Protocol` in `base.py` declaring exactly the 7 members a mode calls, not
+  `ShadyCoordinator` by name — resolves a CodeQL `py/unsafe-cyclic-import`
+  finding on the prior `TYPE_CHECKING`-guarded `ShadyCoordinator` import (that
+  query flags any module-level import regardless of a `TYPE_CHECKING` guard, so
+  the guard didn't suppress it); `ShadyCoordinator` satisfies the Protocol
+  structurally, unchanged itself. **As of 2026-09-21 (ADR-004 §2e):** also
+  carries `_xy_series_entry(name, points)`, a shared, inherited `@staticmethod`
+  (not abstract — every mode wanting a `plotly-graph`-shaped `series` entry
+  wants the identical shape) every concrete mode can call for its own `series`
+  output — moved here from `CompareRegressionsMode`'s own module the same day it
+  shipped, once it became clear ADR-013's sketched future modes would need the
+  identical shape, not a per-mode reimplementation risking drift.
 - **`cache.py`** — pure, no `hass` import, injected `fetch_fn`. Index-
-  addressable time-series store (generic over `sensor_id`) + simple
-  dict stores (model cache, ramp state) + 2 restart-persisted integral
+  addressable time-series store (generic over `sensor_id`) + fitted-model cache
+  (`get_model`/`set_model`/`invalidate_models`, explicit validity tracking,
+  TASK-0021) + simple dict store (ramp state) + 2 restart-persisted integral
   totals. See §5 below.
-- **`coordinator.py`** — the only module that imports `cache.py`.
-  Registers all scheduling triggers + one generic push listener per
-  `forward()`-implementing provider; orchestrates the pure layer; pushes
-  to sensors.
-- **`sensor.py`/`config_flow.py`/`switch.py`/`button.py`** — thin HA
-  entity glue, all classes prefixed `Shady`.
-- **`__init__.py`** — wires platforms + coordinator into `hass.data`;
-  registers the `shady.select_diagnostic_slot` service.
+- **`coordinator.py`** — the only module that holds a `Cache` instance and calls
+  its instance methods (`diagnostics/compare_regressions.py` separately imports
+  the plain module-level constant `SLOTS_PER_DAY` from `cache.py`, not the
+  `Cache` class; `coordinator_like.py`'s `ShadyCoordinatorLike` Protocol imports
+  `Cache` `TYPE_CHECKING`-only, for its `cache` property's annotation — real at
+  no point, since `test_diagnostics_base.py` file-path-loads `base.py` in
+  isolation, which transitively reaches `coordinator_like.py`'s own
+  `ShadyCoordinatorLike` reference, and a real import there would break that
+  load). Exposes its `Cache` instance via a read-only `cache` property (getter,
+  no setter, TASK-0023) — reassignment raises `AttributeError`, method calls on
+  the returned object are unrestricted. Six of `sensor.py`'s nine entity classes
+  reach it via `coordinator.py` wrapper methods (`pv_sum()`, `fc_sum()`, etc.);
+  three (`ShadyForecastSensor`, `ShadyPvEnergyIntegralSensor`,
+  `ShadyFcEnergyIntegralSensor`) are a reviewed exception calling
+  `coordinator.cache.<method>(...)` directly (TASK-0011, confirmed by
+  `AUDIT-0009`/ADR-000 §3-Amendment). Registers all scheduling triggers + one
+  generic push listener per `forward()`-implementing provider; reads raw data
+  from `cache.py`/ `providers/` and hands off to `string_computation.py`
+  (ADR-014) for the actual fit/correction/predict computation — no longer
+  performs that computation itself as of ADR-014 (previously
+  `_apply_training_corrections` + inlined build-pool/fit/ reverse-transform
+  sequences); pushes results to sensors. Exposes `missing_required_entities()`
+  for `__init__.py`'s startup-ordering guard (ADR-002 §1a). Also holds
+  `_diagnostic_modes` (mirrors `string_computation.py`'s `REGRESSION_STRATEGIES`
+  dict in shape, but is a **per-instance** attribute built in `__init__` as of
+  the 2026-09-01 amendment — each `DiagnosticMode` is now constructed with
+  `self`, so a module-level constant no longer works), dispatching to the
+  select-chosen `DiagnosticMode`'s `extra_fit()` at the recalibration trigger
+  and caching whatever it returns (ADR-004 §5).
+- **`sensor.py`/`config_flow.py`/`select.py`/`button.py`/`datetime.py`** — thin
+  HA entity glue, all classes prefixed `Shady`. `select.py`'s
+  `ShadyDiagnosticModeSelect` replaces the original `switch.py` as of ADR-004's
+  2026-08-30 amendment; `datetime.py`'s `ShadyDiagnosticSlotDateTime` replaces
+  the original `shady.select_diagnostic_slot` service as of ADR-004's 2026-09-23
+  amendment (§2f); `switch.py`'s `ShadyFollowDiagnosticSlotSwitch` (auto-follow
+  on/off) is its companion as of ADR-004's 2026-09-24 amendment (§2g), replacing
+  the short-lived `ShadyClearDiagnosticSlotButton`.
+- **`__init__.py`** — wires platforms + coordinator into `hass.data`; registers
+  no service of any kind (ADR-004 §2f); owns the startup-ordering guard (ADR-002
+  §1a, TASK-0016) — `ConfigEntryNotReady`
+  - `async_at_started` + a bounded `async_schedule_reload` bridge for a config
+    entry whose referenced entities haven't loaded yet.
 
 **Testing (`ADR-000 §6`):** every module in `providers/base.py`,
 `providers/normalize.py`, `yield_correction.py`, `regression/`,
 `forecast_adjust.py`, `aggregation.py`, `cache.py` — zero mocking, no
 `unittest.mock`, no fake `hass`. Loaded via direct file-path import
-(`importlib.util.spec_from_file_location`), **not** package import, to
-avoid pulling in `homeassistant.*` via `__init__.py`. Dynamically-loaded
-class names used as type annotations need a `TYPE_CHECKING`-only static
-import mirroring the runtime path. Invariant checks (e.g. `0 <=
-corrected_output <= min(FC, inverter_limit)`) asserted explicitly, every
-scenario. `providers/discovery.py` and `providers/temperature.py` are the
+(`importlib.util.spec_from_file_location`), **not** package import, to avoid
+pulling in `homeassistant.*` via `__init__.py`. Dynamically-loaded class names
+used as type annotations need a `TYPE_CHECKING`-only static import mirroring the
+runtime path. **`diagnostics/` (`base.py`, `compare_regressions.py`) left this
+tier on 2026-09-01** (ADR-004 §5, second Amendment) once `DiagnosticMode` gained
+a required, construction- time `ShadyCoordinator` reference — it's now tested
+the same way `coordinator.py` itself is: the hand-written, real (non-`Mock`)
+`homeassistant` stub convention (TASK-0009), not zero-mocking. Invariant checks
+(e.g. `0 <= corrected_output <= min(FC, inverter_limit)`) asserted explicitly,
+every scenario. `providers/discovery.py` and `providers/temperature.py` are the
 only pure-tier exceptions — tested against a real `hass` fixture.
+`test_diagnostics_base.py` is a partial exception within `diagnostics/`'s own
+non-zero-mocking tier: it still file-path-loads `base.py` in isolation (a
+minimal hand-written stand-in duck-typed against `ShadyCoordinatorLike`, not the
+full `hass`-stub convention), since it exercises only `DiagnosticMode`'s shared
+base-class shape, never a concrete mode's actual coordinator calls.
 
 ## 3 — Core domain model (ADR-001, ADR-002, ADR-011)
 
-- **Predictor space:** raw baseline forecast value `FC_i` (Watts) per
-  5-min slot; target `PV_i` (actual yield). No sun-geometry, no lat/long.
-- **Granularity:** one regression model per **configured string** ×
-  per **5-minute-of-day slot** (288 slots/day, matches recorder grid).
-  Global regression-method choice (`linear`/`kernel`/`wls2` default/
-  `wls3`), same for every string.
+- **Predictor space:** raw baseline forecast value `FC_i` (Watts) per 5-min
+  slot; target `PV_i` (actual yield). No sun-geometry, no lat/long.
+- **Granularity:** one regression model per **configured string** × per
+  **5-minute-of-day slot** (288 slots/day, matches recorder grid). Global
+  regression-method choice (`linear`/`kernel`/`wls2` default/ `wls3`), same for
+  every string.
 - **Confidence:** normalized sum of sample weights in a slot's pool
-  (`Σ magnitude_weight_i · time_weight_i`) — method-independent. Daily
-  exposed confidence = `FC_i`-weighted average across a day's slots.
-- **Rolling training window:** default 28 days (`window_days`,
-  config-flow), re-fit nightly.
+  (`Σ magnitude_weight_i · time_weight_i · recency_weight_i`) — method-
+  independent. Daily exposed confidence = `FC_i`-weighted average across a day's
+  slots.
+- **Rolling training window:** default 28 days (`window_days`, config-flow),
+  re-fit nightly.
+- **Recency weighting within the window (ADR-001 §4a):** each training day
+  additionally weighted by
+  `recency_weight_i = 1 - (day_age_i/(window_days-1)) · recency_decay_max` —
+  `1.0` at the most recent day (yesterday, the window's effective date), down to
+  `1 - recency_decay_max` at the oldest day; `recency_decay_max` default `0.5`
+  (50%, global, config-flow), `0` disables it. Lets the fit adapt faster to a
+  changing regime (e.g. a falling-leaves autumn) within the existing window,
+  without shrinking `window_days` itself.
 - **Output clamp:** predicted value clamped to `[0, FC]`, or
-  `[0, min(FC, inverter_limit)]` if clipping-exclusion configured — this
-  is the **final** step of the per-slot pipeline, applied exactly once,
-  after ADR-006's intraday correction.
+  `[0, min(FC, inverter_limit)]` if clipping-exclusion configured — this is the
+  **final** step of the per-slot pipeline, applied exactly once, after ADR-006's
+  intraday correction.
 - **Temporal smoothing (ADR-011 §1):** each slot's pool widened with
   ±`smoothing_radius` (default 1) neighbor slots, weighted by
   `time_weight_i = 1 - distance_i/(smoothing_radius+1)`.
-- **Neighbor-regime exclusion (ADR-011 §2/§3):** a neighbor slot whose
-  median `PV/FC` ratio deviates from the center slot's by more than
-  `neighbor_fitting_cutoff` (default 25%, global) is hard-excluded from
-  that slot's pool — OR, if the cutoff is set to the sentinel `-1%`,
-  every neighbor is instead rescaled (never excluded) to the center's
-  median.
+- **Neighbor-regime exclusion (ADR-011 §2/§3):** a neighbor slot whose median
+  `PV/FC` ratio deviates from the center slot's by more than
+  `neighbor_fitting_cutoff` (default 25%, global) is hard-excluded from that
+  slot's pool — OR, if the cutoff is set to the sentinel `-1%`, every neighbor
+  is instead rescaled (never excluded) to the center's median.
 - **Coordinator triggers (ADR-002):** (1) full model recalibration —
   midnight+1min or manual button, using only complete-day data through
-  yesterday; (2) forecast recompute — on recalibration completion AND on
-  every baseline-provider update (no debounce); (3) forecast horizon =
-  remainder of today + tomorrow (if published).
+  yesterday; (2) forecast recompute — on recalibration completion AND on every
+  baseline-provider update (no debounce); (3) forecast horizon = remainder of
+  today + tomorrow (if published).
+- **Startup ordering (ADR-002 §1a):** a config entry's referenced entities may
+  not exist yet at `async_setup_entry` (HA boot-ordering race, no
+  relative-load-order guarantee between custom components). Required entities
+  (per-string actual-yield; per-string resolved baseline, if configured) missing
+  while `hass.is_running` → `ConfigEntryNotReady` (HA's own backoff retry).
+  Missing while HA is still starting → defer the startup fit via
+  `async_at_started`, and if still missing once that fires, log +
+  `async_schedule_reload` once to rejoin the `ConfigEntryNotReady` path.
+  Optional correction-tier entities (temperature source, weather forecast
+  entity) are never required — ADR-003b/ADR-003c's existing graceful degradation
+  already covers "not loaded yet" the same as "genuinely unset."
 
 ## 4 — Optional per-string corrections (ADR-003a, ADR-003b, ADR-003c)
 
-- **Inverter clipping exclusion (ADR-003a):** if a string has an inverter
-  AC power limit configured, samples ≥ a global threshold fraction
-  (default 98%) of that limit are **excluded** (not downweighted) from
-  training, and the same limit becomes a second, tighter output clamp.
-  No-op if unconfigured.
-- **Temperature derating (ADR-003b):** if configured, actual-yield
-  samples are corrected to 25°C-equivalent *before* the ratio is formed
-  (forward transform), and the model's prediction is reverse-transformed
-  back to the target slot's expected temperature at prediction time.
-  Temperature source is a 3-tier hierarchy: per-string module/cell
-  sensor (best) → global ambient sensor (uplifted via a formula using
-  `FC` as an irradiance proxy) → `weather.*` current temperature
-  (same uplift). A global flag (`ADR-003b §1c`, default `false`) skips
-  this entire correction if the baseline provider (e.g. Solcast) already
-  models temperature internally — avoids double-counting. A per-string
-  baseline override is *always* assumed temperature-aware, no separate
-  flag.
+- **Inverter clipping exclusion (ADR-003a):** if a string has an inverter AC
+  power limit configured, samples ≥ a global threshold fraction (default 98%) of
+  that limit are **excluded** (not downweighted) from training, and the same
+  limit becomes a second, tighter output clamp. No-op if unconfigured.
+- **Temperature derating (ADR-003b):** if configured, actual-yield samples are
+  corrected to 25°C-equivalent *before* the ratio is formed (forward transform),
+  and the model's prediction is reverse-transformed back to the target slot's
+  expected temperature at prediction time. Temperature source is a 3-tier
+  hierarchy: per-string module/cell sensor (best) → global ambient sensor
+  (uplifted via a formula using `FC` as an irradiance proxy) → `weather.*`
+  current temperature (same uplift). A global flag (`ADR-003b §1c`, default
+  `false`) skips this entire correction if the baseline provider (e.g. Solcast)
+  already models temperature internally — avoids double-counting. A per-string
+  baseline override is *always* assumed temperature-aware, no separate flag.
 - **Temperature forecast for reverse transform (ADR-003c):** the
-  weather-integration tier uses its native forecast. The cell/ambient
-  tiers (no native forecast) get a **learned per-slot model** (same
-  288-slot machinery as ADR-001, reusing `regression/`, default `wls2`,
-  its own global method setting), trained against a dedicated global
-  "weather forecast entity for temperature prediction" config field. If
-  that field is unset, derating is skipped **entirely** (forward AND
-  reverse together) for cell/ambient-tier strings — no naive-persistence
-  fallback (that was superseded).
+  weather-integration tier uses its native forecast. The cell/ambient tiers (no
+  native forecast) get a **learned per-slot model** (same 288-slot machinery as
+  ADR-001, reusing `regression/`, default `wls2`, its own global method
+  setting), trained against a dedicated global "weather forecast entity for
+  temperature prediction" config field. If that field is unset, derating is
+  skipped **entirely** (forward AND reverse together) for cell/ambient-tier
+  strings — no naive-persistence fallback (that was superseded).
 
 ## 5 — `cache.py` design (ADR-007, ADR-007a, ADR-008)
 
-Owns 5 independent caches, only ever called by `coordinator.py`:
-1. Per-string/per-slot fitted-model cache (dict).
-2. Per-string whole-day snapshot array (time-series shaped).
-3. Two restart-persisted energy-integral running totals (ADR-005 §5/§6)
-   — the *only* restart-persisted cache; carries `last_reset_date` for
-   idempotent midnight reset.
-4. Short-lived per-string ramp/crossfade state (dict, ADR-006 §1b) — not
-   restart-persisted, discarded once a ramp/blend completes.
-5. Historical two-series pool cache (time-series shaped), generic over
-   any `sensor_id` pair — backs regression training, diagnostics, and
-   (ADR-003c) the temperature-forecast model's own predictor/target pair.
+Owns 6 independent stores (5 + `TASK-0036`'s service-response cache below), the
+first 5 only ever called by `coordinator.py`:
 
-**Time-series storage (ADR-007a §1):** `values: dict[sensor_id,
-list[float | None | str]]` — three-state (`float`=known,
-`None`=not-yet-fetched/invalidated, `str`=stable "unavailable"). Index =
-absolute position from a fixed epoch (`(timestamp-epoch)//5min`), with a
-`list_offset` map — not re-based to 0 each rollover. `cache.trim()` is
-one explicit call (at recalibration, not implicit).
+1. Per-string/per-slot fitted-model cache — `get_model`/`set_model`/
+   `invalidate_models`, keyed by `(kind, string_index)` where `kind` is
+   `"shading"` or `"temperature"` (ADR-007 §1, ADR-007a §5-Amendment, TASK-0021
+   — relocated from `coordinator.py`, where it lived until `AUDIT-0003` found
+   the deviation). Carries an explicit per-key validity flag, not a bare `dict`:
+   `invalidate_models()` (called once at the start of every `coordinator.py`
+   recalibration pass) marks every entry invalid without discarding the stale
+   object; `set_model` re-validates a key as its own fit completes. No
+   `fetch_fn` involvement — a fitted model is never fetched from the recorder,
+   so only the time-series design's *validity* half is reused, not the
+   fetch-on-demand half.
+1. Per-string whole-day snapshot array (time-series shaped).
+1. Two restart-persisted energy-integral running totals (ADR-005 §5/§6) — the
+   *only* restart-persisted cache before `TASK-0036`; carries `last_reset_date`
+   for idempotent midnight reset.
+1. Short-lived per-string ramp/crossfade state (dict, ADR-006 §1b) — not
+   restart-persisted, discarded once a ramp/blend completes.
+1. Historical two-series pool cache (time-series shaped), generic over any
+   `sensor_id` pair — backs regression training, diagnostics, and (ADR-003c) the
+   temperature-forecast model's own predictor/target pair.
+1. **(2026-09-19, `TASK-0036`) `ServiceResponseCache`** — the last *usable*
+   response per outbound service call (`forecast_solar.get_forecast`,
+   `weather.get_forecasts`), keyed by
+   `service_call_key(domain, service, data, target)`. Restart-persisted like the
+   energy totals, but via its own injected, duck-typed store (`attach_store`,
+   structurally matching `Store.async_load`/`async_save`, never imported),
+   loaded **lazily on first `async_call`** rather than an explicit
+   coordinator-driven restore — the construction-time Forecast.Solar poll fires
+   before any such restore could run (ADR-007 §1a). 12-hour expiry
+   (`SERVICE_RESPONSE_MAX_AGE`, inclusive at the boundary) — an older remembered
+   forecast has no useful overlap left with the predicted horizon. Independently
+   constructed (not per-`Cache`, not per-config-entry) and shared process-wide
+   via `hass.data` (`providers/discovery.py`'s
+   `async_get_service_response_cache`) — the one store both `coordinator.py`'s
+   Forecast.Solar poll (ADR-012 §4b) and `providers/discovery.py`'s
+   config-flow-time sampling (ADR-009 §4 Amendment) call into directly, since
+   discovery runs before any config entry (and so any coordinator/per-entry
+   `Cache`) exists.
+
+**Time-series storage (ADR-007a §1):**
+`values: dict[sensor_id, list[float | None | str]]` — three-state
+(`float`=known, `None`=not-yet-fetched/invalidated, `str`=stable "unavailable").
+Index = absolute position from a fixed epoch (`(timestamp-epoch)//5min`), with a
+`list_offset` map — not re-based to 0 each rollover. `cache.trim()` is one
+explicit call (at recalibration, not implicit).
 
 **Validated-range tracking (§2):** `(from_index, to_index)` per sensor.
 `to_index=None` = actively pushed by Shady (e.g. `ShadyForecastSensor`).
-Actual-yield = pure query, concrete `to_index`. **Provider-backed
-predictors** (baseline FC, temperature) are hybrid: elapsed portion
-query-bounded, not-yet-elapsed portion push-extended.
+Actual-yield = pure query, concrete `to_index`. **Provider-backed predictors**
+(baseline FC, temperature) are hybrid: elapsed portion query-bounded,
+not-yet-elapsed portion push-extended.
 
 **Writing (§3):** `push(sensor_id, dict[index, value])` (bulk, never
-one-at-a-time) with a `not_before_index` guard that silently drops
-writes to already-elapsed indices — freezes history. `invalidate(...)`
-resets a range to `None`.
+one-at-a-time) with a `not_before_index` guard that silently drops writes to
+already-elapsed indices — freezes history. `invalidate(...)` resets a range to
+`None`.
 
-**Fetch injection (§4):** `cache.py` takes `fetch_fn: Callable[[sensor_id,
-start, end], list[float|None|str]]` as a constructor param — never
-imports the recorder API itself. Validation batches sensors sharing an
-identical missing range into one `fetch_fn` call.
+**Fetch injection (§4):** `cache.py` takes
+`fetch_fn: Callable[[sensor_id, start, end], list[float|None|str]]` as a
+constructor param — never imports the recorder API itself. Validation batches
+sensors sharing an identical missing range into one `fetch_fn` call.
 
 **Three accessors, each sized to its one caller (ADR-008 §3):**
-- `get_time_range(sensor_ids, start, end, on_invalid="skip"|"raw"|float=0.0, group_by="sensor"|"slot")` — contiguous ranges (day arrays, trailing windows). `ADR-007a §5`.
-- `get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid="skip"|"raw"|float="skip") -> dict[sensor_id, list[float]]` — one slot across many days, pin-aware via cache-wide scalar `pinned_reference: date|None` (`pin_reference()`/`clear_reference()`). `ADR-007a §6`.
-- `get_regression_pools(sensor_ids, smoothing_radius) -> dict[sensor_id, np.ndarray]` — full 288-slot sweep, batched `numpy`, shape `(288, window_days×(2×radius+1))`. Backed by a shadow `float64` array (NaN = gap) kept in sync with the three-state list on every push/invalidate. `ADR-008 §2`.
 
-**Provider architecture (ADR-012):** `providers/base.py` defines a real
-base class (not `Protocol`) with `fetch(start,end)` (required, pull),
-`identify()` (optional, discovery), `forward(now)` (optional, push path —
-returns the provider's current forward-looking belief). `coordinator.py`
-runs **one generic loop**: for every provider whose `forward()` is
-overridden, register a listener that calls `forward(now)`, converts to
-cache's index scheme, and `push(...)`. Two concrete providers today:
-baseline (discovery+normalize) and temperature; PV (actual yield) needs
-**no provider** — it's a plain user-selected `entity_id` wired directly
-into `cache.py`'s `fetch_fn`.
+- `get_time_range(sensor_ids, start, end, on_invalid="skip"|"raw"|float=0.0, group_by="sensor"|"slot")`
+  — contiguous ranges (day arrays, trailing windows). `ADR-007a §5`.
+- `get_pinned_slot_pool(sensor_ids, slot_of_day, on_invalid="skip"|"raw"|float="skip", *, reference: datetime|None=None) -> dict[sensor_id, list[float]]`
+  — one slot across many days, pin-aware via cache-wide scalar
+  `pinned_reference: date|None` (`pin_reference()`/`clear_reference()`). Caps
+  how far into an auto-tracked/pinned-to-today "today" it validates at
+  `reference` (defaults to the real wall clock) — never further than the last
+  complete slot while auto-tracking, or `reference` itself inclusive while
+  genuinely pinned — so a not-yet-elapsed slot is never permanently frozen at
+  `None` once it does elapse (`TASK-0037`). `ADR-007a §6`.
+- `get_regression_pools(sensor_ids, smoothing_radius) -> dict[sensor_id, NDArray[np.float64]]`
+  — full 288-slot sweep, batched `numpy`, shape
+  `(288, window_days×(2×radius+1))`. Backed by a shadow `float64` array (NaN =
+  gap) kept in sync with the three-state list on every push/invalidate.
+  `ADR-008 §2`.
+
+**Provider architecture (ADR-012):** `providers/base.py` defines a real base
+class (not `Protocol`) with `fetch(start,end)` (required, pull), `identify()`
+(optional, discovery), `forward(now)` (optional, push path — returns the
+provider's current forward-looking belief). `coordinator.py` runs **one generic
+loop**: for every provider whose `forward()` is overridden, register a listener
+that calls `forward(now)`, **forward-fills** it across every 5-minute slot in
+each raw sample's span through `_tomorrow_end(now)` (`_forward_fill_by_day`,
+ADR-012 §4 Amendment/`TASK-0037-patch-3`, mirroring ADR-009 §1a's identical
+`_recompute_string` handling — `forward()`'s own series commonly reports on a
+grid coarser than `FC`'s 5-minute cache grid, e.g. hourly for every
+`_PUSH_SOURCED_SHAPES` member), converts to cache's index scheme, and
+`push(...)`. Two concrete providers today: baseline (discovery+normalize) and
+temperature; PV (actual yield) needs **no provider** — it's a plain
+user-selected `entity_id` wired directly into `cache.py`'s `fetch_fn`.
 
 ## 6 — Sensors & entities
 
-- **`ShadyForecastSensor`** (per string) — corrected today+tomorrow
-  forecast; attributes for intraday-correction transparency
-  (`intraday_ratio`, `intraday_state`, `intraday_ramp_weight`,
-  `values_raw`, `intraday_blend_active`) when ADR-006 active.
-- **`ShadyDiagnosticsSwitch`** (one/entry, default off, ADR-004 §1) gates
-  all diagnostics; while off, diagnostics sensors report `disabled`,
-  zero extra fitting cost.
-- **`ShadyDiagnosticsSensor`** (per string, ADR-004 §2) — ApexCharts-
-  shaped `series` (slot-pool scatter + 4 methods' selected-prediction
-  points + actual point) and plain-float `accuracy` dict. Diagnosed slot
-  defaults to "last complete slot"; overridable via the
-  `shady.select_diagnostic_slot` service (not entity-targeted — one
-  diagnosed-slot state per **config entry**).
-- **`ShadyDiagnosticsSumSensor`** (one/entry, ADR-004 §2b) — pointwise
-  cross-string sum of the above.
+- **`ShadyForecastSensor`** (per string) — corrected today+tomorrow forecast;
+  attributes for intraday-correction transparency (`intraday_ratio`,
+  `intraday_state`, `intraday_ramp_weight`, `values_raw`,
+  `intraday_blend_active`) when ADR-006 active.
+- **`ShadyDiagnosticModeSelect`** (one/entry, default `"off"`, ADR-004 §1,
+  replacing the original `ShadyDiagnosticsSwitch` as of the 2026-08-30
+  amendment) gates all diagnostics via a dropdown (`const.py`'s
+  `DIAGNOSTIC_MODES`, today `"off"`/`"compare_regressions"`); while `"off"`,
+  diagnostics sensors report `disabled`, zero extra fitting cost. Selecting a
+  mode dispatches to a `DiagnosticMode` subclass (`diagnostics/`, ADR-004 §5)
+  via `coordinator.py`'s `_diagnostic_modes` registry (per-instance as of the
+  2026-09-01 amendment) — adding a future mode (see ADR-013, Proposed, not
+  scheduled) is a new option + subclass, not a rework of this entity.
+- **`ShadyDiagnosticsSensor`** (one per `(sensor_id, name)` pair
+  `coordinator.diagnostic_sensor_ids()` declares, ADR-004 §2/§2b, §5 2026-09-03
+  — one per configured string plus one `"sum"` id for `CompareRegressionsMode`,
+  no dedicated sum-sensor class) — `custom:plotly-graph`-ready `series`
+  (slot-pool scatter + 4 methods' selected-prediction points + actual point,
+  each entry a complete trace:
+  `{"entity": "", "name": ..., "type": "scatter", "mode": "markers", "x": [...], "y": [...]}`,
+  ADR-004 §2d, 2026-09-21 — `entity`/`type`/`mode` constant on every entry,
+  `x`/`y` the same points as two parallel flat arrays rather than `[x, y]` pairs
+  — supersedes a same-day, short-lived `apexcharts-card`/`data_generator`
+  attempt, §2c, abandoned because that card cannot render a numeric x-axis at
+  all) and plain-float `accuracy` dict (untouched throughout), set from
+  `coordinator.diagnostic_result()` — a cached accessor over the active
+  `DiagnosticMode`'s `compute()` output (today, always
+  `CompareRegressionsMode`), refreshed once per tick; entities never call
+  `.compute()` directly. `sensor.py` performs **no reshaping of any kind** —
+  every `series` entry comes straight from `diagnostics/` (ADR-004 §5 2026-09-21
+  Amendment; §2c briefly required a `sensor.py`-side `entity_id` injection step,
+  removed the same day once `entity` became a constant). The entry itself is
+  built by `DiagnosticMode._xy_series_entry` — a shared, inherited
+  `@staticmethod` on the base class (ADR-004 §2e, 2026-09-21, moved there the
+  same day from a `CompareRegressionsMode`-local function once it became clear
+  every future mode, not just this one, would need the identical shape). The
+  diagnosed slot is one **always-set** stored value per **config entry**
+  (ADR-004 §2g), read unconditionally by every diagnostic computation: while
+  `switch.py`'s `ShadyFollowDiagnosticSlotSwitch` is on (default) it is *set* to
+  the last complete slot on every 5-minute tick; setting `datetime.py`'s
+  `ShadyDiagnosticSlotDateTime` (which shows the value in both modes, never
+  `unknown`) pins it and switches following off; switching following off pins
+  the slot as currently shown. `cache.py`'s `pinned_reference` is set only while
+  genuinely pinned, never while following. Neither entity is targeted at any
+  diagnostic sensor (ADR-004 §2f, superseding the original
+  `shady.select_diagnostic_slot` service). **YAML gotcha (ADR-004 §2d):** the
+  `"y"` key must always be written explicitly quoted in any hand-written YAML
+  representation of this shape — YAML 1.1 resolves a bare `y`/`n`/`yes`/`no` to
+  a boolean, not just `true`/`false`, so an unquoted `y:` silently becomes the
+  boolean key `True`. Python's own `dict`/`str()` round-trip is unaffected
+  (string keys are always quoted on output), so this is a
+  documentation/hand-authoring concern only — covered explicitly in ADR-004 §2d,
+  including why that section's own example is fenced ```` ```yml ```` rather
+  than ```` ```yaml ```` (this repo's own `mdformat` pass reformats
+  `yaml`-tagged fences and silently strips exactly this quoting, not knowing
+  it's load-bearing).
 - **6 aggregate sensors** (one/entry, ADR-005): `ShadyPvSumSensor`,
   `ShadyFcSumSensor`, `ShadyFcDaySumSensor` (288-value day array + energy
   state), `ShadyFcRemainingTodaySensor`, `ShadyPvEnergyIntegralSensor`
-  (restart-persisted, midnight reset), `ShadyFcEnergyIntegralSensor`
-  (same).
-- **`ShadyRecalculateButton`** (ADR-002 §1) — manual recalibration
-  trigger, same code path as the midnight schedule.
-- **`ShadyConfigFlow` / `ShadyOptionsFlow`** (ADR-010) — see §7.
+  (restart-persisted, midnight reset), `ShadyFcEnergyIntegralSensor` (same).
+- **`ShadyRecalculateButton`** (ADR-002 §1) — manual recalibration trigger, same
+  code path as the midnight schedule.
+- **`ShadyConfigFlow`** (ADR-010) — see §7. `ShadyOptionsFlow` is removed
+  (2026-09-17, `TASK-0035`): it silently discarded every reconfiguration (wrote
+  to `entry.options`, which nothing ever read — not a race, a standing bug since
+  initial release). Reconfiguration is now
+  `ShadyConfigFlow.async_step_reconfigure`, sharing the same step methods as
+  initial setup rather than a second, parallel implementation.
 
 ## 7 — Config flow shape (`ADR-010` is the single source of truth)
 
-Three-step flow: **`settings`** (global, first) → **`add_string`**
-(repeated: name, optional baseline override, actual-yield entity,
-"configure advanced?") → optional **`add_string_advanced`** (per string:
-inverter limit, temperature-source override, temp coefficient, rated DC
-capacity) → **`add_another`** loop. Full field list lives in ADR-010;
-key global defaults: `window_days=28`, `regression_method=wls2`,
-`smoothing_radius=1`, `neighbor_fitting_cutoff=0.25`,
-`clipping_threshold=0.98`, `max_uplift_c=25`,
+Five steps, linear for first setup: **`baseline`** (global default baseline
+candidate + manual fallback, `temperature_aware`) → **`strings`** (one
+multi-select entity selector, `sensor` domain, `power`/`energy` device_class —
+every entity picked *is* a string, identified by its own `entity_id`; no
+separate "add a string" step) →
+**`string_settings_hub`**/**`string_settings_edit`** loop (one page per string,
+entered only for strings actually picked above: optional name, optional baseline
+override, temperature-source override, converter limit, temp coefficient, rated
+DC capacity — no "configure advanced?" gate, since each string already has its
+own page) → **`regression_tuning`** (`window_days=28`, `regression_method=wls2`,
+`smoothing_radius=1`, `neighbor_fitting_cutoff=0.25`, `recency_decay_max=0.5`,
+`clipping_threshold=0.98`) → **`advanced_optional`** (default temperature
+source, `max_uplift_c=25`, weather-forecast temperature entity,
 `temperature_regression_method=wls2`, `intraday_correction_mode=off`,
-`intraday_correction_cutoff=0.10`, `window_slots=24`, `ramp_slots=12`.
-**No latitude/longitude/elevation field anywhere.** Options flow mirrors
-this for post-setup editing.
+`intraday_correction_cutoff=0.10`, `window_slots=24`, `ramp_slots=12`) →
+`async_create_entry`. **No latitude/longitude/elevation field anywhere.**
+Removing an entity from `strings` discards that string's settings from the
+in-progress result — nothing persists unless the flow reaches its final step
+regardless. `async_step_reconfigure` instead opens on an `async_show_menu`
+("Baseline"/"Strings"/"Regression Tuning"/"Advanced & Optional Settings"/"Save &
+Finish"), pre-filled from the existing entry, each section returning to this
+same menu rather than proceeding linearly, finishing via
+`async_update_reload_and_abort` (updates `entry.data` directly and reloads) —
+see ADR-010 for the full rationale and why `ShadyOptionsFlow` had to go. No
+migration from the old `CONF_STRINGS` shape (list-of-dicts, each with its own
+`name`/`actual_yield_entity_id`) — deliberate, exactly one installation existed
+as of this change.
 
 ## 8 — Intraday deviation correction (ADR-006)
 
 Per-string (never on aggregate sensors), 3-state config field:
 `off`(default)/`ramping`/`blending`. Trailing-window ratio
-`pv_energy_window/fc_energy_window` (`window_slots`, default 24 = 2h),
-clamped to `[1±intraday_correction_cutoff]` (default 0.10), ramped in
-linearly over `ramp_slots` active slots (default 12 = 1h) from a reset
-point (first active slot of day, or a provider update). **Ramping**
-resets to `w=0` on every provider update (visible dip). **Blending**
-crossfades old (frozen) vs. new (freshly ramping) prediction instead —
-same steady state, no dip. Ordering is canonical: correction → **one**
-final output clamp (`ADR-001 §2`/`ADR-003a §1a`), never clamped
-mid-pipeline or per crossfade side.
+`pv_energy_window/fc_energy_window` (`window_slots`, default 24 = 2h), clamped
+to `[1±intraday_correction_cutoff]` (default 0.10), ramped in linearly over
+`ramp_slots` active slots (default 12 = 1h) from a reset point (first active
+slot of day, or a provider update). **Ramping** resets to `w=0` on every
+provider update (visible dip). **Blending** crossfades old (frozen) vs. new
+(freshly ramping) prediction instead — same steady state, no dip. Ordering is
+canonical: correction → **one** final output clamp
+(`ADR-001 §2`/`ADR-003a §1a`), never clamped mid-pipeline or per crossfade side.
+
+## 8a — Drafted but not scheduled
+
+- **Whole-day diagnostic modes** (comparing regression methods, or comparing
+  providers, across all 288 slots of a day rather than one — ADR-013,
+  `Status: Proposed`) are sketched only, to confirm ADR-004's `DiagnosticMode`
+  base class doesn't need revisiting later. No task exists for either; unlike §9
+  below, this is not a permanent rejection — either may be scheduled in a future
+  planning pass.
 
 ## 9 — Explicit exclusions (never implement these)
 
 - **No** `sun_geometry.py` module, no astronomical calculation, no
   lat/long/elevation config field anywhere (ADR-001 §1).
-- **No** per-integration baseline adapters (Forecast.Solar/Solcast-
-  specific code) — generic attribute-shape discovery only (ADR-009).
+- **No** per-integration baseline adapters (Forecast.Solar/Solcast- specific
+  code) — generic attribute-shape discovery only (ADR-009).
 - **No** naive-persistence fallback for temperature forecasting — fully
-  superseded by ADR-003c's learned model; if no forecast-capable weather
-  entity exists, the correction is skipped entirely, not degraded.
-- **No** hard minimum-sample gate for intraday correction — superseded
-  in-place by the smooth ramp (ADR-006 revision note).
+  superseded by ADR-003c's learned model; if no forecast-capable weather entity
+  exists, the correction is skipped entirely, not degraded.
+- **No** hard minimum-sample gate for intraday correction — superseded in-place
+  by the smooth ramp (ADR-006 revision note).
 - **No** debounce on baseline-update-triggered recompute (deliberate
   simplification, ADR-002 §2).
-- **No** recorder-statistics *writing* — Shady only ever reads recorder
-  history; it has no `async_import_statistics`-style write path (unlike
-  the sibling project Effy).
-- **No** per-string override of the global regression method, smoothing
-  radius, clipping threshold, or intraday cutoff — these are always
-  global.
-- **No** naive per-slot `numpy` calls in `regression/` — explicitly
-  rejected by benchmark (ADR-008 §1); batched only.
+- **No** recorder-statistics *writing* — Shady only ever reads recorder history;
+  it has no `async_import_statistics`-style write path (unlike the sibling
+  project Effy).
+- **No** per-string override of the global regression method, smoothing radius,
+  clipping threshold, or intraday cutoff — these are always global.
+- **No** naive per-slot `numpy` calls in `regression/` — explicitly rejected by
+  benchmark (ADR-008 §1); batched only.
 - **No** second/bespoke recorder-read path outside `cache.py`'s injected
-  `fetch_fn` — `coordinator.py` never calls `statistics_during_period`
-  directly.
+  `fetch_fn`'s own dispatch (`coordinator.py`'s `_fetch_fn`) — every
+  `statistics_during_period` call (`_fetch_actual_yield_statistics`, and, as of
+  ADR-012 §2a/`TASK-0034`, `_fetch_provider_history_statistics` for a baseline's
+  linked `history_entity_id`) is reachable only from that one dispatch method,
+  never called directly from `sensor.py`/`button.py`/a `Provider`, or anywhere
+  else outside it.
 
 ## 10 — Non-functional requirements
 
 - **Target hardware:** must perform acceptably on Raspberry Pi 5 (ADR-008
   explicitly re-benchmarked there, not just x86 dev machines).
-- **Restart tolerance:** only the 2 energy-integral totals need exact
-  restart persistence; everything else safely rebuilds (accepted gap).
+- **Restart tolerance:** only the 2 energy-integral totals need exact restart
+  persistence; everything else safely rebuilds (accepted gap).
 - **No blanket type-ignore / no blanket mocking** — suppression and test
   strategy are both per-file/per-module, never global.
-- **ADR-driven rationale, not inline essays** (`ADR-000 §7`) —
-  non-obvious *why* goes in an ADR, referenced by number from code
-  comments; module docstrings stay to 1–3 sentences.
-- **`adr/INDEX.md`** must be kept in sync with any ADR structural change
-  in the same commit (mandatory, `ADR-000 §7`) — relevant if any task
-  discovers an ADR gap requiring an amendment.
+- **ADR-driven rationale, not inline essays** (`ADR-000 §7`) — non-obvious *why*
+  goes in an ADR, referenced by number from code comments; module docstrings
+  stay to 1–3 sentences.
+- **`adr/INDEX.md`** must be kept in sync with any ADR structural change in the
+  same commit (mandatory, `ADR-000 §7`) — relevant if any task discovers an ADR
+  gap requiring an amendment.

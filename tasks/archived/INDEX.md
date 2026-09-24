@@ -1,0 +1,1091 @@
+# Task Index
+
+## Task Table
+
+| Slug | Title | Status | Dependencies | Worker |
+| -- | -- | -- | -- | -- |
+| TASK-0001-provider-base-architecture | Provider Base Architecture | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0002-cache-core-time-series-store | Cache Core — Time-Series Store & Contiguous-Range Accessor | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0003-baseline-forecast-discovery | Baseline Forecast Discovery & Normalization | done | TASK-0001 | Lead Agent (worker+reviewer, inline) |
+| TASK-0004-temperature-source-provider | Temperature Source Provider | done | TASK-0001 | Lead Agent (worker+reviewer, inline) |
+| TASK-0005-regression-fitting-pipeline | Regression Fitting Pipeline | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0005-patch-1-ndarray-typing | Patch — Retrofit `NDArray[np.float64]` Typing onto `regression/` | done | TASK-0005-regression-fitting-pipeline | Lead Agent (worker+reviewer, inline) |
+| TASK-0005-patch-2-unclamped-predict | Patch — Expose `predict_unclamped()` (Unclamped Prediction Step) | done | TASK-0005-regression-fitting-pipeline | Lead Agent (worker+reviewer, inline) |
+| TASK-0005-patch-3-consolidate-predict | Patch — Consolidate `predict()` into the `FittedModel` Base Class | done | TASK-0005-regression-fitting-pipeline, TASK-0005-patch-2-unclamped-predict | Lead Agent (worker+reviewer, inline) |
+| TASK-0006-cache-batched-regression-pool-accessor | Cache — Batched Regression-Pool Accessor | done | TASK-0002 | Lead Agent (worker+reviewer, inline) |
+| TASK-0007-yield-corrections | Optional Yield Corrections (Clipping + Temperature Derating) | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0007-patch-1-ndarray-typing | Patch — Retrofit `NDArray[np.float64]` Typing onto `yield_correction.py` | done | TASK-0007-yield-corrections | Lead Agent (worker+reviewer, inline) |
+| TASK-0008-forecast-adjustment | Forecast Adjustment | done | TASK-0005, TASK-0005-patch-2-unclamped-predict, TASK-0007 | Lead Agent (worker+reviewer, inline) |
+| TASK-0009-config-flow | Config Flow | done | TASK-0003 | Lead Agent (worker+reviewer, inline) |
+| TASK-0009-patch-1-manual-baseline-shape | Patch — Manual Baseline Entry Needs a Shape Selector | done | TASK-0009-config-flow | Lead Agent (worker+reviewer, inline) |
+| TASK-0010-coordinator-recalibration-recompute-push | Coordinator — Recalibration, Recompute & Provider Push | done | TASK-0002, TASK-0006, TASK-0005, TASK-0007, TASK-0008, TASK-0003, TASK-0004, TASK-0009-patch-1-manual-baseline-shape | Lead Agent (worker+reviewer, inline) |
+| TASK-0010-patch-1-recalibration-triggers-recompute | Patch — Recalibration Completion Must Trigger a Recompute | done | TASK-0010-coordinator-recalibration-recompute-push | Lead Agent (worker+reviewer, inline) |
+| TASK-0010-patch-2-string-enumeration | Patch — Public String Enumeration for Per-String Entities | done | TASK-0010-coordinator-recalibration-recompute-push | Lead Agent (worker+reviewer, inline) |
+| TASK-0011-forecast-sensor-and-recalculate-button | Corrected Forecast Sensor & Manual Recalculation | done | TASK-0010, TASK-0010-patch-1-recalibration-triggers-recompute, TASK-0010-patch-2-string-enumeration | Lead Agent (worker+reviewer, inline) |
+| TASK-0009-patch-2-recency-decay-config-field | Patch — Recency-Decay Config Field (`recency_decay_max`) | done | TASK-0009-config-flow | Lead Agent (worker+reviewer, inline) |
+| TASK-0005-patch-4-recency-weight | Patch — `recency_weight_i` in `regression/base.py`'s `build_pool` | done | TASK-0005-regression-fitting-pipeline, TASK-0005-patch-1-ndarray-typing | Lead Agent (worker+reviewer, inline) |
+| TASK-0010-patch-3-thread-recency-decay | Patch — Thread `recency_decay_max` Through `coordinator.py` | done | TASK-0010-coordinator-recalibration-recompute-push, TASK-0009-patch-2-recency-decay-config-field, TASK-0005-patch-4-recency-weight | Lead Agent (worker+reviewer, inline) |
+| TASK-0012-aggregate-sensors | Cross-String Aggregate Sensors | done | TASK-0011, TASK-0002 | Lead Agent (worker+reviewer, inline) |
+| TASK-0013-intraday-deviation-correction | Intraday Deviation Correction | done | TASK-0011, TASK-0008, TASK-0012 | Lead Agent (worker+reviewer, inline) |
+| TASK-0005-patch-5-optional-magnitude-weight | Patch — Optional `magnitude_weight_i` in `regression/base.py`'s `build_pool` | done | TASK-0005-regression-fitting-pipeline, TASK-0005-patch-1-ndarray-typing, TASK-0005-patch-4-recency-weight | Lead Agent (worker+reviewer, inline) |
+| TASK-0014-temperature-forecast-learned-model | Temperature-Forecast Learned Model | done | TASK-0005, TASK-0006, TASK-0004, TASK-0007, TASK-0010, TASK-0005-patch-4-recency-weight, TASK-0005-patch-5-optional-magnitude-weight | Lead Agent (worker+reviewer, inline) |
+| TASK-0015a-diagnostic-mode-base-architecture | Diagnostic Mode Base Architecture | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0017-string-computation-module | `string_computation.py` — Shared Per-String Fit/Predict Module | done | TASK-0005, TASK-0007, TASK-0008, TASK-0010, TASK-0013, TASK-0014 | Lead Agent (worker+reviewer, inline) |
+| TASK-0015a-patch-1-diagnostic-fit-inputs | Patch — `DiagnosticSlotSample`'s Missing Query-FC and Fit-Input Fields | superseded (see 2026-09-01 refinement log; slug not reused) | TASK-0015a-diagnostic-mode-base-architecture, TASK-0017-string-computation-module | — |
+| TASK-0015a-patch-2-diagnostic-mode-coordinator-access | Patch — `DiagnosticMode` Gains Coordinator Access + Cadence Getters | done | TASK-0015a-diagnostic-mode-base-architecture, TASK-0010-coordinator-recalibration-recompute-push | Lead Agent (worker+reviewer, inline) |
+| TASK-0015a-patch-3-diagnostic-mode-multi-string-bundling | Patch — `DiagnosticMode` Output Bundles Every String Per Call | done | TASK-0015a-patch-2-diagnostic-mode-coordinator-access | Lead Agent (worker+reviewer, inline) |
+| TASK-0015a-patch-4-diagnostic-mode-sensor-list-output | Patch — `DiagnosticMode` Output Generalized to a Sensor List | done | TASK-0015a-patch-3-diagnostic-mode-multi-string-bundling | Lead Agent (worker+reviewer, inline) |
+| TASK-0015b-diagnostics-select-and-scatter-sensors | Diagnostics — Select Entity & Scatter/Accuracy Sensors | done | TASK-0002, TASK-0006, TASK-0010, TASK-0011, TASK-0013, TASK-0015a-diagnostic-mode-base-architecture, TASK-0017-string-computation-module, TASK-0015a-patch-2-diagnostic-mode-coordinator-access, TASK-0015a-patch-3-diagnostic-mode-multi-string-bundling, TASK-0015a-patch-4-diagnostic-mode-sensor-list-output | — |
+| TASK-0016-integration-setup-entry | Integration Setup Entry — Wiring & Startup-Ordering Guard | done | TASK-0010, TASK-0011, TASK-0012, TASK-0013, TASK-0014, TASK-0015b-diagnostics-select-and-scatter-sensors | Lead Agent (worker+reviewer, inline) |
+| TASK-0018-hacs-select-rename-cleanup | HACS/Tooling-Config Cleanup — Finish the switch→select Rename | done | TASK-0015b-diagnostics-select-and-scatter-sensors, TASK-0016-integration-setup-entry | Lead Agent (worker+reviewer, inline) |
+| TASK-0019-config-flow-translations | Config-Flow Translations — Replace Placeholder en/de Content | done | TASK-0009-config-flow, TASK-0009-patch-1-manual-baseline-shape, TASK-0009-patch-2-recency-decay-config-field | Lead Agent (worker+reviewer, inline) |
+| TASK-0020-release-pipeline-hardening | Release Pipeline & Tooling-Config Hardening | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0021-fitted-model-cache-location | Fitted-Model Cache Location — Decision & Fix | done | TASK-0002, TASK-0006, TASK-0010, TASK-0017 | Lead Agent (worker+reviewer, inline) |
+| TASK-0022-sunshine-duration-rescaling | Sunshine-Duration Rescaling — Decision & Fix | done | TASK-0003 | Lead Agent (worker+reviewer, inline) |
+| TASK-0023-entity-layer-cache-access-boundary | Entity-Layer Cache-Access Boundary — Decision & Fix | done | TASK-0011, TASK-0012 | Lead Agent (worker+reviewer, inline) |
+| TASK-0024-codeql-branch-target-fix | CodeQL Branch-Target Fix | done | — | Lead Agent (worker+reviewer, inline) |
+| TASK-0025-tooling-config-hardening-round-3 | Tooling Config Hardening, Round 3 | done | TASK-0020 | Lead Agent (worker+reviewer, inline) |
+| TASK-0026-switch-select-rename-cleanup-round-3 | Finish switch→select Rename, Round 3 | done | TASK-0018 | Lead Agent (worker+reviewer, inline) |
+| TASK-0027-module-diagram-and-docstring-accuracy | Module-Diagram & Docstring Call-Graph Accuracy | done | TASK-0007, TASK-0010, TASK-0017 | Lead Agent (worker+reviewer, inline) |
+| TASK-0028-adr010-field-documentation-catchup | ADR-010 Field Documentation Catch-Up | done | TASK-0009-patch-1-manual-baseline-shape | Lead Agent (worker+reviewer, inline) |
+| TASK-0029-readme-accuracy-refresh | README Accuracy Refresh | done | TASK-0016, TASK-0018 | Lead Agent (worker+reviewer, inline) |
+| TASK-0030-regression-correction-coverage-additions | Regression & Correction-Layer Test-Coverage Additions | done | TASK-0005-regression-fitting-pipeline, TASK-0005-patch-2-unclamped-predict, TASK-0005-patch-3-consolidate-predict, TASK-0002 | Lead Agent (worker+reviewer, inline) |
+| TASK-0031-intraday-ramping-blending-divergence-test | Intraday Ramping-vs-Blending Divergence Test | done | TASK-0013 | Lead Agent (worker+reviewer, inline) |
+| TASK-0032-entity-layer-config-flow-coverage-additions | Entity-Layer & Config-Flow Test-Coverage Additions | done | TASK-0015b-diagnostics-select-and-scatter-sensors, TASK-0019-config-flow-translations, TASK-0009-patch-1-manual-baseline-shape | Lead Agent (worker+reviewer, inline) |
+| TASK-0033-integration-setup-coverage-and-teardown-semantics | Integration-Setup Test-Coverage & Teardown-Semantics | done | TASK-0016 | Lead Agent (worker+reviewer, inline) |
+
+### Parallelization notes (Phase 3 will confirm at readiness time)
+
+- **Wave 1 (no dependencies, fully parallel):** TASK-0001, TASK-0002, TASK-0005,
+  TASK-0007, TASK-0015a-diagnostic-mode-base-architecture (pure plumbing, no
+  dependencies, mirrors TASK-0001 — added 2026-08-30, see refinement log).
+- **Wave 2 (unlocked once Wave 1's relevant deps are `done`):** TASK-0003,
+  TASK-0004 (both need only TASK-0001); TASK-0006 (needs only TASK-0002, but is
+  **sequential** with it — same file, `cache.py`); TASK-0008 (needs TASK-0005 +
+  TASK-0007).
+- **Wave 3:** TASK-0009 (needs TASK-0003); TASK-0010 (needs the full pure-layer
+  stack — TASK-0002/0003/0004/0005/0006/0007/0008). TASK-0009 and TASK-0010 do
+  **not** share a file/interface and can run in parallel with each other.
+- **Wave 4:** TASK-0011 (needs TASK-0010 only — does **not** need TASK-0009;
+  `config_flow.py` has no downstream code-level consumers in this graph, only a
+  shared data-key contract already fixed by ADR-010).
+- **Wave 5:** TASK-0012 (needs TASK-0011).
+- **Wave 6:** TASK-0013 (needs TASK-0011, TASK-0008, and TASK-0012 — the last is
+  a shared-file sequencing dependency on `coordinator.py`/ `cache.py`, not a
+  true interface consumption).
+- **Wave 7:** TASK-0014 (needs TASK-0005/0006/0004/0007/0010 — can run parallel
+  to Wave 5/6 once its own deps are satisfied, since it touches no file
+  TASK-0012/0013 also touch until it lands in `coordinator.py` — **recheck for
+  coordinator.py overlap with TASK-0013 at Phase 3 readiness time** before
+  actually parallelizing).
+- **Wave 7a (added 2026-08-31, Scenario B — see refinement log):**
+  TASK-0017-string-computation-module (needs TASK-0005/0007/0008/0010/0013/0014
+  — a **sequential**, same-file dependency on `coordinator.py`, not a parallel
+  one: it relocates logic out of the exact private methods TASK-0010/0013/0014
+  delivered, so it must run strictly after all three, one worker pass, not
+  alongside anything else touching `coordinator.py`).
+- **Wave 7b (superseded 2026-09-01 — see refinement log):**
+  ~~TASK-0015a-patch-1-diagnostic-fit-inputs~~ is no longer scheduled;
+  `TASK-0015a-patch-2-diagnostic-mode-coordinator-access` (needs only
+  TASK-0015a-diagnostic-mode-base-architecture + TASK-0010 — a pure interface
+  dependency on both, no file overlap with either) takes this wave slot instead.
+- **Wave 7c (added 2026-09-02, Scenario C — see refinement log):**
+  `TASK-0015a-patch-3-diagnostic-mode-multi-string-bundling` (needs only
+  TASK-0015a-patch-2-diagnostic-mode-coordinator-access — a pure interface
+  dependency, no file overlap; runs strictly after 7b since it restructures the
+  same `diagnostics/base.py` file 7b just delivered).
+- **Wave 7d (added 2026-09-02, Scenario C, same day as 7c — see refinement
+  log):** `TASK-0015a-patch-4-diagnostic-mode-sensor-list-output` (needs only
+  TASK-0015a-patch-3-diagnostic-mode-multi-string-bundling — a pure interface
+  dependency, no file overlap; runs strictly after 7c since it restructures the
+  same `diagnostics/base.py` file 7c just delivered, a second time the same
+  day).
+- **Wave 8:** TASK-0015b-diagnostics-select-and-scatter-sensors (needs
+  TASK-0002/0006/0010/0011/0013 — explicitly sequenced after TASK-0013 for its
+  5-minute-trigger reuse — **and** TASK-0015a-diagnostic-mode-
+  base-architecture, definer-before-consumer for `diagnostics.base`'s
+  `DiagnosticMode` — **and** TASK-0017 (2026-08-31) + TASK-0015a-patch-2
+  (2026-09-01) + TASK-0015a-patch-3 (2026-09-02, Wave 7c) + TASK-0015a-patch-4
+  (2026-09-02, Wave 7d, same day as 7c above), all four required before
+  `CompareRegressionsMode` can be implemented; no file overlap with any of them,
+  so this remains a pure interface dependency, not a shared-file one).
+- **Wave 9:** TASK-0016 (needs every other remaining task — `__init__.py` sits
+  at the top of `adr-summary.md`'s own module dependency diagram, above
+  `coordinator.py`/`sensor.py`/`select.py`/ `button.py` alike; genuinely the
+  project's last task).
+
+## Refinement Log
+
+| Date | Trigger task | Action | Reason |
+| -- | -- | -- | -- |
+| 2026-08-20 | (Phase 2 initial planning) | Split `cache.py`'s delivery into three sequential tasks (TASK-0002 core, TASK-0006 batched regression-pool accessor, TASK-0015's pinned-slot-pool addition) instead of one monolithic cache task | Mirrors ADR-007a/ADR-008/ADR-004's own documented pattern: "each [accessor] gets its own purpose-built accessor... defined alongside its one caller" — keeps each task reviewable and lets TASK-0002 unblock nearly everything else immediately instead of waiting for the full three-accessor cache design |
+| 2026-08-20 | (Phase 2 initial planning) | Added TASK-0012 as an explicit dependency of TASK-0013 beyond its functional need (TASK-0011 only) | Both tasks add a new coordinator.py schedule/trigger and touch cache.py; sequenced to avoid concurrent modification of the same files even though there is no real interface dependency between the two features (ADR-005 and ADR-006 are functionally independent) |
+| 2026-08-20 | (Phase 2 initial planning) | Confirmed TASK-0011 does *not* depend on TASK-0009 (config flow) | `config_flow.py` produces `ConfigEntry.data` by keys ADR-010 already fixes; no module in this project imports `config_flow.py`'s classes, so there is no code-level Consumed/Delivered Artifact relationship — only a shared, already-frozen data contract. This lets config flow proceed fully in parallel with the coordinator/sensor chain. |
+| 2026-08-22 | (n/a — pre-implementation ADR amendment) | Amended ADR-000 §4 (Python 3.10+ rationale → stale), `tasks/adr-summary.md` §1, `pyproject.toml` (`requires-python`, mypy `python_version`), and `hacs.json` (`homeassistant` minimum) to require Python ≥3.14 | HA 2026.3 (current HA release is 2026.8.2) raised HA's own minimum Python to 3.14; ADR-000's prior rationale assumed a lower HA-mandated minimum. No task has started implementation yet (all `todo`), so no Consumed/Delivered Artifact or patch-task handling was needed — every worker simply targets 3.14 from the outset. |
+| 2026-08-22 | (n/a — human-directed coding-standard amendment, discovered mid-TASK-0006) | Amended ADR-000 §4 (numpy arrays now typed `NDArray[np.float64]`, never bare `np.ndarray`); added `TASK-0005-patch-1-ndarray-typing` and `TASK-0007-patch-1-ndarray-typing` (Scenario C) to retrofit the already-`done` `regression/` and `yield_correction.py` deliveries; updated `tasks/adr-summary.md` §1/§5. Both patch tasks complete — mypy --strict clean, both files' existing test suites pass unmodified. TASK-0006 (in progress at the time) and every task from here on uses the convention from the outset. | ADR-000 §4 never specified a numpy-array-typing convention; a bare `np.ndarray` type-checks under `mypy --strict` but silently drops dtype precision — surfaced by explicit human instruction rather than a downstream worker hitting it, but handled with Scenario C's patch-task mechanics (don't reopen `done` tasks) since the effect on already-delivered files is the same either way. Applying the patch immediately also caught one genuine latent typing bug: `regression/base.py`'s `valid_mask` parameters are boolean, not `float64` — a blanket mechanical substitution would have mistyped them; `mypy --strict` flagged it immediately once the more precise type was in place. |
+| 2026-08-22 | TASK-0008 (discovered while filling its Consumed Interfaces, before any TASK-0008 code was written) | Added `TASK-0005-patch-2-unclamped-predict` (Scenario C): every strategy's `FittedModel.predict()` gains a `predict_unclamped()` sibling — the exact pre-clamp value, with the cold-start passthrough still applied. `predict()` becomes `clamp_to_forecast(*predict_unclamped(fc))`, behaviorally identical (`tests/test_regression.py`'s 16 tests pass unmodified). TASK-0008 now also depends on this patch task; its Consumed Interfaces will reference `predict_unclamped` once the patch is `done`. | TASK-0005's `predict()` applies the `[0, FC]` clamp *unconditionally, internally* — a reasonable design decision given TASK-0005's own acceptance criteria, but made with no visibility into ADR-006 (never in TASK-0005's Related ADRs), which requires the temperature reverse-transform (ADR-003b §1b) to run *before* the single final output clamp. Worked example of why this matters: an extrapolated raw prediction of, say, -5 gets clamped to `0` inside `predict()`; a reverse-transform applied afterward multiplies `0` by any temperature factor and is still `0` — the information the reverse-transform needed is already destroyed. Clamping first, transforming second, silently produces a wrong answer instead of an error, which is exactly the failure mode minimal-context, Consumed/Delivered-Artifact-mediated workers are meant to catch before it reaches running code. |
+| 2026-08-23 | TASK-0009 (config-flow, first HA-facing module implemented) | Established a per-test-file, hand-written `homeassistant` stub convention (registered into `sys.modules` before file-path-loading the module under test) for every remaining HA-facing task (TASK-0010 coordinator, TASK-0011 sensor/button, TASK-0015 switch) | No ADR specifies how `config_flow.py`/`sensor.py`/`coordinator.py`/`switch.py`/`button.py` (outside ADR-000 §6's zero-mocking pure tier) should be tested locally, and the project declares no `homeassistant` dev dependency (a full install is a large, unrelated dependency `pyproject.toml` deliberately excludes — HA is supplied by the host runtime). A small, hand-written, real (non-`Mock`) stand-in for exactly the touched surface, registered directly into `sys.modules`, is a direct extension of the `FakeHomeAssistant`/`FakeState` philosophy `test_providers_discovery.py` already established, keeping the dev/CI environment `pytest`-only. See TASK-0009's Delivered Artifacts for the full note. |
+| 2026-08-23 | (n/a — human-directed observation, post-TASK-0008) | Added `TASK-0005-patch-3-consolidate-predict` (Scenario C): `FittedModel` changed `Protocol` → `ABC`; `predict()` — identical across all four strategies after `TASK-0005-patch-2` — implemented once, concretely, on the base (same pattern as `providers/base.py`'s `Provider`); each strategy keeps only its own `predict_unclamped`. `tests/test_forecast_adjust.py`'s stub models updated to actually inherit the now-concrete base (previously pure duck-typing against the `Protocol`). Incidental fix: untracked `__pycache__`/`.pyc` from git, added `.gitignore` (this patch's own test runs were producing tracked-bytecode diff noise). `tests/test_regression.py` (16) and `tests/test_forecast_adjust.py` (12) both pass unmodified; full suite 128/128. | After `TASK-0005-patch-2` split `predict_unclamped`/`predict` apart, `predict()`'s body — `clamp_to_forecast(*predict_unclamped(fc)), confidence` — turned out to be byte-for-byte identical in `linear.py`, `wls2.py`, `wls3.py`, and `kernel.py`: a duplication that patch-2 introduced without collapsing, visible only once all four strategies were compared side by side. Flagged by the human rather than a downstream worker, but handled with the same Scenario C patch-task mechanics regardless, consistent with how `TASK-0005-patch-1` (also human-directed) was handled. |
+| 2026-08-23 | TASK-0010 (discovered by the human, while the Lead Agent was gathering TASK-0010's Consumed Interfaces — before any `coordinator.py` code existed) | Amended ADR-002 with new §1a (startup ordering: a config entry's referenced entities may not exist yet at `async_setup_entry`, since Home Assistant doesn't order custom-component setup relative to each other). Updated `tasks/adr-summary.md` §2/§3. Added `TASK-0016-integration-setup-entry` (Scenario B — the missing piece was `__init__.py` itself, which had no task at all, not just a missing interface on an existing one) with dependencies on every other remaining task, since `async_setup_entry`'s platform-forwarding needs `sensor.py`/`switch.py`/`button.py` to exist. Amended TASK-0010's own Related ADRs (+ADR-002 §1a) and Acceptance Criteria (the startup-fit criterion now names a coordinator entry point `__init__.py` calls, rather than referencing `async_setup_entry` directly, since TASK-0010 does not itself own that function) — no code existed yet for TASK-0010, so this cost nothing beyond the task-file edit. | Home Assistant gives no ordering guarantee between custom components' `async_setup_entry` calls; a config entry's baseline/actual-yield entities may belong to an integration that hasn't finished loading yet on a full restart. The fix combines two idiomatic HA mechanisms rather than a bespoke poller: `ConfigEntryNotReady` (HA's own backoff retry) once `hass.is_running`, and `async_at_started` to defer the startup fit (never the platform-forwarding itself) while HA is still booting — chosen specifically because blocking `async_setup_entry` on the `started` event directly would itself help delay that event, since Shady's own setup is part of what HA is waiting on. |
+| 2026-08-23 | TASK-0010 (discovered while implementing `coordinator.py`'s baseline-provider wiring, before `TASK-0010` itself reached `done`) | Added `TASK-0009-patch-1-manual-baseline-shape` (Scenario C — `TASK-0009` stays `done`, unreopened). `config_flow.py`'s manual-entry fallback (ADR-009 §3) stored `baseline_shape=None`, but `providers.discovery.BaselineProvider` (TASK-0003) requires a real `BaselineShape` to parse anything — a manual entry could never actually be used by the coordinator. Patch adds a required `baseline_manual_shape` dropdown (the same four `BaselineShape` values, default `"sensor_dict"`), used only when manual entry is actually chosen. `tests/test_config_flow.py` gained `TestManualBaselineShape` (2 tests); full suite 138/138. TASK-0010 now also depends on this patch. | A `done` task's delivered interface (config_flow.py's stored config shape) turned out insufficient for a downstream task's actual consumption need — exactly Scenario C's definition — surfaced by the Lead Agent itself while resolving TASK-0010's own Consumed Interfaces rather than by a separate downstream worker, but handled with the identical patch-task mechanics regardless. |
+| 2026-08-24 | TASK-0011 (discovered while gathering TASK-0011's Consumed Interfaces, before any TASK-0011 code was written) | Added `TASK-0010-patch-1-recalibration-triggers-recompute` (Scenario C — TASK-0010 stays `done`, unreopened). ADR-002 §2 names two independent recompute triggers (recalibration completion; baseline-entity update); `_refit_sync` only ever implemented the second. Patched `_refit_sync` to call `_recompute_string` immediately after each string's model is (re)fit. `tests/test_coordinator.py` gained `TestRefitTriggersRecompute` (2 tests); full suite 152/152. TASK-0011 now also depends on this patch. | Without this, `async_setup_entry` (TASK-0011) constructing a coordinator and running its startup fit would produce a fitted model but push nothing to `ShadyForecastSensor` until a baseline entity happened to fire a state-change event — incompatible with TASK-0011's own "plausible corrected value right after setup" acceptance criterion. |
+| 2026-08-24 | TASK-0011 (discovered while gathering TASK-0011's Consumed Interfaces, before any TASK-0011 code was written) | Added `TASK-0010-patch-2-string-enumeration` (Scenario C — TASK-0010 stays `done`, unreopened). `ShadyCoordinator` had no public way to enumerate configured strings (only the private `_strings`/`_StringConfig`); `sensor.py` needs `(index, name)` per string to build one `ShadyForecastSensor` each. Added `ShadyCoordinator.strings() -> list[tuple[int, str]]`. `tests/test_coordinator.py` gained `TestStringEnumeration` (2 tests); full suite 154/154. TASK-0011 (and, later, TASK-0015) now depend on this patch. | ADR-000 §5's naming convention ("private helpers... are not exported") and this project's Consumed/Delivered-Artifact discipline both rule out `sensor.py` reaching into `_StringConfig` directly; a small, targeted public accessor closes the gap without exposing any private type. |
+| 2026-08-24 | TASK-0011 (Scenario A — caught at readiness time, before any TASK-0011 code was written) | Corrected TASK-0011's own scope: removed `custom_components/shady/__init__.py` entirely from its Goal/Acceptance Criteria/Footprint. TASK-0011 now delivers only `sensor.py` and `button.py`, each with its own platform-level `async_setup_entry`, tested by seeding `hass.data[DOMAIN][entry.entry_id]` with a directly-constructed `ShadyCoordinator` rather than going through `__init__.py`. | TASK-0011's original Phase-2 draft (written before ADR-002 §1a and TASK-0016 existed) claimed `__init__.py` wiring as part of its own scope. ADR-002 §1a's decision text explicitly attributes the *entire* `__init__.py` flow (`hass.data` build, platform forwarding, the `ConfigEntryNotReady`/`async_at_started` guard) to `TASK-0016` as one coherent implementation — confirmed independently by `coordinator.py`'s own `async_startup` docstring ("called by `__init__.py` (TASK-0016)"). Leaving TASK-0011's stale scope statement in place would have had it build a throwaway partial `__init__.py` that `TASK-0016` would need to discard and rebuild from scratch, and would have introduced a dependency cycle (`TASK-0016` already depends on TASK-0011 for `sensor.py`/`button.py` to exist). |
+| 2026-08-25 | (n/a — human-directed new capability, post-TASK-0011) | Amended ADR-001 (new Amendment block + §2's weighting/confidence formulas + new §4a: a third per-sample weight factor, `recency_weight_i`, downweighting a training day by its distance from the rolling window's effective date — global, config-flow-exposed `recency_decay_max`, default 50% at the oldest day, linear, `0` disables it) and ADR-010 (new `recency_decay_max` bullet). Updated `tasks/adr-summary.md` §3/§7. Added three patch tasks (Scenario C mechanics — `TASK-0005`, `TASK-0009`, `TASK-0010` all stay `done`, unreopened): `TASK-0009-patch-2-recency-decay-config-field` (the new config field, independent), `TASK-0005-patch-4-recency-weight` (`build_pool` gains the weighting math — independent of the config-flow patch, since `regression/base.py` is a pure module that never reads `CONF_*` keys itself, only receives plain parameters), and `TASK-0010-patch-3-thread-recency-decay` (wires the two together in `coordinator.py`'s `_fit_string` — depends on both). Also added `TASK-0005-patch-4` to `TASK-0014`'s own Dependencies (not yet started; it also calls `build_pool` and needs to decide, at its own implementation time, whether its temperature fit reuses the yield fit's `recency_decay_max` or its own — flagged as an explicit open note in `TASK-0014`'s own Goal rather than decided here). No code written by this refinement — ADR/task-file bookkeeping only, per explicit instruction; all three patches remain `todo`. | Human-directed feature request, not a worker-discovered gap — handled with the identical "amend the ADR, then patch the already-`done` tasks it affects, never reopen them" mechanics this project already uses for every other post-`done` interface change (precedent: the 2026-08-22 `NDArray` typing patches, also human-directed), regardless of who or what surfaces the need. Split into three small, independently-reviewable patches (following the project's own established preference for several small patches over one large one, e.g. `TASK-0005-patch-1/2/3`) rather than one monolithic cross-file patch, since two of the three pieces (the config field; the pool-weighting math) have no actual code dependency on each other and can be reviewed and — later — implemented in either order, or in parallel; only the third (wiring) needs both. |
+| 2026-08-25 | (n/a — human question, before any of the three recency-decay patches were implemented) | Verified, rather than changed: the human asked whether ADR-001 §4a's decay ramp was planned to compress to fit a freshly-added string's actual (smaller) history instead of always spanning the full `window_days`. Traced the full chain — `cache.py`'s `get_regression_pools` (§2 "Column layout") always returns a fixed `window_days`-wide, calendar-anchored array regardless of a sensor's actual data availability (`window_start_day_index` is computed purely from the Cache's own configured `window_days`, never from any per-sensor check), `NaN`-padding any day within that span the sensor has no data for yet rather than shrinking the array; `coordinator.py`'s `_split_by_offset` slices on that same fixed `self._window_days`. `TASK-0005-patch-4`'s own Acceptance Criteria already derive `window_days` from `fc_by_offset[offset].shape[1]` (the fixed array shape) rather than a count of valid entries. Confirmed no ADR text, task file, or code anywhere in the repo implies the alternative (rank-among-valid-days) interpretation. Conclusion: already planned and specified correctly — the ramp already spans the full `window_days` regardless of a string's actual history length, since a freshly-added string's few valid days simply occupy the most-recent columns (small `day_age_i`, light discount) of that fixed span. No ADR or task edit made. Added an explicit clarifying paragraph to `build_pool`'s own docstring (`TASK-0005-patch-4`'s implementation, below) spelling out this calendar-anchoring property in the code itself, so a future minimal-context worker reading only `regression/base.py` doesn't have to re-derive it from `cache.py`. | Recorded here (rather than silently answering and moving on) so the audit trail shows this question was actually traced through the data layer and not just asserted — the "only if so, adjust" framing of the original ask makes the *absence* of a change a decision worth logging, not just a non-event. |
+| 2026-08-25 | (routine implementation — all three pending patch tasks) | Implemented and merged all three recency-decay patches in one pass, landing `TASK-0009-patch-2` → `TASK-0005-patch-4` → `TASK-0010-patch-3` in dependency order (worked inline, sequentially, per this project's "no subagents available" fallback rule). `TASK-0005-patch-4` and `TASK-0010-patch-3` were implemented back-to-back before either was marked `done`/reviewed, rather than reviewing `TASK-0005-patch-4` in isolation first: `build_pool` gaining a new *required* parameter (per its own Acceptance Criteria) leaves `coordinator.py`'s existing call site — and therefore the entire `tests/test_coordinator.py`/`test_button.py`/`test_sensor_forecast.py` suites — broken until `TASK-0010-patch-3`'s wiring lands, so an intermediate "`TASK-0005-patch-4` done, full suite green" checkpoint was never actually achievable on its own; both were verified and reviewed together against one green full-suite run instead. Full suite 177/177 (up from 169 after `TASK-0009-patch-2` alone); `mypy`, `ruff check`, and `ruff format --check` all clean. Zip archive updated and presented. | Documented since it's a deviation from Phase 4c's normal one-task-at-a-time PASS/merge/zip cadence — not a scope change (no new task, no split, no dependency edit), so it doesn't fit Scenario A/B/C, but the refinement-guard's spirit ("no two tasks deliver the same symbol", coherent dependency state) still applies to *how* a review checkpoint was chosen, and a future reader of this log should know why `TASK-0005-patch-4` doesn't have its own standalone green-suite run recorded. |
+| 2026-08-26 | (n/a — discovered before any TASK-0012 code was written, while establishing a green baseline in a new session) | **Correction of an earlier, wrong diagnosis in this same log entry** (see history — originally read "Fixed, did not patch-task: commit `1b02409`'s ... contained ... invalid Python 3 syntax"). It is not invalid syntax: `except TypeError, ValueError:` is PEP 758's Python 3.14 grammar (parentheses around a multi-exception `except` clause became optional), and this project's `requires-python = ">=3.14"` legitimately targets that. Every dev/CI environment actually available for this project's own work so far only has Python 3.12/3.13 installed, where the unparenthesized form is a hard `SyntaxError` — that mismatch is what actually blocked `pytest` collection, not a defect in commit `1b02409`'s delivered code. Root-caused after `ruff format .`, run routinely as part of this task's own close-out checks, re-stripped the very parentheses added back during the (mis-diagnosed) "fix" below — `ruff format`, with no explicit `target-version` set, infers it from `requires-python` and correctly canonicalizes to the parenthesis-optional 3.14 form. Resolved with a config-only change: pinned `[tool.ruff] target-version = "py313"` in `pyproject.toml`, one feature-release behind `requires-python`/`[tool.mypy] python_version` (both still 3.14) — `ruff format`/`ruff check` now keep emitting the parenthesized, 3.12/3.13-compatible form regardless of what `requires-python` declares the runtime needs, independent of which interpreter actually executes the code. The parenthesized form itself was kept in all four call sites (`providers/normalize.py` ×2, `providers/temperature.py` ×1, this task's own new `coordinator.py::_numeric_state`) since it is only cosmetic, not a correctness question — either form is valid 3.14, and the parenthesized one is also valid on whatever pre-3.14 interpreter a given contributor's machine or CI happens to have. | Logged prominently, correcting the historical record in-place rather than leaving the earlier wrong claim to stand uncorrected: a Lead Agent's own diagnosis, once written into this log, needs the same scrutiny before being trusted on a later read as any prior session's recap does. This also means commit `1b02409`'s own "Full suite 196/196, mypy/ruff check clean" claim was very likely accurate *in whatever environment that session actually ran in* (presumably one with Python 3.14 available) — there is no remaining evidence of an actual defect in that commit's delivered code, only of a Python-version mismatch between that claim's environment and this session's sandbox (3.12). If Home Assistant's own currently-supported Python floor is ever below 3.14 by the time this integration ships, `requires-python` itself — not just `ruff`'s pinned `target-version` — should be revisited; see ADR-000/ADR-007's own version-floor amendments for that decision's history. |
+| 2026-08-26 | TASK-0012 (discovered mid-implementation, while wiring `_accumulate_energy`'s three trigger points) | Corrected `TASK-0012`'s own in-progress design (no other task affected — TASK-0012 was not yet `done`, so this is an ordinary in-flight correction, not Scenario C): `async_refit`/`_async_recompute` now `await self._async_persist_energy_state()` directly instead of a detached `hass.async_create_task(...)`. Only the two genuinely-synchronous `@callback` trigger points (`_handle_actual_yield_update`, `_handle_energy_reset`) still use `hass.async_create_task`, since they have no `await` of their own to attach to. Module docstring updated to match. | The original design (all three trigger points schedule persistence via a detached, fire-and-forget task) broke two pre-existing, previously-`done` `test_coordinator.py` tests: a task created but never drained before its own `asyncio.run()` call returns becomes orphaned, and poisons a *later*, separate `asyncio.run()` call's `asyncio.gather()` in the same test (`ValueError: The future belongs to a different loop`) — a real, if test-harness-specific, correctness hazard of mixing "always detach" with "one `asyncio.run()` per logical step" test helpers. Since `async_refit`/`_async_recompute` are themselves coroutines already awaited/scheduled by their one respective caller, awaiting the persist call inline is strictly simpler and avoids the hazard entirely, with no behavioral cost. |
+| 2026-08-26 | TASK-0012 (discovered mid-implementation, while writing `TestRefitTriggersRecompute::test_no_recompute_attempted_when_fitting_fails`'s counterpart under the new code) | Updated one pre-existing, previously-`done` assertion in `tests/test_coordinator.py` (`test_no_recompute_attempted_when_fitting_fails`): replaced `cache.validated_range(forecast_sensor_id(0)) is None` with `hass_pushed_values(coordinator, forecast_sensor_id(0)) == {}`. Not logged as Scenario C (no interface changed, no patch task) — a plain test-assertion correction, recorded here only because it touches a `done` task's existing test. | `fc_sum()`/`fc_day_array()` (this task's own new methods) call `cache.get_time_range()` on `forecast_sensor_id`s from `_accumulate_fc_energy`, run at the end of every refit — the same "validate before read" `fetch_fn` dispatch `ShadyForecastSensor.native_value` (TASK-0011) already exercises on every poll, now also reachable from `coordinator.py` itself. A forecast sensor that has never been pushed to is therefore no longer guaranteed to have `validated_range() is None` after a refit that fits no model — it's legitimately been *queried* (and, via the defensive `[None] * slot_count` fallback, found empty), just never *pushed to*. The old assertion was checking an incidental implementation detail that happened to hold before this task existed, not the behavior the test's own name/docstring actually describes; the new assertion checks that real invariant directly. |
+| 2026-08-26 | TASK-0012 (routine implementation close-out) | Implemented, reviewed, and merged TASK-0012 in full: `aggregation.py` (carried over uncommitted from the prior session, unchanged), 7 new `Cache` energy accessors, 5 new `ShadyCoordinator` public methods + 9 new private methods/callbacks + the fourth coordinator schedule, and 6 new sensor classes wired into `async_setup_entry`. Full suite 247/247 (up from 196 after pinning `ruff`'s `target-version` per the entry above — that mismatch, not any defect in `1b02409`, is what blocked collection under this sandbox's Python 3.12); `mypy` clean on `custom_components/`; `ruff check`/`ruff format --check` clean repo-wide. `mypy` on `tests/` shows 9 pre-existing, unrelated errors in `test_regression.py` (confirmed present on the unmodified `1b02409` commit, untouched by this task) — left as-is, out of scope. `async_restore_energy_state()` is implemented and independently tested but deliberately not wired into any real startup path — see this task's own Delivered Artifacts "Known gap" note; `TASK-0016` (already listed as depending on this task in the table above) owns that wiring. Zip archive updated and presented. | Routine Phase 4c close-out entry, recorded per this log's own established convention (see the 2026-08-25 entry above) of logging every implementation pass, not just scope changes. |
+| 2026-08-29 | TASK-0014 (routine implementation close-out) | Implemented, reviewed, and merged TASK-0014 in full: `coordinator.py`'s `_resolve_temperature_entity` extended from weather-only to the full ADR-003b §1/§1a three-tier resolution (`weather`/`cell`/`ambient`) plus ADR-003c §5's "no predictor configured → skip both sides" gate; new `_TemperatureResolution` dataclass, `_fit_temperature_string` (per-slot model, predictor = global `weather_forecast_temperature_entity`, target = the tier's own already-resolved sensor, `smoothing_radius=0` + `apply_magnitude_weight=False`), `_predict_target_slot_temperature` (extracted from `_predict_day_basis`, dispatches by tier); `_apply_training_corrections` and `_fit_string` extended to thread the tier through. Predictor provider registered once, globally, at construction — picked up by TASK-0010's existing generic `forward()`-push loop with zero new listener code. `recency_decay_max` reuses the same global value the shading fit uses (this task's own documented decision — see Delivered Artifacts, no new config field). New `tests/test_coordinator_temperature_forecast.py` (28 tests, 7 classes), including a decisive differential test proving `apply_magnitude_weight=False` is actually wired (not just present in the signature) and one true end-to-end test proving the no-predictor case is byte-identical to no-temperature-source-at-all. Full suite 309/309; `mypy --strict` clean on `custom_components/` + `tests/` (40 files); `ruff check`/`ruff format --check` clean on every file this task touched. `git diff --stat` confirms only `coordinator.py` changed in this task's own commit (Acceptance Criterion 6 — no `cache.py` change). No new external dependency. Zip archive updated and presented. | Routine Phase 4c close-out entry, recorded per this log's own established convention. |
+| 2026-08-29 | TASK-0014 (discovered while filling TASK-0014's own Consumed Interfaces, before any TASK-0014 code was written) | Added `TASK-0005-patch-5-optional-magnitude-weight` (Scenario C — `TASK-0005` stays `done`, unreopened): `build_pool` gains a new, last-position, keyword-only `apply_magnitude_weight: bool = True` parameter; `False` skips `_magnitude_weight` entirely (weight reduces to plain `valid_mask`). `tests/test_regression.py` gained `TestOptionalMagnitudeWeight` (3 tests); full suite 281/281; no existing call site edited (default preserves current behavior byte-for-byte). TASK-0014 now also depends on this patch. | ADR-003c §2 requires the temperature-forecast learned model skip `magnitude_weight_i` entirely (temperature has no near-zero degeneracy analogous to `FC`'s), but `build_pool`'s signature had no way to do that. Worse than a mere missing knob: `_magnitude_weight`'s `masked_fc / row_max` ratio actively misbehaves on a routinely-negative predictor (unlike `FC`, which is never negative) — an all-negative-row slot loses all training weight outright (`row_max <= 0` zeroes the whole row), and a mixed-sign row produces literal *negative* per-sample weights once divided by a positive `row_max`, which feed straight into `fit_weighted_polynomial`'s WLS normal equations. Confirmed with a concrete mixed-sign-row test (`test_negative_predictor_values_uncorrupted_only_when_false`) rather than only asserting the parameter exists. Made optional (default `True`), unlike `TASK-0005-patch-4`'s required `recency_decay_max`, since only TASK-0014's own new call site needs the alternate behavior — no other `done` task's call site required touching. |
+| 2026-08-29 | (n/a — human-reported mypy failure, no task in progress) | Fixed a type-annotation bug in `tests/test_coordinator_intraday.py`'s `_reseed_pv_to_match_pushed_forecast` helper: `now`/`since` were annotated `object` (rejecting `<=`/`+ timedelta`), and `coordinator`/`hass` were annotated `object` with two `# type: ignore[attr-defined]` escapes papering over it. Retyped to match this file's own established convention (see `test_coordinator.py`'s `_push_forecast`/`hass_pushed_values` signatures): `now: datetime`, `since: datetime` (both are always `_NOW` or a real `datetime` at every call site), `coordinator: Any`, `hass: Any`; removed the two now-unused ignores (`warn_unused_ignores` is on repo-wide via `mypy.ini`'s `strict = True`). Not a Scenario A/B/C refinement — no interface, ADR, or task-file changed, purely a test-helper typing correction. `mypy` clean on `custom_components/` + `tests/` (39 files); full suite still 278/278; `ruff check` clean. Noted, not fixed (pre-existing, unrelated, one file not touched by this fix): `ruff format --check` flags one pre-existing multi-line-assert wrapping difference in `tests/test_regression.py`, consistent with the ruff-version-drift phenomenon already root-caused in the 2026-08-26 log entry above (this sandbox's `ruff 0.16.5` vs. whatever version last produced a "clean" claim) — left as-is, out of scope for this fix. | Reported directly by the human as a build-breaking `mypy` error at session start, before any Wave 7 work began; fixed first per their explicit instruction, ahead of resuming pending patch tasks / waves. |
+| 2026-08-28 | TASK-0013 (routine implementation close-out) | Implemented, reviewed, and merged TASK-0013 in full: 3 new `aggregation.py` pure functions (`ramp_weight`, `intraday_correction_factor`, `crossfade`); `forecast_adjust.py` split into `reverse_transformed_forecast` (steps 1–2, unclamped) + unchanged-behavior `adjust_forecast`; `cache.py` gained `IntradayBasis`/`IntradayState` + accessors (a non-restart-persisted dict store, per ADR-006 §5); `coordinator.py` gained the fifth schedule (5-minute intraday poll, only registered when the mode isn't `"off"`), `_predict_day_basis`/`_clamp_basis` (replacing `_predict_day`), `_apply_intraday_reset`/`_compute_intraday_output`/`_intraday_energy_window`/`_advance_intraday_string`, and `intraday_attributes`; `sensor.py`'s `ShadyForecastSensor` gained the `values_raw` array attribute plus the 4 scalar ADR-006 §4 attributes. Design decision (not explicit in ADR-006, ordinary implementation judgment): **every** `_recompute_string` call — a baseline-provider update *or* a recalibration — is treated as one uniform "reset point"; ADR-006 §1b's own "not a special case requiring separate handling" language for the first-activation-of-the-day case is exactly this same one-path treatment, generalized. A same-day-only check (`previous.reset_at.date() == now.date()`) prevents Blending from ever freezing a stale prior-day basis. Verified end-to-end in `tests/test_coordinator_intraday.py`, including that Blending's crossfade converges to bit-identical values with an equivalent Ramping run once `w_blend` reaches `1` (mid-crossfade indices legitimately differ between the two, by design — confirmed by inspection before asserting only on fully-converged indices). 4 existing test files' `homeassistant.helpers.event` stubs extended with `async_track_time_interval` (non-auto-firing, same convention as the existing `async_track_time_change`) so `coordinator.py`'s new import resolves; one pre-existing `test_sensor_forecast.py` attribute-set assertion updated for the 5 new keys. Corrected a stale cross-reference in `TASK-0010`'s own (already-`done`) Delivered Artifacts prose, which named `_predict_day` as the extension point `TASK-0014` would later touch — not a Scenario C patch, since `_predict_day` was always explicitly documented there as "not a Consumed Interface for any other task", only a prose pointer needing the corrected name (`_predict_day_basis` + sibling `_clamp_basis`). Full suite 278/278 (247 pre-existing + 19 aggregation + 12 coordinator); `mypy --strict` clean on `custom_components/`; `ruff check`/`ruff format --check` clean repo-wide. No new external dependency — `tasks/DEPENDENCIES.md` unchanged. Zip archive updated and presented. | Routine Phase 4c close-out entry, recorded per this log's own established convention. |
+| 2026-08-30 | TASK-0015-diagnostics-switch-and-scatter-sensors (human-directed design change, before any TASK-0015 code was written) | Amended ADR-004 (§1 replaced: `ShadyDiagnosticsSwitch` → `ShadyDiagnosticModeSelect`, a `select` dropdown over `const.py`'s `DIAGNOSTIC_MODES`; §5 rewritten; new pure package `diagnostics/` — `base.py`'s `DiagnosticMode` ABC, mirroring `providers/base.py`'s `Provider` ABC per ADR-012 §1 — plus `compare_regressions.py`'s `CompareRegressionsMode`, this ADR's one concrete mode, moved here verbatim from the original inline design; accuracy stays in `aggregation.py`, confirmed mode-independent, not relocated). Added ADR-013 (new, `Status: Proposed`, no task) sketching two further diagnostic modes — comparing regression methods, and comparing providers, each across all 288 slots of a day rather than one — specifically to validate that ADR-004's amended base class needs no further change for either; as a direct result, `DiagnosticContext.samples` is a `Sequence[DiagnosticSlotSample]` (1 today, 288 for either sketched future mode) rather than a single value. Updated `adr/000-coding-standards.md` (§2 mypy-suppression list, §3 diagram/prose, §6 zero-mocking list) and `tasks/adr-summary.md` (§1/§2/§6/§8a) to match. **Scenario A split** (caught before any code existed, equivalent to "too coarse to implement safely in one worker pass" once the base-class requirement was added): the original `TASK-0015-diagnostics-switch-and-scatter-sensors` is retired — slug not reused — split into `TASK-0015a-diagnostic-mode-base-architecture` (new, no dependencies, mirrors `TASK-0001-provider-base-architecture`'s shape and acceptance-criteria style exactly) and `TASK-0015b-diagnostics-select-and-scatter-sensors` (same scope/acceptance-criteria as the original task, plus one new criterion forbidding hard-coded mode names outside the registry/const list; now also depends on the new base-architecture task, definer-before-consumer). `TASK-0016`'s Dependencies, Goal, and Consumed-Interfaces prose updated for the new slug and for `select`/`switch` platform wording. `tasks/adr-capability.md` capability 15's title/scope/ADR-reference wording updated to match (no capability boundary change). No code written by this refinement — ADR/task-file bookkeeping only, per explicit human instruction ("planning session"); `TASK-0015a-diagnostic-mode-base-architecture` and `TASK-0015b-diagnostics-select-and-scatter-sensors` both remain `todo`. | Human-directed design correction, raised before implementation: a boolean switch has no room for a second diagnostic mode without a breaking rework, and the one mode ADR-004 already specifies had never been placed behind a reusable interface. Handled with the same "amend the ADR first, then re-derive the task set" discipline this project already uses for the 2026-08-25 recency-decay feature request, and the same Scenario-A split mechanics as any other "caught too coarse before code exists" case — the only wrinkle is that the coarseness was introduced by the amendment itself (the original single-task scope was fine for a boolean switch, not for a switch *and* a new base-class package with its own acceptance criteria). ADR-013 was written now, while the design reasoning was fresh, specifically to stress-test the base class against known-likely future needs before committing to its shape — cheaper to validate on paper here than to discover a required base-class change once `CompareRegressionsMode` and a later mode both already have delivered code. |
+| 2026-08-30 | TASK-0015a-diagnostic-mode-base-architecture / TASK-0015b-diagnostics-select-and-scatter-sensors (human-directed, immediately following the split above, no code written in between) | Renamed both new split slugs for clarity: `TASK-0015-diagnostic-mode-base-architecture` → `TASK-0015a-diagnostic-mode-base-architecture`; `TASK-0015-diagnostics-select-and-scatter-sensors` → `TASK-0015b-diagnostics-select-and-scatter-sensors`. Updated both task files' self/cross-references, `tasks/INDEX.md`'s task table and wave notes, `TASK-0016`'s Dependencies/Consumed-Interfaces prose, and ADR-004's Amendment block. Left untouched (per this log's own established "audit trail, not rewritten" convention — see the 2026-08-26 correction entry's own framing of when a rewrite is warranted vs. not): plain `TASK-0015` mentions inside already-`done` tasks' prose (`TASK-0002`, `TASK-0010`, `TASK-0010-patch-2`) and this log's own pre-2026-08-30 entries, all of which used "TASK-0015" only as a generic forward-reference to whichever diagnostics task eventually delivered the relevant interface — a reader encountering them can resolve that to `TASK-0015b` (the entity/sensor-delivering half) from context, and none of them are load-bearing `Dependencies:` fields the refinement guard checks. | `TASK-0015` sharing a bare number with two now-distinct tasks (base architecture vs. concrete select/sensors) was flagged as ambiguous before any worker was dispatched — cheap to fix now, at the task-file-naming level, exactly the kind of correction this framework's own rationale section describes as near-free in text versus expensive once a worker's context package or a commit message has already baked in the ambiguous name. |
+| 2026-08-31 | TASK-0015a (discovered while writing `diagnostics/base.py`, before any of it was committed) | Corrected ADR-004's Amendment code sketch: `DiagnosticMode.extra_fit`'s parameter was typed `DiagnosticFitContext`, a name never defined anywhere in ADR-004, ADR-013, or the rest of the repo (confirmed by a full-repo search first). Implemented — and fixed the ADR sketch to read — `extra_fit(self, context: DiagnosticContext)`, the same context type `compute()` receives: a mode's extra fitting operates on the same already-resolved diagnosed-slot inputs `compute()` renders (ADR-004 §4). Fixed in place in the ADR text with an inline correction note (not a new dated "Amended" header — a plain typo in an illustrative code block, not a design-decision change, so Scenario A/B/C's patch-task machinery does not apply; no code existed yet for either TASK-0015a or TASK-0015b, so this cost nothing beyond the ADR/task-file edit). | Golden rule ("when in doubt or facing an ADR conflict → escalate, never guess") applies to genuine ambiguity or contradiction; this was neither — the sketch's four other dataclasses left exactly one reasonable reading, and no ADR text anywhere hints at a distinct "fit context" shape carrying different fields than `DiagnosticContext`. Handled the same way this log's own 2026-08-25 "verified, rather than changed" entry treated a similarly low-stakes, unambiguous clarification: resolved directly and logged for the audit trail, rather than pausing implementation to ask the human to confirm a typo fix with only one sensible reading. |
+| 2026-08-31 | TASK-0015a-diagnostic-mode-base-architecture (routine implementation close-out) | Implemented, reviewed, and merged TASK-0015a in full: new pure package `diagnostics/` (`__init__.py`, `base.py`) — `DiagnosticSlotSample`/`DiagnosticContext`/`DiagnosticResult`/`DiagnosticFitResult` dataclasses plus the `DiagnosticMode` ABC (`compute()` required, `extra_fit()` optional, default `None`), verbatim from ADR-004's Amendment sketch aside from the `DiagnosticFitContext` correction above. `tests/test_diagnostics_base.py` — 9 zero-mocking tests (5 classes) covering all 7 acceptance criteria, reusing `test_providers_base.py`'s file-path-import + `TYPE_CHECKING`-only static-import convention (ADR-000 §6). Full suite 318/318 (309 pre-existing + 9 new); `mypy --strict` clean on 43 source files; `ruff check` clean; `ruff format --check` clean on every file this task touched (the one pre-existing, unrelated `tests/test_regression.py` drift from the 2026-08-26 log entry is untouched, out of scope). No new external dependency — `tasks/DEPENDENCIES.md` unchanged. `TASK-0015b`'s own Consumed Interfaces updated with `diagnostics/base.py`'s exact exports below. Zip archive updated and presented. | Routine Phase 4c close-out entry, recorded per this log's own established convention. |
+| 2026-08-31 | TASK-0015b (discovered while gathering TASK-0015b's own Consumed Interfaces, before any TASK-0015b code was written) | Found that `CompareRegressionsMode.extra_fit()` cannot actually be implemented as ADR-004's Amendment describes: `DiagnosticMode` is deliberately pure (no `cache.py`, no `homeassistant.*`), but fitting the three non-default regression strategies and turning each into a real-world-unit prediction needs the same corrections/fit/reverse-transform/clamp computation `coordinator.py`'s private methods (`_apply_training_corrections`, inlined build-pool/fit calls, `_predict_day_basis`/`_clamp_basis`) already perform — code `diagnostics/` cannot reach into, and should not duplicate a third time. Raised to the human with two options (keep `extra_fit()` pure and accept reference-condition, not real-world, units; or relocate the computation somewhere `diagnostics/` can reuse). The human's own observation — `coordinator.py` had already grown well past its stated orchestration-only scope (ADR-000 §3), carrying real business logic (`_apply_training_corrections`, `_clamp_basis`, and more) that belonged in its own module — reframed the fix: rather than deciding between the two options, extract the shared computation into a new pure module. Wrote **ADR-014** (new, `Status: Accepted`) defining `string_computation.py`: `REGRESSION_STRATEGIES` + `apply_training_corrections` moved verbatim (behavior-identical) from `coordinator.py`; two new functions, `fit_string_model` and `predict_string_forecast`, each factoring out a pattern previously inlined twice in `coordinator.py` (`_fit_string`/`_fit_temperature_string`; `_predict_day_basis`/`_clamp_basis`) and now needed a third time by diagnostics — named for the *computation* (fit + predict), per explicit human naming steer, not just "fitting". Amended `adr/000-coding-standards.md` (§3 diagram/prose — new node, `diagnostics --> regression` replaced by `diagnostics --> string_computation`; §6 zero-mocking list) and `tasks/adr-summary.md` (module chain, `coordinator.py`/`diagnostics/` bullets) to match. Added `adr/INDEX.md` entry for ADR-014. **Scenario B:** created `TASK-0017-string-computation-module` (new, depends on TASK-0005/0007/0008/0010/0013/0014 — the tasks whose delivered `coordinator.py`/`regression/`/`forecast_adjust.py`/`yield_correction.py` code this task relocates from/wraps), inserted as Wave 7a, strictly before TASK-0015b. **Scenario C:** created `TASK-0015a-patch-1-diagnostic-fit-inputs` (patches the already-`done` TASK-0015a without reopening it) — `DiagnosticSlotSample` gains `query_fc: float \| None = None` (the diagnosed slot's own FC value, needed as the shared x-coordinate for every `"selected {method}"`/`"selected actual"` chart point, ADR-004 §2 — a separate, smaller gap than the fitting-inputs one, also caught during this same Consumed-Interfaces pass: no field anywhere carried it) and `fit_inputs: DiagnosticFitInputs \| None = None` (a new frozen dataclass bundling exactly `string_computation.fit_string_model`/`predict_string_forecast`'s parameters), inserted as Wave 7b. `TASK-0015b`'s own Dependencies/Goal updated to add both new tasks; `TASK-0016`'s Dependencies are unaffected (already transitively covered via TASK-0015b). No code written for TASK-0017/TASK-0015a-patch-1/TASK-0015b itself by this refinement pass — ADR/task-file bookkeeping only, per explicit human instruction; all three remain `todo`. | Two related but distinct gaps surfaced in the same Consumed-Interfaces pass: ADR-004's Amendment sketch never gave `extra_fit()` a way to reach the raw training data or the temperature/clamp context it needs (a load-bearing design gap, not a typo — unlike the `DiagnosticFitContext` naming fix earlier the same day, this one has real architectural consequences and was escalated rather than resolved silently), and separately, the fix the human pointed toward doubles as a correction to `coordinator.py`'s own scope creep, independently worth doing per ADR-000 §3/§5's "one concept per module... a module that starts doing two unrelated things is a signal to split it." Handled as two coordinated Scenario B/C actions rather than one, since they patch different already-`done` tasks (TASK-0017 is a fresh prerequisite touching TASK-0010/0013/0014's code; TASK-0015a-patch-1 is a narrower patch touching only TASK-0015a's own dataclasses) and downstream readers benefit from being able to tell which fix addressed which gap. |
+| 2026-09-01 | TASK-0015a / TASK-0015a-patch-1 (human-directed design change, raised while reviewing ADR-014 and TASK-0015a/TASK-0015b, refined once more on review before any code existed for either patch) | **Round 1 (human instruction):** `DiagnosticMode` should stop being pure. Every concrete mode gets the owning `ShadyCoordinator` instance at construction (`__init__(self, coordinator)`) and pulls whatever coordinator-owned data it needs — string config, registered FC providers, the cache, regression methods (already reachable, pure, via ADR-014's `string_computation.REGRESSION_STRATEGIES` — no coordinator access needed for that one) — directly, on demand, rather than the coordinator/Lead Agent anticipating and threading every future mode's exact inputs through `DiagnosticContext` one field at a time, the friction `TASK-0015a-patch-1` (not yet implemented) was itself already an instance of. Cache: no separate constructor parameter — `coordinator.cache` is already a public attribute, confirmed by inspection. Also added two new abstract getters, `fit_cadence()`/`compute_cadence()` (`"daily" \| "hourly" \| "slot"`), so `coordinator.py` can read a mode's own declared schedule generically. Human explicitly confirmed this **supersedes** `TASK-0015a-patch-1` rather than the two mechanisms coexisting. **Round 2 (review correction, same session, still no code written):** reviewer pointed out `compute()`/`extra_fit()` didn't need to keep their `DiagnosticContext` parameter at all — with a coordinator reference available at construction, every piece of metadata a mode needs can be obtained through it, so the parameter (and the two dataclasses that only existed to fill it, `DiagnosticContext`/`DiagnosticSlotSample`) are obsolete and should be dropped, not kept alongside the new constructor. Corrected in place before finalizing (same discipline as the 2026-08-31 `DiagnosticFitContext` typo fix — no code existed yet for either round, so no Scenario C patch-on-a-patch was needed; both rounds are one coordinated design change, not two). Final shape: `DiagnosticMode.__init__(self, coordinator: ShadyCoordinator)` (required); `fit_cadence(self)`/`compute_cadence(self)` (both abstract, required, `Literal["daily", "hourly", "slot"]`); `compute(self) -> DiagnosticResult` and `extra_fit(self) -> DiagnosticFitResult \| None` (both lose their parameter — `extra_fit` still optional, still defaults to `None`); `DiagnosticContext`/`DiagnosticSlotSample` deleted from `diagnostics/base.py` outright; `DiagnosticResult`/`DiagnosticFitResult` unchanged (outputs, not inputs). Encapsulation retained despite dropping purity: a mode may use only `coordinator.py`'s public (non-`_`-prefixed) interface — extend the coordinator with a new accessor rather than reach into private state. Amended **ADR-004** (§5, new "Amendment — 2026-09-01" block plus a rewritten §5 "Module responsibility" and matching Consequences updates — two prior Consequences bullets tied to the now-removed `DiagnosticContext` marked superseded/moot in place, not deleted) and **ADR-000** (metadata, §3 diagram — new dashed `diagnostics -.-> coordinator` edge, `TYPE_CHECKING`-only — and prose, §6 zero-mocking list: `diagnostics/` leaves it, joining `coordinator.py`'s own hand-written-`hass`-stub test tier, not the lighter `providers/discovery.py`/`providers/temperature.py` exception). Added a pointer note plus an in-place §1/§2 update to **ADR-013** (Proposed, still unscheduled) — its two sketched whole-day modes need no change to their own reasoning, and the cardinality story (1 slot vs. 288) gets *simpler* without a shared `DiagnosticContext` container, not harder. Updated `tasks/adr-summary.md` (module diagram, `diagnostics/`/`coordinator.py` bullets, §6 testing paragraph, §6 sensors-section registry name) and `adr/INDEX.md` (ADR-004's row). **Scenario C, superseding not stacking:** `TASK-0015a-patch-1-diagnostic-fit-inputs` marked `superseded` in its own file (banner added, `Status:` field updated, slug not reused) and in the task table above — not implemented, doubly moot since the class it would have extended no longer exists. Created **`TASK-0015a-patch-2-diagnostic-mode-coordinator-access`** (new patch on the already-`done` TASK-0015a, replacing patch-1 in the schedule at Wave 7b) carrying the full final shape above. `TASK-0015b`'s Dependencies/Goal/Acceptance-Criteria/Estimated-Footprint/Definition-of-Done/Consumed-Interfaces updated throughout: the `DiagnosticContext`-building acceptance criterion replaced with a no-argument-`compute()` one; `_DIAGNOSTIC_MODES` → `_diagnostic_modes` everywhere; `test_diagnostics_compare_regressions.py`'s testing-tier note corrected from zero-mocking to the `hass`-stub convention; Consumed Interfaces re-sourced from `TASK-0015a-patch-2` for `DiagnosticMode`'s current shape, with `DiagnosticContext`/`DiagnosticSlotSample` explicitly marked "not consumed." No code written by this refinement pass — ADR/task-file bookkeeping only, per explicit human instruction ("planning session"); `TASK-0015a-patch-2` and `TASK-0015b` both remain `todo`. | Golden rule applied twice in the same pass, for different reasons: Round 1 was a genuine, human-owned architecture trade-off (purity vs. flexibility) escalated and decided explicitly, not guessed — the Lead Agent's job was to find every downstream consequence (encapsulation boundary, registry becoming per-instance, the import-cycle resolution, ADR-013's knock-on effects, `TASK-0015a-patch-1`'s redundancy) and lay them out precisely, not to relitigate the trade-off itself. Round 2 was caught on review, before any code existed, the same low-risk window the 2026-08-25/2026-08-31 "cheap to fix in text" entries describe — once a coordinator reference exists, a parallel per-call DTO carrying overlapping information is a design smell (two paths to the same data, nothing keeping them in sync) rather than a defensible redundancy, and dropping it outright (not deprecating-and-keeping) matches this project's standing "obsolete classes get dropped, not left as unused dead code" discipline applied explicitly here for the first time to a whole pair of dataclasses rather than a single field. |
+| 2026-08-31 | TASK-0017-string-computation-module (routine implementation close-out) | Implemented, reviewed, and merged TASK-0017 in full: new pure module `string_computation.py` — `REGRESSION_STRATEGIES` + `apply_training_corrections` relocated verbatim (behavior-identical) from `coordinator.py`'s private methods of the same name/purpose; two new functions, `fit_string_model` (wraps `build_pool`+strategy `.fit()`) and `predict_string_forecast` (thin wrapper over `forecast_adjust.adjust_forecast`, drops the confidence return value). `coordinator.py`'s `_apply_training_corrections` method and module-level `_REGRESSION_STRATEGIES` dict removed outright; `_fit_string`/`_fit_temperature_string` now delegate to the new module; `_predict_day_basis`/`_clamp_basis` deliberately left unchanged (still call `forecast_adjust.py` directly — the one caller needing the split-then-multi-day-clamp shape for intraday correction to insert into, ADR-006 §1b; no duplication there to remove). `tests/test_string_computation.py` — 14 new zero-mocking tests across 5 classes, including two explicit `n_slots=1` smoke tests validating ADR-014 §1's slot-count-agnostic requirement ahead of `TASK-0015b`'s real single-slot caller. **Mid-implementation correction, not anticipated at Phase-3 readiness:** `tests/test_coordinator_temperature_forecast.py`'s `TestApplyTrainingCorrectionsTierDispatch` (4 tests) called `coordinator._apply_training_corrections(string, ...)` directly — a private-method call this task's own Consumed-Interfaces check missed, since it correctly found no *other task's Delivered Artifacts* referenced that method, but didn't check for direct calls from a sibling task's *test file*. Updated all four to call `string_computation.apply_training_corrections(...)` with the same values translated into the new explicit-parameter shape; assertions unchanged, still pass. Recorded here as a lesson for future Scenario-B/refactor-shaped tasks: **check test files with `grep`, not just Delivered/Consumed Interfaces blocks, for direct calls to a private method before treating its relocation as risk-free.** `tests/test_coordinator.py`/`test_button.py`/`test_sensor_aggregates.py`/`test_sensor_forecast.py` each needed one added harness line (`_load("string_computation.py", "shady.string_computation")`, right after their existing `_load("cache.py", ...)`) so `coordinator.py`'s new `from . import string_computation` relative import resolves the same way its other relative imports already do — no test logic changed in any of the four, harness-only. Full suite 332/332 (318 pre-existing + 14 new); `mypy --strict` clean on 45 source files; `ruff check` clean; `ruff format --check` clean on every file this task touched (the one pre-existing, documented, unrelated `tests/test_regression.py` drift, 2026-08-26 entry, is untouched, out of scope). No new external dependency. Zip archive updated and presented. | Routine Phase 4c close-out entry, recorded per this log's own established convention — plus the mid-implementation test-file correction above, called out explicitly (rather than folded silently into the close-out) since it revealed a gap in how this task's own Consumed-Interfaces review was performed. |
+| 2026-09-02 | TASK-0015a-patch-2-diagnostic-mode-coordinator-access (routine implementation close-out, resuming pending Wave 7b at session start) | Implemented, reviewed, and merged `TASK-0015a-patch-2` in full, per ADR-004 §5's second Amendment (2026-09-01) and the matching ADR-000 §3/§6 update: `diagnostics/base.py` rewritten — `DiagnosticContext`/`DiagnosticSlotSample` deleted outright, not deprecated-and-kept; `DiagnosticMode` gains a required `__init__(self, coordinator: ShadyCoordinator)` (`ShadyCoordinator` imported `TYPE_CHECKING`-only from `..coordinator`, no runtime import of `coordinator.py`/`homeassistant.*` introduced), two new required abstract getters `fit_cadence()`/`compute_cadence()` (`Literal["daily", "hourly", "slot"]`, exposed as a new `DiagnosticCadence` module-level alias), and `compute()`/`extra_fit()` both lose their `DiagnosticContext` parameter (`compute(self) -> DiagnosticResult`; \`extra_fit(self) -> DiagnosticFitResult | None`, still optional, still defaults to `None`). `DiagnosticResult`/`DiagnosticFitResult`untouched — outputs only, unaffected by the parameter removal.`tests/test_diagnostics_base.py`rewritten (15 tests, 10 classes) covering every acceptance criterion — constructor requiredness, coordinator reachability, both cadence getters' requiredness (individually and together),`compute()`requiredness, all three cadence values round-tripping, both methods taking no parameter beyond`self`, `DiagnosticContext`/`DiagnosticSlotSample`no longer being attributes of the loaded module,`DiagnosticResult`/`DiagnosticFitResult`still being attributes of it,`extra_fit()`'s payload round-tripping unchanged, and one mode reading data through its stored coordinator reference's public `strings()`method end-to-end — using small hand-written stand-in objects (not a full`ShadyCoordinator`/`homeassistant`stub, since no test here exercises real coordinator behavior, per this task's own footprint guidance) constructed through`-> Any`-typed factory functions so `mypy --strict`accepts them against`DiagnosticMode.__init__`'s now-concrete `ShadyCoordinator`parameter type — the same "fake object standing in for a strictly-typed dependency" pattern`test_coordinator.py`'s own `Any`-typed helpers already establish, applied here at the object-construction boundary. Full suite 338/338 (332 pre-existing, −9 replaced `TASK-0015a`-era tests, +15 new); `mypy --strict`clean on 45 source files;`ruff check`clean repo-wide;`ruff format --check`clean on both files this task touched (two pre-existing, unrelated, already-documented format-drift files —`tests/test_regression.py`per the 2026-08-26 entry, and`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded illustrative code block — are untouched, out of scope). `git diff --stat`confirms only`diagnostics/base.py`and`test_diagnostics_base.py`changed in this task's commit. No new external dependency —`tasks/DEPENDENCIES.md`unchanged.`TASK-0015a-patch-1-diagnostic-fit-inputs`confirmed still`superseded\`, not implemented alongside this task. Zip archive updated and presented. |
+| 2026-09-02 | TASK-0015b (discovered while gathering TASK-0015b's own Consumed Interfaces, before any TASK-0015b code was written) | Found that `coordinator.py`'s `_diagnostic_modes` registry holds **one shared `DiagnosticMode` instance per mode name** (confirmed against `TASK-0015a-patch-2`'s own delivered code and against ADR-004 §5's "mirrors `REGRESSION_STRATEGIES`'s shape" wording) — but §2 needs **one `ShadyDiagnosticsSensor` per configured string**, and neither `compute()` nor `extra_fit()` (both zero-argument as of `TASK-0015a-patch-2`, merged minutes earlier this same session) has any parameter or per-string state a shared instance could use to know which string a given call is for. This is a load-bearing design gap, not a typo — real consequences either way — so it was raised to the human rather than guessed at, with three resolutions laid out: (1) one `DiagnosticMode` instance per (mode, string) pair; (2) a single shared instance whose zero-argument calls bundle every configured string's output in one shot; (3) reintroduce a `string_index: int` parameter, reopening `TASK-0015a-patch-2`'s just-merged signature a third time in three days. **The human chose (2).** Amended **ADR-004** (§5, new "Amendment — 2026-09-02" block; header `Amended` line updated to reference it) — `compute()`/`extra_fit()` keep their zero-argument signatures; `DiagnosticResult`/`DiagnosticFitResult` are restructured to a `by_string: Mapping[int, ...]` shape (new `DiagnosticStringResult` dataclass holds the two fields `DiagnosticResult` held directly before this amendment); `ShadyDiagnosticsSumSensor` unaffected (per §5's existing text, it was never calling `compute()` a second time); accepted cost trade-off stated explicitly (every per-string sensor read now recomputes every string, not just its own — judged acceptable given `compute()`'s already-documented per-string cost is cheap, and given this avoids a fourth signature change to the same method pair). **Scenario C:** created **`TASK-0015a-patch-3-diagnostic-mode-multi-string-bundling`** (patches the already-`done` `TASK-0015a-patch-2` without reopening it), inserted as Wave 7c, strictly after Wave 7b and strictly before Wave 8 (same file, `diagnostics/base.py`, sequential). `TASK-0015b`'s own Dependencies updated to add the new patch task. Implemented, reviewed, and merged `TASK-0015a-patch-3` in the same session, immediately following this bookkeeping: `DiagnosticStringResult` added (`state: str`, `attributes: dict[str, Any]`); `DiagnosticResult`/`DiagnosticFitResult` restructured to their single-field `by_string`-wrapped shapes; `DiagnosticMode` itself (constructor, cadence getters, `key`, both method signatures) left unchanged. `tests/test_diagnostics_base.py` revised — every `DiagnosticResult(state=..., attributes=...)`/`DiagnosticFitResult(predictions=...)` construction updated to the new shape via a `_single_string_result()` helper or explicit two-string bundles; two new test classes added (`TestDiagnosticResultShape`, introspecting each dataclass's exact field set via `dataclasses.fields()`; `TestDiagnosticResultMultiStringBundling`, round-tripping a real two-string `compute()` bundle) plus one new test in the existing `TestDiagnosticContextRemoved` class for `DiagnosticStringResult`'s new export — net 20 tests across 12 classes (was 15/10). Full suite 343/343 (338 pre-existing + 5 new); `mypy --strict` clean on 45 source files; `ruff check` clean repo-wide; `ruff format` applied (two nested-dict-literal reflows and one import-sort fix in the test file, both auto-fixed; `diagnostics/base.py` needed none). No new external dependency. `git diff --stat` confirms only the ADR, `diagnostics/base.py`, and the test file changed for this patch (plus the new patch task file itself). `TASK-0015a-patch-2`'s own `Delivered Artifacts` block left untouched, per Scenario C's "do not reopen" rule. Zip archive updated and presented. `TASK-0015b` itself was not started in this same pass — resumed immediately after, now that its Consumed Interfaces reflect the bundled shape. | Third round of design churn on this same `DiagnosticMode.compute()`/`extra_fit()` signature pair in three days (2026-09-01's coordinator-access amendment, that same day's parameter-removal correction, now this). Each round was caught before any dependent code existed and each is logged separately since each resolves a distinct, genuinely load-bearing gap (not cosmetic) — worth calling out explicitly, per this log's own precedent for flagging when a Consumed-Interfaces review itself revealed a gap (see the 2026-08-31 `TASK-0017` entry's identical framing), rather than folding three separable decisions into one undifferentiated note. |
+| 2026-09-02 | TASK-0015a-patch-3 (caught by the human immediately after `TASK-0015a-patch-3` was merged, reviewing that same-day decision against ADR-013) | The just-merged `by_string: Mapping[int, ...]` shape doesn't generalize: ADR-013 §1's sketched `compare_providers_daily` compares candidate **providers**, not strings, at all — no relationship to string index — and `compare_regressions_daily` produces a single **whole-day series**, not one entry per string either. String-index keying would have silently broken ADR-013's own central claim ("both fit inside `DiagnosticMode` as written, with no change to `diagnostics/base.py`") the moment either sketched mode was actually built — caught before any `TASK-0015b` code existed, immediately following the prior same-day amendment. The human's fix: rename `DiagnosticStringResult` → `DiagnosticSensorResult`, add a required `sensor_id: str` plus optional `name`/`unit`/`device_class` hints, and change `DiagnosticResult` from `by_string: Mapping[int, ...]` to a flat `sensors: Sequence[DiagnosticSensorResult]` — self-identifying, not container-assumed granularity. Amended **ADR-004** a fourth time (§5, second "Amendment — 2026-09-02" block same day; header updated) and **ADR-013** (2026-09-02 note confirming both sketched modes still need no further `diagnostics/base.py` change under the new shape, restoring the document's original claim). Applied the same generalization to `DiagnosticFitResult` (`by_string: Mapping[int, ...]` → `by_sensor: Mapping[str, Mapping[str, float]]`, keyed by `sensor_id` instead of string index) for symmetry with the same stated principle — flagged explicitly in the ADR amendment as not literally requested alongside `DiagnosticResult`'s change, in case that symmetry wasn't intended. **Scenario C, second time same day:** created **`TASK-0015a-patch-4-diagnostic-mode-sensor-list-output`** (patches the already-`done` `TASK-0015a-patch-3` without reopening it), inserted as Wave 7d, strictly after Wave 7c and strictly before Wave 8 (same file, `diagnostics/base.py`, sequential, a second restructuring the same day). `TASK-0015b`'s own Dependencies/Consumed Interfaces updated to depend on this patch instead of `TASK-0015a-patch-3` directly. Implemented, reviewed, and merged `TASK-0015a-patch-4` immediately following this bookkeeping: `DiagnosticSensorResult` added (six fields, three required, three optional defaulting to `None`); `DiagnosticResult`/`DiagnosticFitResult` restructured to their new single-field shapes; `DiagnosticMode` itself (constructor, cadence getters, `key`, both method signatures) left unchanged, a second time today. `tests/test_diagnostics_base.py` revised — every construction updated to the new shape; the multi-entry bundling test renamed and strengthened to actually exercise the generalization (three *differently-scoped* `sensor_id` kinds — a string-index-derived id, a provider-name id, a fixed whole-array sentinel id — in one `compute()` call, not just "two strings" as the prior version asserted) plus a new optional-fields-default test and a new removal test for `DiagnosticStringResult` — 22 tests across 12 classes (was 20/12). Full suite 345/345 (343 pre-existing + 2 new); `mypy --strict` clean on 45 source files; `ruff check` clean repo-wide; `ruff format` plus manual line-wrapping applied to the test file (several constructions exceeded the 100-column limit after the `sensor_id` field additions, not auto-reflowed by `ruff format` alone). No new external dependency. `git diff --stat` confirms only the two ADRs, `diagnostics/base.py`, and the test file changed for this patch (plus the new patch task file itself). `TASK-0015a-patch-3`'s own `Delivered Artifacts` block left untouched, per Scenario C's "do not reopen" rule. Zip archive updated and presented. `TASK-0015b` itself remains unstarted — resumed immediately after, now that its Consumed Interfaces reflect the sensor-list shape. | Fourth round of design churn on this same output-shape question in three days, and the second same-day reversal of a same-day decision. Logged separately from the immediately-preceding entry (rather than merged into one) because it is a distinct, separately-timestamped human decision correcting a specific, nameable flaw (string-index keying doesn't generalize) in what was just implemented — not a continuation of the same open question. Both same-day amendments were caught before any `TASK-0015b` code existed, which is the reason neither round cost more than a `diagnostics/base.py` + test-file rewrite; a future Lead Agent picking up a new `DiagnosticMode`-shaped task should treat ADR-013-style validation-against-future-needs documents as a checklist to run *before* finalizing a base-class change, not just a nice-to-have written once and forgotten. |
+| 2026-09-03 | TASK-0015b (caught by the human reviewing this task's own still-in-progress, pre-review implementation — code already existed, per `TASK-0015a-patch-4`'s shape, but the task had not reached Gate 3/reviewer, so this is an in-flight correction to `TASK-0015b` itself, not a Scenario C patch against completed work) | Two related issues found in the same review pass, both about how `sensor.py`/`CompareRegressionsMode` divide responsibility for the summed diagnostic entity. (1) Every per-string `ShadyDiagnosticsSensor` called `mode.compute()` directly, on every poll — one call already computes every configured string's data (`TASK-0015a-patch-4`'s shape), so an N-string entry did that same O(N) work N times per poll cycle; `compute_cadence()` (added by `TASK-0015a-patch-2`) existed for exactly this and was never wired to anything. (2) `ShadyDiagnosticsSumSensor` built the `"sum"` series itself, in `sensor.py`, from the per-string sensors' own already-computed, already-gap-filtered display series via `zip()` — verified end-to-end (real `ShadyCoordinator`, two strings sharing a window, one missing a day the other has) that this is a genuine cross-string day-alignment bug, not just a style concern: `zip()` aligns by position in each string's filtered list, not by calendar day. The human also flagged a second problem with the same code, independent of the alignment bug: `sensor.py` hardcoded "one entity per configured string plus one fixed sum" — the same "container assumes a mode's dimension" mistake the fourth Amendment (immediately above) had already corrected for `DiagnosticResult` itself, just re-introduced one layer up, in `sensor.py`'s entity-creation code, since nothing about the fourth Amendment's fix constrained *how many* aggregate entities a mode could produce or where that count got decided. **The human's decision, confirmed after one round of back-and-forth on a related sum-vs-accuracy question (see below):** `coordinator.py` gains `diagnostic_result()`, caching the active mode's `compute()` output, refreshed once per tick via `compute_cadence()` (mirroring `extra_fit()`'s existing per-tick `fit_cadence()`-gated caching in `cache.py`), invalidated on mode switch and on slot pin/clear, lazily computed once on a cache miss between ticks. `DiagnosticMode` gains a new required abstract `sensor_ids() -> Sequence[tuple[str, str]]` — every `(sensor_id, name)` pair a mode will ever produce, resolvable without calling `compute()`. `coordinator.py` gains `diagnostic_sensor_ids()`, the union of every *registered* mode's declared ids (not just the active selection, so entities stay stable across a `select.py` mode switch rather than needing dynamic add/remove). `sensor.py`'s `ShadyDiagnosticsSumSensor` is deleted outright; `ShadyDiagnosticsSensor` is generalized to take `(sensor_id, name)` directly and `async_setup_entry` creates one instance per pair from `diagnostic_sensor_ids()` — no per-kind subclass, no hardcoded shape anywhere in `sensor.py`; a mode producing several distinct aggregate entities is handled identically to one that doesn't, by declaring more ids. `CompareRegressionsMode.compute()` now builds the `"sum"` entry itself, from each contributing string's raw pool data gathered in the same pass as its own per-string entry (new `_StringDiagnostic` container, avoids fetching twice), summed via a new NaN-aware elementwise helper *before* per-string gap-filtering — which is what fixes the alignment bug, not just relocates the code. **Related question raised and resolved in the same review round:** the human separately asked the Lead Agent to justify — or find a flaw in — summing predicted-by-method and summed-actual *before* computing one accuracy ratio on the totals (rather than averaging each string's own accuracy), for the sum entity's `accuracy` figure specifically. Confirmed this principle is correct and unchanged from before this session's refactor (already documented in `aggregation.diagnostic_accuracy`'s/`sum_predicted`'s own pre-existing docstrings: sum-then-ratio gives a result implicitly weighted by each string's contribution size, which averaging per-string ratios would not); one adjacent, narrower asymmetry was surfaced on inspection — `predictions` only sums strings with a cached prediction, while `fc_selected`/`pv_selected` sum every contributing string regardless, so a string with real yield but no fitted model yet still counts toward the actual total without a matching predicted contribution — confirmed inherited unchanged from the design being replaced (not introduced by this refactor) and **kept as-is on explicit human instruction**, since it reflects currently-unmodeled production honestly rather than silently excluding it. Also corrected, in the same pass: an over-broad claim the Lead Agent had put in its own `coordinator.py` docstring/chat response, that `compute()` "reads this tick's fresh predictions, not last tick's" as a general property of the new ordering — true only when a mode declares `"slot"` for both `fit_cadence()` and `compute_cadence()` (true for `CompareRegressionsMode`, not guaranteed for a hypothetical mode with mismatched cadences); docstring corrected to state the actual, narrower guarantee. Amended **ADR-004** a fifth time (§2b/§3/§5 revised; header `Amended` line updated; §2b's/§5's 2026-09-02-era claims that `ShadyDiagnosticsSumSensor` "does no new fitting or fetching of its own" and reads sibling sensors' output explicitly marked superseded, not deleted). Updated `TASK-0015b`'s own Goal/Acceptance-Criteria/Estimated-Footprint/Consumed-Interfaces to match throughout; `Status` moved `todo` → `in-progress` (code already exists, pre-review). No new task/dependency needed — this task had not passed Gate 3 yet, so the correction lands directly in its own in-progress code rather than through a Scenario C patch task. Full suite 345/345 (5 pre-existing `test_diagnostics_base.py` dummy-mode fixtures updated for the new required `sensor_ids()` method; one stale entity-count assertion in `test_sensor_forecast.py` — unrelated harness gap from `TASK-0015a-patch-4`'s own merge, fixed in the same pass — brought the suite from failing to collect at all up to green first); `mypy`/`ruff` clean (one pre-existing, unrelated `cache.py` overload-return-type bug, also from before this review pass, fixed alongside establishing a clean baseline). Tests for `TASK-0015b`'s own new behavior (`test_cache_pinned_slot_pool.py`, `test_diagnostics_compare_regressions.py`, `test_select.py`, sensor-side diagnostics tests), the `shady.select_diagnostic_slot` service registration in `__init__.py`, and this task's own `Delivered Artifacts` block remain outstanding — `TASK-0015b` is not yet at Definition of Done. | Golden rule applied to a genuinely load-bearing design gap (not cosmetic): both issues had real, demonstrable consequences — quadratic-in-strings redundant work, and a real cross-string data-alignment bug, not just style preferences — so both were escalated to and decided by the human rather than guessed at, consistent with every prior round of design churn on this same `DiagnosticMode` output shape (2026-09-01/2026-09-02's four amendments above). The Lead Agent's own overstated ordering claim was caught and corrected on the human's challenge rather than left standing, and the sum-then-ratio accuracy question was answered directly (confirmed correct, not just conceded) before surfacing the one genuine adjacent asymmetry found while checking — matching this log's own standing preference for precise, evidence-based responses over reflexive agreement or reflexive defensiveness either way. |
+
+| 2026-09-04 | TASK-0015b (human-directed scope correction, raised by the Lead
+Agent before this task's own Gate 3/reviewer pass, mirroring the 2026-08-24
+TASK-0011 correction) | Removed `custom_components/shady/__init__.py` (service
+registration) from `TASK-0015b`'s own scope — Goal, one Acceptance Criterion,
+and Estimated Footprint all updated, with a dated note explaining the correction
+in place. `__init__.py` remains Phase 0's placeholder skeleton (no coordinator
+construction, no `hass.data` population at all); ADR-002 §1a's decision text
+already attributes the *entire* `__init__.py` flow, service registration
+included, to `TASK-0016-integration-setup-entry` as one coherent implementation,
+which already names `shady.select_diagnostic_slot` in its own Goal — no edit
+needed there. `TASK-0015b` instead delivers and tests the coordinator-level
+mechanism the future service handler will call
+(`pin_diagnostic_slot()`/`clear_diagnostic_slot()`/`diagnosed_slot()`, already
+implemented). No dependency-graph change — `TASK-0016` already depended on
+`TASK-0015b`. | Escalated per the golden rule rather than guessed at: writing
+service-registration code into the still-placeholder `__init__.py` would have
+meant either a throwaway coordinator-lookup path `TASK-0016` would discard, or
+quietly absorbing a slice of `TASK-0016`'s own already-scoped job — the exact
+same shape of mistake TASK-0011's own `__init__.py` line item was removed for on
+2026-08-24, caught here before any `__init__.py` code was written for this task
+either. | | 2026-09-04 | TASK-0015b (routine implementation close-out) |
+Completed `TASK-0015b`'s remaining Definition-of-Done items and closed it out.
+Test gaps filled: `tests/test_sensor_diagnostics.py` (new, 4 tests, reuses
+`test_sensor_forecast.py`'s HA-stub harness) proving `ShadyDiagnosticsSensor`
+never calls `.compute()` itself; `tests/test_coordinator.py` gained
+`TestDiagnosedSlotAutoTracking`/`TestPinDiagnosticSlot` (9 tests) covering
+`diagnosed_slot()`'s auto-tracking default and `pin_diagnostic_slot()`'s
+5-minute rounding, horizon accept/reject, `is_elapsed`, and
+clear-reverts-to-auto-tracking — previously only the cache-invalidation *side
+effect* of pinning was tested, not the pin/rejection logic itself;
+`tests/test_diagnostics_compare_regressions.py` gained
+`TestFuturePinnedSlotOmitsSelectedActual` (the future-pinned-slot Acceptance
+Criterion — `"selected {method}"` present, `"selected actual"` omitted,
+`accuracy == {}` — had no test at all before this pass). Also fixed a leftover
+stale in-function import in that same file (duplicated a module-level alias) and
+10 `ruff` line-length/mutable-default violations across three test files, left
+over from the prior session's final, unverified edits. Full suite 401/401 (up
+from 370 at session start); `mypy --strict` clean on 51 source files;
+`ruff check` clean repo-wide; `ruff format --check` clean on every file this
+task touched. Delivered Artifacts block filled in completely, cross-checked
+symbol-by-symbol against the actual code. Reviewer pass (Phase 4b, performed
+inline — no subagent split in this session) checked all twelve Acceptance
+Criteria against the delivered code and tests: **PASS**. `Status` moved
+`in-progress` → `done`. Zip archive updated and presented. | Routine Phase 4c
+close-out entry, recorded per this log's own established convention — closes out
+the longest-running task in this project's history (first touched 2026-08-30,
+five ADR-004 amendments, two dependency-graph corrections, one in-flight design
+correction, and one scope correction along the way). | | 2026-09-05 | TASK-0016
+(routine implementation close-out — the last task in the dependency graph; every
+other `todo`/`in-progress` task above is now `done`) | Filled `TASK-0016`'s
+Consumed Interfaces block at readiness time (Phase 3) from
+TASK-0010/0011/0012/0013/0014/0015b's Delivered Artifacts, including one
+addition beyond the placeholder's own wording:
+`coordinator.async_restore_energy_state()`, flagged by TASK-0012's 2026-08-26
+"Known gap" note as this task's own responsibility to wire in, was not yet named
+anywhere in TASK-0016's own task file. Implemented
+`custom_components/shady/__init__.py` in full —
+`async_setup_entry`/`async_unload_entry` per ADR-002 §1a's 3-step decision
+exactly (`hass.is_running` branch: immediate `ConfigEntryNotReady` on missing
+entities, coordinator constructed only to run that one check then `shutdown()`,
+never retained; not-running branch: store+forward+restore unconditionally, defer
+only the startup fit via `async_at_started`, reload-after-delay if still missing
+once it fires) and the `shady.select_diagnostic_slot` service (ADR-004 §2a —
+idempotent per-HA-instance registration, thin
+`pin_diagnostic_slot`/`clear_diagnostic_slot` wrapper). Added
+`custom_components/shady/services.yaml` (not in the original Estimated
+Footprint, but a direct, minimal extension of this task's own
+service-registration deliverable). New `tests/test_init.py` (13 tests, all 7
+Acceptance Criteria plus service pin/clear/reject paths and two defensive no-op
+cases), extending `test_button.py`'s `homeassistant` stub convention with
+`exceptions`/`helpers.start`/`helpers.config_validation` and real
+`hass.config_entries`/`hass.services` stand-ins. One design gap neither ADR-004
+nor this task's own text resolves — what a domain-wide service call should do
+across more than one loaded config entry, since no `config_entry_id`/`device_id`
+targeting parameter exists anywhere in the design — was resolved in place
+(broadcast pin/clear to every loaded coordinator) rather than escalated: the
+acceptance criteria don't exercise multi-entry behavior, the common case is a
+single entry, and the choice is disclosed in this task's own Delivered Artifacts
+and easily correctable via a Scenario-C patch task rather than blocking the last
+task in the graph over a corner case. Full suite 414/414 (401 pre-task + 13 this
+task); `mypy --config-file mypy.ini custom_components/ tests/` clean across all
+52 source files — no new `mypy.ini` per-file suppression needed; `ruff check`
+clean repo-wide; `ruff format --check` clean on both new files (the two
+pre-existing, unrelated drift files noted in earlier entries —
+`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code block,
+`tests/test_regression.py` — remain, untouched, out of this task's scope).
+Reviewer pass (Phase 4b, inline) checked all seven Acceptance Criteria against
+the delivered code and tests: **PASS**. `Status` moved `todo` → `done`. Zip
+archive updated and presented. | Routine Phase 4c close-out entry, recorded per
+this log's own established convention. With `TASK-0016` `done`, every task in
+`tasks/INDEX.md`'s table is now `done` or `superseded` — the ADR-to-code project
+this orchestration prompt describes has no `todo`/`in-progress` work remaining.
+| | 2026-09-05 | (human-requested review, not tied to any single task — "check
+the github release pipeline, is it consistent?", asked immediately after
+TASK-0016 closed out the entire task graph) | Audited
+`.github/workflows/release.yml` and everything it reads from/is described
+alongside (`hacs.json`, `mypy.ini`, `pyproject.toml`, `README.md`,
+`translations/{en,de}.json`). Found four distinct gaps, none touching
+application code: **(1)** the release pipeline's "Generate strings.json" step
+ships `translations/en.json` verbatim into every release, and that file (plus
+`de.json`) still carries Phase-0 placeholder content — `"data": {}` and literal
+"Placeholder – config flow fields to be defined" text — despite `config_flow.py`
+having 4 real steps and ~28 real fields implemented since `TASK-0009`; every
+install today shows raw placeholder text, no field labels, in the actual
+config-flow UI. **(2)** `hacs.json`'s
+`"domains": ["sensor", "switch", "button"]` and `mypy.ini`'s
+`[mypy-shady.switch]` section are both stale leftovers from before ADR-004's
+2026-08-30 switch→select rename (confirmed no `switch.py` exists anywhere;
+`select.py`/`ShadyDiagnosticModeSelect` is what TASK-0015b actually delivered
+and TASK-0016's own `PLATFORMS` list confirms) — `mypy.ini` is additionally
+missing the equivalent `[mypy-shady.select]` entry `select.py`'s own
+`# type: ignore[misc]` needs (verified not currently causing a live failure, but
+against the file's own stated policy); `README.md` still describes the feature
+as a "diagnostics switch". **(3)** `hacs.json`'s `"homeassistant": "2026.3.1"`
+carries a patch digit ADR-000's own documented amendment (`"2026.3"`) never
+specified. **(4)** `pyproject.toml` has its own `[tool.mypy]` section — no
+`strict = True`, different `mypy_path`/`no_namespace_packages` — directly
+contradicting `mypy.ini`; verified empirically (via `mypy --verbose`) that
+`mypy.ini` currently wins, so not a live break, but dead/misleading config and a
+latent footgun. Also noted, lower-priority: the release step "Update
+manifest.json version and requirements" never actually touches `.requirements`;
+`pyproject.toml`'s own `version` field is never synced from the release tag
+(only `manifest.json`'s is); `release.yml` has no gate requiring
+`code_checker.yml`'s checks to have passed before publishing. Presented all
+findings to the human conversationally (no code changed in this pass). Human
+asked for task files "of reasonable chunks", a zip, and to start fixing, with
+explicit instruction to **wait for approval after every zip presentation**.
+**Scenario B (new tasks discovered, not tied to a missing interface but to a
+post-completion review):** created three new tasks, each independent of the
+other two (no shared file, no interface dependency between them) —
+`TASK-0018-hacs-select-rename-cleanup` (gaps 2+3 above: `hacs.json`, `mypy.ini`,
+`README.md` — grouped together since all three are the same "finish an
+already-decided rename" root cause and no new ADR content),
+`TASK-0019-config-flow-translations` (gap 1: real en/de translation content,
+plus a new automated schema-vs-translation-keys consistency test so this can't
+silently regress again), `TASK-0020-release-pipeline-hardening` (gap 4 plus the
+two lower-priority release.yml items: removes `pyproject.toml`'s dead
+`[tool.mypy]`, syncs `manifest.json`'s `numpy` requirement from `pyproject.toml`
+at release time instead of hand-duplicating it, adds a `needs:`-gated test job
+to `release.yml` itself). None required an ADR amendment — every gap is a
+not-yet-finished propagation of an already-made ADR-004 decision, or an
+implementation-hygiene issue ADR-000 already governs, not a new architectural
+choice. Inserted into `tasks/INDEX.md`'s table, all `todo`, all Worker `—`. Zip
+archive updated and presented; per the human's explicit instruction,
+**implementation work pauses here pending approval** before any of the three is
+started. | Unlike every other entry in this log, this one was not triggered by a
+worker hitting a missing interface mid-implementation, nor by a human catching a
+Gate-2-stage planning gap — it was triggered by the Lead Agent auditing
+already-shipped, already-`done` output on direct human request, after the task
+graph was otherwise fully complete. Recorded with the same rigor as any other
+Scenario B entry since the same coherence guarantees apply: these are real,
+verified (not speculative) gaps, each traced to its root cause and its
+originating already-`done` task, and each sized so a future reader can tell why
+it exists without re-deriving the investigation. | | 2026-09-05 |
+TASK-0018-hacs-select-rename-cleanup (routine implementation close-out, first of
+the three 2026-09-05-created tasks worked, resuming per the human's "work on
+pending tasks, wait for approval after each" instruction) | Implemented,
+reviewed, and merged TASK-0018 in full: `hacs.json` (repo root — corrected from
+the task's own Estimated-Footprint guess of `custom_components/shady/hacs.json`,
+which does not exist) — `"domains"` → `["sensor", "select", "button"]`,
+`"homeassistant"` → `"2026.3"` (patch digit dropped, matching ADR-000's own
+amendment exactly); `mypy.ini` — `[mypy-shady.switch]` section removed,
+`[mypy-shady.select]` added (`warn_unused_ignores = False`, same treatment as
+`config_flow`/`sensor`/`coordinator`/`button`), shared comment block above it
+renamed to `select.py`/`ShadyDiagnosticModeSelect`; `README.md` point 6 reworded
+from "diagnostics switch, default off" to "a diagnostic-mode select entity,
+default off". No `.py` source file touched — confirmed via `git diff --stat`
+(exactly the three files above). Full suite 414/414 (unchanged from baseline —
+this task is config/docs-only);
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 52 source
+files; `ruff check .` clean repo-wide; `ruff format --check .` shows only the
+two pre-existing, already-documented drift files (`tests/test_regression.py`,
+`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code block),
+neither touched here. Confirmed via repo-wide grep that all remaining "switch"
+mentions live in already-`done` task files/`tasks/adr-summary.md`, describing
+the historical rename or an older task's own original scope wording — outside
+this task's Acceptance Criteria, left untouched. Reviewer pass (Phase 4b,
+inline) checked all six Acceptance Criteria against the delivered changes:
+**PASS**. `Status` moved `todo` → `done`. Zip archive updated and presented; per
+the human's standing instruction, pausing here for approval before starting
+TASK-0019. | Routine Phase 4c close-out entry, recorded per this log's own
+established convention. | | 2026-09-05 | TASK-0019-config-flow-translations
+(second of the three 2026-09-05-created tasks, resuming per "work on pending
+tasks, wait for approval after each") | Implemented, reviewed, and merged
+TASK-0019 in full: `custom_components/shady/translations/en.json` and `de.json`
+rewritten with real step titles/descriptions and per-field `data` labels for all
+four `config_flow.py` steps (`settings`: 19 fields, `add_string`: 4,
+`add_string_advanced`: 4, `add_another`: 1), in both `config.step` and
+`options.step`, matching
+`_settings_schema`/`_add_string_schema`/`_add_string_advanced_schema`'s exact
+keys (verified programmatically against the real schemas, not by manual
+reading); `config.error`/`config.abort`/`options.error` deliberately left `{}`
+per the task's own Acceptance Criteria (no `errors=` path exists in the code
+yet); no wording implies `add_string_advanced`'s fields are conditionally shown
+(they aren't). Added `tests/test_translations.py` — a durable
+schema-vs-translation-keys consistency check (5 tests) so this can't silently
+regress on a future field rename/addition, per the task's own stated reason for
+requiring an automated test over a manual cross-check. **Mid-implementation
+discovery (this task's own worker pass, not escalated as Scenario B since it was
+a mechanical test-infrastructure fix, not an ADR-level decision):** the new test
+file's own `homeassistant` stub — needed to load the HA-facing `config_flow.py`
+— initially used a zero-argument `ConfigEntry` placeholder, which broke 157
+unrelated tests in
+`test_button.py`/`test_coordinator.py`/`test_init.py`/`test_sensor_aggregates.py`/`test_sensor_forecast.py`
+the moment the new file existed in the suite. Root cause: those five files each
+install their own `homeassistant.config_entries` stub at their own collection
+time, then re-fetch `sys.modules["homeassistant.config_entries"].ConfigEntry`
+*dynamically at test-run time* rather than binding a name at collection time —
+since pytest collects every file before running any test, whichever such stub is
+collected *last* (now this new, alphabetically-final file) is the one all five
+actually get at run time, and all five already independently agree on an
+identical `ConfigEntry(entry_id, data)` two-argument shape specifically so any
+one of them can be "last" safely. Fixed by matching that exact shape (not
+inventing a new one) and documenting the cross-file contract in this file's own
+docstring and Delivered Artifacts, for the next person who adds a test file
+after this one alphabetically. Caught only because the full suite was run before
+considering the task done, not just the new file in isolation — re-verified
+stable under both forward and reverse file-collection order as an extra safety
+margin given how order-sensitive this class of bug is. Full suite 414 → 419/419;
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 source
+files; `ruff check .` clean repo-wide; `ruff format --check .` shows only the
+same two pre-existing, already-documented drift files as before this task,
+neither touched here. Reviewer pass (Phase 4b, inline) checked all six
+Acceptance Criteria: **PASS**. `Status` moved `todo` → `done`. Zip archive
+updated and presented; pausing here for approval before starting TASK-0020. |
+This is the kind of "worker discovers a missing/incompatible piece
+mid-implementation" situation Scenario B's worker instruction anticipates,
+resolved without a new task or human escalation because the fix was a mechanical
+match to an already-established, already-documented (now more explicitly)
+test-infrastructure convention rather than a new architectural or ADR-level
+decision — recorded here anyway per this log's practice of writing down anything
+that changed *why* the code looks the way it does, not only ADR-level changes. |
+| 2026-09-06 | TASK-0020-release-pipeline-hardening (third and last of the three
+2026-09-05-created tasks, resuming per "work on pending tasks, wait for approval
+after each") | Implemented, reviewed, and merged TASK-0020 in full: removed
+`pyproject.toml`'s dead, contradicting `[tool.mypy]` section (`mypy.ini` is now
+the only mypy config anywhere in the repo) and fixed an adjacent comment in
+`[tool.ruff]` that referenced the just-removed section; added a self-contained
+`test` job to `release.yml` (checkout/setup-python 3.14/setup-uv/pre-commit
+cache/`uv sync --group dev`/`pre-commit run --all-files`/`pytest` — a duplicate
+of `code_checker.yml`'s own checks, not a `needs:`-dependency on that separate
+workflow, per the task's own reasoning that a tag push and that workflow's
+triggers aren't guaranteed to correlate to one finished run for the same ref)
+and gated `release` on it via `needs: test`; renamed and rewrote the
+manifest-update step so it derives `manifest.json`'s `numpy` requirement from
+`pyproject.toml`'s own `[project] dependencies` array at build time
+(`awk`+`grep`, scoped to the `dependencies = [...]` block specifically, feeding
+`jq`) instead of trusting a hand-maintained duplicate — verified for real by
+running the exact pipeline against a scratch copy of this repo's actual files
+with `GITHUB_REF_NAME=v0.2.0`, producing valid JSON with the correct version and
+requirement string. **Two things surfaced during verification, neither silently
+fixed, both flagged here per this task's own "record exactly what was and wasn't
+runnable" Definition-of-Done item:** (1) actually running
+`uv run pre-commit run --all-files` (this sandbox has `github.com` access, so
+this was a real dry run of the new job's own steps, not just a YAML read)
+revealed that `.pre-commit-config.yaml`'s pinned `ruff-format` hook (`v0.6.2`)
+and `pyproject.toml`'s unpinned `ruff` dev-dependency (`uv` resolves to `0.16.4`
+today) disagree on how to format at least one real construct — invisible until
+`TASK-0019`'s new test file happened to contain it, but a real, live,
+already-present gap in both `code_checker.yml` and this task's new gate job as
+of this exact commit, outside all four of this task's own stated Acceptance
+Criteria (which name `ruff format --check .` specifically, unaffected). Not
+fixed here since the fix is a real trade-off (pin `ruff`'s dev version down to
+match the hook, or bump the hook's `rev` to track current `ruff` and reformat
+repo-wide) deserving the same human confirmation the three gaps this task itself
+was born from already got. (2) The exploratory `pre-commit run` above
+side-effected a real in-place reformat of the already-`done`
+`tests/test_translations.py` (pre-commit's hook rewrites, unlike
+`ruff format --check`'s read-only mode) — caught immediately via a third file
+appearing in a follow-up `ruff format --check .` run, reverted with
+`git checkout --` before proceeding, and reconfirmed clean with one more full
+gate pass afterward. Final diff: exactly `pyproject.toml` and
+`.github/workflows/release.yml`, matching the Estimated Footprint. Full local
+gate unchanged from before this task: pytest 419/419,
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 files,
+`ruff check .` clean, `ruff format --check .` showing only the same two
+pre-existing, already-documented drift files as every prior entry in this log.
+Reviewer pass (Phase 4b, inline) checked all five Acceptance Criteria: **PASS**.
+`Status` moved `todo` → `done`. Zip archive updated and presented. With
+TASK-0020 `done`, all three 2026-09-05 audit-discovered tasks (`TASK-0018`,
+`TASK-0019`, `TASK-0020`) are now complete and every task in this table is
+`done` or `superseded` again. | The ruff-version-pinning drift (finding 1 above)
+is recorded with the same rigor as a Scenario B entry even though no new task
+was created for it yet — it is a real, verified, already-live gap with a clear
+root cause and a bounded set of fix options, deliberately left for a human
+decision rather than a unilateral pick between two reasonable-but-different
+tooling choices, consistent with this log's established practice for exactly
+this class of finding. | | 2026-09-08 | (n/a — human request, following
+completion of all 12 `AUDIT-0001`–`AUDIT-0012` findings: "group issues by impact
+and type, weight and create tasks for changing") | Created
+`tasks/AUDIT-REMEDIATION-INDEX.md`, grouping every
+FAIL/PARTIAL/Test-Coverage-GAP recorded across the twelve audit findings files
+into 11 clusters by type (T1 Decision-Pending Architecture Deviation, T2
+Tooling/CI Config Defect, T3 ADR/Docs Staleness, T4 Test-Coverage Gap) and
+impact (Critical/High/Medium/Low), each given a 1–10 weight. Created thirteen
+new tasks, `TASK-0021` through `TASK-0033`, `todo`, mapped 1:1 or many:1 to
+those clusters — three decision-pending tasks (`TASK-0021` model-cache location,
+`TASK-0022` sunshine-duration rescaling, `TASK-0023` entity-layer cache-access
+boundary) that cannot start until a human picks between the options each task's
+own new "Open Questions for Execution" section lays out; two tooling-hardening
+tasks (`TASK-0024` CodeQL branch-target fix — Critical, the highest-weighted
+finding across all twelve audits, since it means a security-scanning gate has
+silently never run on a push/PR in this project's history; `TASK-0025` a "round
+3" of the tooling-config hygiene pattern `TASK-0020` already fixed once,
+covering the invalid `mypy.ini` version-pin quoting bug, the
+`pytest.ini`/`pyproject.toml` duplicate-config bug, and the still-open `ruff`
+dev-dependency pin `TASK-0020` itself flagged but never scheduled); four
+documentation-only tasks (`TASK-0026` finishing the switch→select rename
+`TASK-0018` started — a third file, `docs/architecture.mmd`, plus two ADR text
+references it and `AUDIT-0011` both missed; `TASK-0027` batching five
+independently-found module-diagram/ADR-text/docstring staleness items that are
+all "the description drifted, the behavior didn't," including two the audits
+themselves say describe the same underlying gap from two ends of one call graph;
+`TASK-0028` a small missing ADR-010 amendment entry for an already-shipped
+field; `TASK-0029` a README accuracy refresh for both a stale "Brainstorming /
+Concept phase" status line and duplicated ADR content); and four
+test-coverage-addition tasks (`TASK-0030` regression/correction-layer,
+`TASK-0031` intraday Ramping-vs-Blending divergence, `TASK-0032`
+entity-layer/config-flow, `TASK-0033` integration-setup coverage plus one
+undocumented teardown-asymmetry note) — each purely additive, no production-code
+change. Per the human's explicit instruction, every new task file also carries
+two new sections beyond this project's standard template: **Known Decisions**
+(what's already settled and should not be re-litigated by the worker) and **Open
+Questions for Execution** (what the worker must stop and ask about, populated
+with the actual options each finding already surfaced, rather than left as a
+placeholder). Three items the audits themselves marked "optional, low priority"
+and structurally hard to unit-test (a `discover_baseline_candidates` tie-break
+test; three "duplication regression is untestable" gaps; the self-acknowledged
+bare-`np.ndarray`-typechecks-cleanly limitation; a CI sync-checker for
+`docs/architecture.mmd`) were deliberately **not** given tasks — recorded
+instead in the new index's "Items acknowledged but not scheduled" section with
+rationale, so the decision not to schedule them is itself on record rather than
+silently dropped. Inserted all thirteen into `tasks/INDEX.md`'s table, all
+`todo`, all Worker `—`. No code changed in this pass — planning/task-file
+creation only, per the same "no code before this pattern is reviewed" discipline
+this log's 2026-09-05 entry already established for
+`TASK-0018`/`TASK-0019`/`TASK-0020`. Zip archive updated and presented. |
+Mirrors the 2026-09-05 entry's own framing exactly (a human-requested grouping
+pass over already-complete, already-reviewed output, not a worker hitting a
+missing interface mid-implementation) but at a larger scale — twelve findings
+files instead of one ad hoc review — and goes one step further per this specific
+request: grouping *and* explicit weighting, plus formalizing a per-task
+decision/question split that the earlier three tasks handled only in prose
+within their own Goal sections. Recorded with the same "real, verified,
+root-caused, not speculative" rigor this log applies to every Scenario B-shaped
+entry, since the same coherence guarantees apply even though this is a
+planning-only pass with no dependency-graph interface handoffs to verify. | |
+2026-09-08 | TASK-0025-tooling-config-hardening-round-3 (first of the
+`TASK-0025`/`TASK-0030`–`TASK-0033` remediation batch, worked per the human's
+"run remediation tasks 25 and 30-33" instruction, processed strictly
+sequentially inline per this project's own no-subagents rule) | Implemented,
+reviewed, and merged TASK-0025 in full, resolving all three `AUDIT-0012`-sourced
+tooling-config defects: `mypy.ini`'s `python_version = "3.14"` →
+`python_version = 3.14` (unquoted; was invalid ini syntax mypy silently ignored,
+falling back to auto-detected version instead of enforcing the ADR-000
+§4-Amendment 3.14 floor); `pyproject.toml`'s dead-duplicate
+`[tool.pytest.ini_options]` section deleted outright — **human decision, asked
+directly since the task's own "Open Questions for Execution" flagged it as
+unresolved:** direction (a), keep `pytest.ini` as the one canonical pytest
+config (matching how `TASK-0020` resolved the analogous `mypy.ini`/`[tool.mypy]`
+duplicate), over direction (b) which would have kept `pyproject.toml`'s
+fuller-but-unused `pythonpath` entry instead; `pyproject.toml`'s dev-group
+`"ruff"` entry pinned to `"ruff==0.16.4"`, matching `.pre-commit-config.yaml`'s
+`ruff-pre-commit` hook `rev: v0.16.4` exactly, closing the gap `TASK-0020`
+itself flagged but never scheduled. Verified empirically, not just by reading:
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 files with
+no "Invalid python version" warning; `pytest --collect-only -v` now reports
+`configfile: pytest.ini` with no "WARNING: ignoring pytest config in
+pyproject.toml!" line, still 419/419 tests; `ruff check .` clean;
+`ruff format --check .` shows only one pre-existing, unrelated,
+already-documented drift file
+(`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code block — the
+other drift file on record, `tests/test_regression.py`, was found no longer
+drifted during this check, untouched either way, out of scope).
+`git diff --stat` confirms exactly `mypy.ini` and `pyproject.toml` changed,
+matching the Estimated Footprint. No new external dependency —
+`tasks/DEPENDENCIES.md` unchanged. Reviewer pass (Phase 4b, inline) checked all
+four Acceptance Criteria against the delivered changes: **PASS**. `Status` moved
+`todo` → `done`. Zip archive updated and presented. | Routine Phase 4c close-out
+entry, with one Open-Question escalation handled per the golden rule: the
+pytest-config direction was a genuine "which file becomes canonical" preference
+call the task's own file explicitly deferred to a human rather than guessed at
+(unlike Item 1's unquoting fix and Item 3's pin-to-match-the-hook direction,
+both already unambiguous per the task's own "Known Decisions" section) — asked
+directly, answered, recorded in the task file's own Open Questions section
+before implementation proceeded. | | 2026-09-08 |
+TASK-0030-regression-correction-coverage-additions (second of the
+`TASK-0025`/`TASK-0030`–`TASK-0033` remediation batch, processed sequentially
+inline) | Implemented, reviewed, and merged TASK-0030 in full — three additive,
+test-only coverage gaps from `AUDIT-0002`/`AUDIT-0004`/`AUDIT-0003`, no
+production code changed anywhere: (1) `tests/test_regression.py` gained
+`TestPredictUnclampedPreservesRawValue` — fits all four real strategies on the
+existing `_clipping_ceiling_pool()` fixture and calls `predict_unclamped()`
+directly at query `FC=0.0`, where `predict()`'s own clamp always clips to
+exactly `[0, 0]` regardless of the raw value — verified empirically first (a
+scratch script against the real modules) that this fixture/query combination
+genuinely diverges for all four strategies, including `kernel` (whose
+extreme-extrapolation cold-start passthrough would otherwise mask the divergence
+at very large FC queries, the naive first fixture tried). (2)
+`tests/test_forecast_adjust.py` gained four new real-strategy-module loads
+(`linear_mod`/`wls2_mod`/`wls3_mod`/`kernel_mod`, exposed as `ALL_STRATEGIES`)
+plus a new `pytest` import and
+`TestRealStrategiesCallPredictUnclampedNotPredict`, parametrized over all four,
+proving `reverse_transformed_forecast` (the function that literally calls
+`predict_unclamped`) matches a correctly-ordered computation and diverges from
+the wrong, `predict()`-first one — reusing the same FC=0 divergence mechanism as
+(1), also verified empirically against the real modules before being written
+into the test file. (3) `tests/test_cache_pinned_slot_pool.py` gained
+`TestMatchesGetRegressionPoolsCenterColumnForSameSensorAndSlot` (two tests)
+cross-checking `get_pinned_slot_pool`'s single-slot read against
+`get_regression_pools(smoothing_radius=0)`'s center column for the same
+sensor/slot — the two accessors resolve "today" independently and their windows
+have different inclusive/exclusive boundary conventions (`get_pinned_slot_pool`
+includes its anchor date; `get_regression_pools` ends the day *before* its
+`reference`), so alignment required pinning to date `D` and calling
+`get_regression_pools` with `reference` set to midnight of `D + 1 day` — derived
+and verified empirically (a second scratch script against real `cache.py`)
+before writing the test, reusing the file's own existing
+`_index_valued_fetch_fn`/`_midnight` helpers with no new fixture machinery.
+`git diff --stat` confirms exactly the three test files changed, matching the
+Estimated Footprint — no `.py` production file touched. Full suite 419 → 426/426
+(7 new: 1 + 4-parametrized + 2);
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 source
+files; `ruff check .` clean repo-wide; `ruff format` applied to the three edited
+files (one, `test_forecast_adjust.py`, needed a line-length reflow under the
+newly-pinned `ruff==0.16.4` from `TASK-0025`); `ruff format --check .` afterward
+shows only the one pre-existing, unrelated, already-documented drift file
+(`adr/004-diagnostics-select-and-scatter-sensor.md`'s embedded code block),
+untouched, out of scope. No new external dependency — `tasks/DEPENDENCIES.md`
+unchanged. Reviewer pass (Phase 4b, inline) checked all four Acceptance Criteria
+against the delivered tests: **PASS**. `Status` moved `todo` → `done`. Zip
+archive updated and presented. | Routine Phase 4c close-out entry for a task
+with no Open Questions (all three items were audit-specified, additive-only, per
+the task's own "Known Decisions" section) — notable only for the
+empirical-verification-before-writing discipline applied to all three new tests:
+each fixture/query/alignment scheme was run against the real modules in a
+scratch script first (not derived from reading the code alone), since a
+coverage-addition task's entire value depends on the new assertion actually
+exercising the property it claims to, not just importing cleanly. | | 2026-09-08
+| TASK-0031-intraday-ramping-blending-divergence-test (third of the
+`TASK-0025`/`TASK-0030`–`TASK-0033` remediation batch, processed sequentially
+inline) | Implemented, reviewed, and merged TASK-0031 in full:
+`tests/test_aggregation_intraday.py` gained
+`TestRampingVsBlendingDivergeMidRamp`, one test proving Ramping's and Blending's
+outputs genuinely diverge at a partial ramp weight
+(`ramp_weight(3, 12) == 0.25`), the structural complement to the existing
+`TestBlendingConvergesToRampingSteadyState`'s convergence-at-`w=1` proof —
+reused that test's exact fixture values for direct consistency, only the ramp
+weight differs. Divergence verified empirically against the real
+`aggregation.py` module first (`ramping_result=892.5` vs
+`blending_result=796.875`) before being written into the test; also asserted
+Ramping's result equals `new_prediction` exactly (old side plays no role) and
+Blending's equals neither `old_prediction` nor `new_prediction` (a genuine mix).
+`git diff --stat` confirms exactly one file changed, matching the Estimated
+Footprint — no production `.py` file touched, existing convergence test
+unmodified. Full suite 426 → 427/427;
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 source
+files; `ruff check .` clean repo-wide; `ruff format` applied (one line-length
+reflow); `ruff format --check .` afterward shows only the one pre-existing,
+unrelated, already-documented drift file, untouched. No new external dependency.
+Reviewer pass (Phase 4b, inline) checked all three Acceptance Criteria:
+**PASS**. `Status` moved `todo` → `done`. Zip archive updated and presented. |
+Routine Phase 4c close-out entry — smallest of the four `TASK-0030`–`TASK-0033`
+coverage-addition tasks (single test, single file), no Open Questions, matching
+the task's own "Known Decisions" note that the audit's recommended shape needed
+no further design. | | 2026-09-08 |
+TASK-0032-entity-layer-config-flow-coverage-additions (fourth of the
+`TASK-0025`/`TASK-0030`–`TASK-0033` remediation batch, processed sequentially
+inline) | Implemented, reviewed, and merged TASK-0032 in full — three additive,
+test-only coverage gaps from `AUDIT-0009`/`AUDIT-0010`, no production code
+changed anywhere: (1) `tests/test_sensor_diagnostics.py` gained
+`TestDiagnosticsSensorUniqueIdDistinctness`, reusing the existing
+`_make_setup()`/`_CountingDiagnosticMode` two-string fixture to assert
+`_attr_unique_id` distinctness directly at the entity layer (previously only
+tested at the `sensor_ids()`-producer level). (2) `tests/test_translations.py`
+gained a `_flatten_keys()` helper and `test_en_and_de_have_identical_key_sets`,
+comparing `en.json`/`de.json`'s flattened key sets for equality in both
+directions, independent of and complementary to the existing schema-key-driven
+check — verified empirically first that the two files currently match exactly
+(they do). (3) `tests/test_config_flow.py`'s `TestManualBaselineShape` gained
+`test_selected_shape_round_trips_through_the_real_parser`, parametrized over all
+four `_BASELINE_SHAPES` values with a shape-appropriate synthetic payload each,
+driving the manual-entry flow for real and feeding the stored `shape` + a
+matching payload into `normalize_candidate_series` — all four payloads
+(including `weather_cloud`'s inversion, verified `cloud_coverage=40.0` → series
+value `60.0`) checked empirically against the real `providers/normalize.py`
+module before being written into the test; item 3's own open scope question
+resolved to the audit's default (all four covered, none impractical). Also
+checked `TASK-0022`'s status before writing the `weather_sunshine` sub-case per
+this task's own explicit interaction note — still `todo`, so the pre-rescale
+behavior this task file was written against remains correct; no adjustment
+needed. `git diff --stat` confirms exactly the three test files changed,
+matching the Estimated Footprint — no production `.py` file touched. Full suite
+427 → 433/433 (6 new: 1 + 1 + 4-parametrized);
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 source
+files; `ruff check .` clean repo-wide; `ruff format --check .` shows only the
+one pre-existing, unrelated, already-documented drift file, untouched — none of
+this task's three edited files needed reflowing. No new external dependency.
+Reviewer pass (Phase 4b, inline) checked all four Acceptance Criteria: **PASS**.
+`Status` moved `todo` → `done`. Zip archive updated and presented. | Routine
+Phase 4c close-out entry — the one small scope decision (item 3's shape
+coverage) was a "default and proceed, note if impractical" style question the
+task file itself pre-resolved rather than a hard escalation gate, and no shape
+turned out impractical, so no human round-trip was needed here (unlike
+`TASK-0025`'s item 2, which the task file itself marked as requiring a human
+answer). The `TASK-0022`-interaction note is an example of a dependency the Lead
+Agent must re-check at execution time even though `TASK-0022` isn't in this
+task's formal `Dependencies` list — a soft ordering hint the task file itself
+flagged, honored by checking `tasks/INDEX.md` before writing the affected
+sub-case. | | 2026-09-08 |
+TASK-0033-integration-setup-coverage-and-teardown-semantics (fifth and last of
+the `TASK-0025`/`TASK-0030`–`TASK-0033` remediation batch, processed
+sequentially inline) | Implemented, reviewed, and merged TASK-0033 in full —
+three coverage gaps from `AUDIT-0011-integration-setup`, one carrying a
+documentation addition: (1) `tests/test_init.py` gained
+`TestAsyncSetupEntryGenuineConstructionFailure`, deleting `CONF_WINDOW_DAYS`
+from a config entry's data (the one field `coordinator.py`'s own `__init__`
+reads via plain `data[...]`, no `.get()` fallback) and asserting the resulting
+`KeyError` propagates out of `async_setup_entry` unconverted, explicitly not
+`ConfigEntryNotReady` — achievable entirely within the existing stub harness,
+confirming the audit's own framing, no expansion needed. (2)
+`custom_components/shady/__init__.py`'s module docstring gained a new paragraph
+documenting why `async_unload_entry` deliberately never unregisters the
+domain-wide `select_diagnostic_slot` service on a single entry's unload
+(registered once per running HA instance, broadcast-style handler, no
+config-entry-selecting parameter) — docstring only, `git diff` confirms zero
+logic changed; `tests/test_init.py` gained
+`TestServicePersistsAcrossPartialUnload` verifying it empirically across two
+loaded entries. **Caught and fixed a real bug in this new test itself before
+marking the task done:** `_make_entry()` always hard-codes the same
+`"test_entry"` id, so without an explicit `entry_b.entry_id = "test_entry_b"`
+override the second entry's setup silently overwrote the first's
+`hass.data[DOMAIN]` slot rather than adding a second one — the test's own first
+run caught this by failing, not by code inspection. (3) `tests/test_init.py`
+gained `TestServicesYamlMatchesRegisteredHandlers`, a dependency-free
+top-level-key scan of `services.yaml` (deliberately not adding a PyYAML
+dependency for this one file-structure read — verified empirically first that
+the scanner extracts exactly `{'select_diagnostic_slot'}`) cross-checked
+bidirectionally against `_register_services`'s actually-registered
+`(domain, service)` handler pairs — the executable version of the audit's manual
+check, chosen to live in `test_init.py` rather than a new file per this task's
+own "worker's choice, matching existing organization" framing (that file already
+owns every other `_register_services`-adjacent test). `git diff --stat` confirms
+exactly `custom_components/shady/__init__.py` (docstring only) and
+`tests/test_init.py`, matching the Estimated Footprint. Full suite 433 →
+436/436; `mypy --config-file mypy.ini custom_components/ tests/` clean on 53
+source files; `ruff check .` clean repo-wide; `ruff format` applied (one
+line-length reflow); `ruff format --check .` afterward shows only the one
+pre-existing, unrelated, already-documented drift file, untouched. No new
+external dependency. Reviewer pass (Phase 4b, inline) checked the docstring
+criterion plus all four Acceptance Criteria: **PASS**. `Status` moved `todo` →
+`done`. Zip archive updated and presented. This closes out the full
+`TASK-0025`/`TASK-0030`–`TASK-0033` remediation batch the human requested. |
+Routine Phase 4c close-out entry for the last task in the requested batch —
+notable for the entry_id-collision bug caught by actually running the new test
+rather than trusting the design, and for explicitly declining a new PyYAML
+dependency in favor of a narrowly-scoped, verified-correct dependency-free
+scanner, keeping `tasks/DEPENDENCIES.md` unchanged across the entire five-task
+batch. | | 2026-09-08 | TASK-0024-codeql-branch-target-fix (first of the
+remaining `AUDIT-REMEDIATION-INDEX.md` "Suggested execution order" steps 1–4,
+per the human's "run remediation tasks strictly sequentially in the suggested
+execution order" instruction; the human had separately pre-recorded a
+`## Descision` — "change the triggers" — directly in this task's own file before
+this pass began, resolving its Open Question in favor of option (a)) |
+Implemented, reviewed, and merged TASK-0024 in full:
+`.github/workflows/codeql.yml`'s `push.branches` and `pull_request.branches`
+changed from `["main"]` to `["master"]`; the `schedule` cron trigger left
+byte-for-byte unchanged. Verified against the live remote first, not assumed:
+`git ls-remote --symref origin HEAD` → `ref: refs/heads/master`, matching the
+new trigger targets exactly and confirming the audit's original finding.
+`git diff --stat` confirms exactly one file changed (2 lines). Full suite re-run
+post-change: 436/436 passed, unchanged from baseline, as expected for a
+workflow-YAML-only change touching no `.py`/test file; `ruff check .` clean,
+`ruff format --check .` shows only the one pre-existing, unrelated,
+already-documented drift file
+(`adr/004-diagnostics-select-and-scatter-sensor.md`), `mypy` clean on 53 source
+files. No new external dependency — `tasks/DEPENDENCIES.md` unchanged. Reviewer
+pass (Phase 4b, inline) checked all four Acceptance Criteria against the
+delivered change: **PASS**. `Status` moved `todo` → `done`. Zip archive updated
+and presented. | Routine Phase 4c close-out entry — the human's decision was
+already recorded in the task file's own `## Descision` line before this pass
+started, so no live escalation round-trip was needed here (unlike `TASK-0025`'s
+pytest-config question, which required asking directly); this pass's own job was
+limited to independently re-verifying the stated fact (the actual default
+branch) against the live remote rather than trusting the task file's claim
+uncritically, then executing the now-unambiguous fix. | | 2026-09-09 |
+TASK-0021-fitted-model-cache-location (second of the remaining
+`AUDIT-REMEDIATION-INDEX.md` execution-order steps; the human had recorded the
+top-level `## Decision` — "Proceed with Option B including the validated range
+logic" — before this pass began, but the Lead Agent identified a genuine
+second-order ambiguity underneath it: "validated range logic" is `cache.py`'s
+term for `fetch_fn`-backed, recorder-sourced time-series data, and a
+`FittedModel` is neither — escalated with four concrete candidate shapes via
+`ask_user_input_v0` rather than guessing; human clarified: "midnight
+invalidates. Fitting model updates over the day just refresh/push future
+slots.") | Implemented, reviewed, and merged TASK-0021 in full: relocated the
+fitted-model cache from `coordinator.py`'s raw
+`self._models`/`self._temperature_models` dicts into `cache.py`, per Option B —
+but, per the human's clarified decision, as an explicitly validity-tracked store
+(`ModelKind`-keyed `get_model`/`set_model`/`invalidate_models`) rather than
+ADR-007a §5's originally-specified bare `dict[key, value]`. `coordinator.py`'s
+`_refit_sync` now calls `cache.invalidate_models()` once before its per-string
+fit loop (a genuine, intentional behavior change beyond pure relocation — a
+string whose fit fails mid-cycle now correctly reads back as "no valid model"
+for the rest of the day, rather than silently serving an arbitrarily stale model
+from a previous successful cycle, which the prior raw-dict design allowed);
+`_recompute_string`/`_predict_day_basis`/`_predict_target_slot_temperature` all
+read via `cache.get_model(...)`. Deliberately scoped *out*
+`fetch_fn`/`_validate_range` reuse — a fitted model is never fetched from the
+recorder, only the time-series design's validity half applies. Both
+`adr/007-coordinator-cache-split.md` and
+`adr/007a-cache-storage-and-accessor-design.md` gained dated Amendment blocks
+(plus top-of-file pointer lines) recording the reasoning and the exact accessor
+shape; `tasks/adr-summary.md` §5 updated to match. Test footprint:
+`tests/test_cache_core.py` gained a real (zero-mocking)
+`_StubModel(base_mod.FittedModel)` fixture and 7 new tests
+(`TestFittedModelCacheRoundTrip`, `TestFittedModelCacheInvalidation`) covering
+round-trip, cross-key independence, invalidate-clears-every-key,
+invalidate-retains-the-stale-object-internally, re-validate-after-invalidate,
+and invalidate-on-empty-cache;
+`tests/test_cache_pinned_slot_pool.py`/`tests/test_cache_regression_pools.py`
+both needed (but did not use for new tests) a `regression/base.py` pre-load
+added before `cache.py`'s own load, now required since `cache.py` imports
+`FittedModel` — same multi-module load-order convention
+`tests/test_forecast_adjust.py` already established for its own
+`from .regression.base import FittedModel` import. `tests/test_coordinator.py`
+(3 tests), `tests/test_coordinator_temperature_forecast.py` (4 spots), and
+`tests/test_button.py` (1 test) converted from direct
+`coordinator._models`/`coordinator._temperature_models` dict access to the new
+`coordinator.cache.get_model`/`set_model` accessor — behavior-preserving,
+nothing deleted. `git status --short` confirms exactly 11 files changed,
+matching the Delivered Artifacts listing. Full suite 443 → 443/443 passed (7
+new, zero deleted); `mypy --config-file mypy.ini custom_components/ tests/`
+clean on 53 source files; `ruff check .` clean repo-wide;
+`ruff format --check .` shows only the one pre-existing, unrelated,
+already-documented drift file, untouched. No new external dependency —
+`tasks/DEPENDENCIES.md` unchanged. Reviewer pass (Phase 4b, inline) checked all
+three Acceptance Criteria (the shared pair plus the Option-B-only criterion)
+against the delivered change: **PASS**. `Status` moved `todo` → `done`. Zip
+archive updated and presented. | Notable for a Scenario-adjacent judgment call
+the Lead Agent made mid-task rather than at planning time: a human decision was
+already recorded, but implementing it literally without clarification risked
+producing architecturally meaningless code (wiring `fetch_fn` semantics onto an
+object that is never fetched from anywhere) — the golden rule ("when in doubt,
+escalate, never guess") applied to a *sub-question* of an already-answered
+top-level decision, not just to the top-level fork itself. The resulting design
+change (`invalidate_models()` unconditionally at the start of every refit) is
+also flagged explicitly as a genuine behavior change, not hidden inside a "pure
+relocation" framing, since a future auditor comparing this task's
+`Delivered Artifacts` against the actual diff should be able to find it named
+plainly rather than having to infer it from the code. | | 2026-09-09 |
+TASK-0022-sunshine-duration-rescaling (third of the remaining
+`AUDIT-REMEDIATION-INDEX.md` execution-order steps; the human's recorded
+`## Decision` — "Proceed with Option A" — was unambiguous, no live clarification
+needed here, unlike `TASK-0021` immediately before it) | Implemented, reviewed,
+and merged TASK-0022 in full, Option A (amend, no code change):
+`adr/009-baseline-forecast-sourcing.md` §1's sunshine-duration bullet rewritten
+from "used directly, only rescaled to the baseline's expected numeric range" to
+"used directly, unscaled"; new `## Amendment — 2026-09-08` block recording
+`AUDIT-0001-provider-package`'s finding, the decision, and the rationale (a
+linear/wls2/wls3/kernel regression absorbs an arbitrary linear scale of its
+input automatically, so an explicit rescale step would change only the learned
+coefficients, not the fit's quality) — explicitly noting the neighboring
+cloud-coverage branch's `invert_cloud_coverage` sign-inversion step is
+unaffected and remains necessary, since a pure scale change cannot flip a
+series' sign the way that transform does. `tasks/adr-summary.md`'s `providers/`
+section gained a short clarifying description of both `weather.*` proxy-baseline
+shapes (no prior false claim existed there to retire — this closes a gap in
+detail, not a contradiction). `git status --short` confirms exactly these two
+`.md` files changed, zero `.py` files touched. Full suite re-run: 443/443
+passed, identical count to the post-TASK-0021 baseline, as required for a
+docs-only change; `ruff format --check .` and
+`mypy --config-file mypy.ini custom_components/ tests/` both unchanged from
+baseline. No new external dependency. Reviewer pass (Phase 4b, inline) checked
+both Acceptance Criteria (the shared pair plus the Option-A-only criterion):
+**PASS**. `Status` moved `todo` → `done`. Zip archive updated and presented. |
+Routine Phase 4c close-out entry — the simplest of the three decision-pending
+tasks in this batch: a fully unambiguous recorded decision, a docs-only
+footprint, and zero test-count drift to verify, in contrast to `TASK-0021`'s
+live escalation and `TASK-0024`'s live-remote verification step. | | 2026-09-09
+| TASK-0023-entity-layer-cache-access-boundary (last of the three
+decision-pending tasks in the remaining `AUDIT-REMEDIATION-INDEX.md`
+execution-order batch; the human's recorded `## Decision` — "coordinator.cache
+should be a readonly accessor. So also a wrong implementation within a sensor
+should not harm the cache variable." — described a third path neither of the
+task's own pre-drafted Option A/B matched, and the Lead Agent found the
+enforcement-strictness question itself ambiguous between a runtime-restricted
+read-only wrapper, a type-checker-only `Protocol`, or attribute-level read-only
+— escalated via `ask_user_input_v0`; the option-select UI didn't register the
+human's tap, so the human answered in prose instead: "the local cache variable
+in coordinator should be readonly. like a getter without a setter") |
+Implemented, reviewed, and merged TASK-0023 in full, resolving to
+attribute-level read-only — the narrowest of the three candidate shapes.
+`coordinator.py`'s `__init__` now sets `self._cache` (private); a new `cache`
+property (getter only, no setter) is exposed in its place, so
+`coordinator.cache = anything` raises `AttributeError` from any call site while
+every method call on the returned `Cache` — read or write — is completely
+unaffected. Verified before implementing that this was safe: a repo-wide `grep`
+for `.cache\s*=\s*[^=]` found exactly one assignment anywhere in the codebase
+(the one being converted), so zero other call sites could break. The three
+`AUDIT-0009`-flagged sensor classes (`ShadyForecastSensor`,
+`ShadyPvEnergyIntegralSensor`, `ShadyFcEnergyIntegralSensor`) are explicitly
+*not* reopened by this decision — they still call
+`coordinator.cache.<method>(...)` directly, exactly as `TASK-0011` originally
+authorized. `adr/000-coding-standards.md` gained a full
+`## Amendment — 2026-09-08` block, placed following this file's own
+pre-established amendment-placement convention (right after the metadata block,
+before `## Context` — not the end-of-file placement used for ADR-007/007a/009 in
+the two prior tasks, which don't have a convention of their own to match); §3's
+`coordinator.py` bullet and `entity_glue` bullet both updated, the latter naming
+the three reviewed-exception classes explicitly (folding in the "Option A"-style
+documentation half even though Option A wasn't the path chosen) and noting the
+module diagram needed no new edge, since `sensor.py` still never *imports*
+`cache.py`. `tasks/adr-summary.md` §2 updated to match, and — caught in passing
+— a separate, pre-existing stale claim in the same `cache.py` bullet ("simple
+dict stores (model cache, ramp state)"), left over from `TASK-0021` only having
+touched §5's dedicated cache-design section and missing this shorter §2 mention,
+was corrected in the same edit. `tests/test_coordinator.py` gained a new
+`import pytest` (not previously imported in that file) and
+`TestCacheAttributeIsReadOnly` (2 tests): assignment raises `AttributeError`;
+reading and calling a real method on the returned object both still work.
+`git status --short` confirms exactly four files changed. Full suite 445 →
+445/445 passed after the last edit (2 new added earlier in this same task's
+pass, zero deleted); `mypy --config-file mypy.ini custom_components/ tests/`
+clean on 53 source files; `ruff check .` clean repo-wide;
+`ruff format --check .` shows only the one pre-existing, unrelated,
+already-documented drift file, untouched — identical to every prior task in this
+batch. No new external dependency. Reviewer pass (Phase 4b, inline) checked the
+shared Acceptance Criterion (recorded decision followed) against the delivered
+change, noting the Option-A-only/Option-B-only criteria don't strictly apply
+since neither was the chosen path — the human's own decision text is the
+operative specification here, and it was followed exactly, including its live
+clarification: **PASS**. `Status` moved `todo` → `done`. Zip archive updated and
+presented. This closes out all three decision-pending tasks (`TASK-0021`,
+`TASK-0022`, `TASK-0023`) from the remediation batch. | This task and
+`TASK-0021` are the two clearest examples in this whole remediation batch of the
+golden rule applying *underneath* an already-recorded decision, not just at the
+top-level fork: both times, the human's own words left a genuine
+implementation-shape choice open, and both times guessing wrong would have meant
+either architecturally meaningless code (`TASK-0021`) or over-building a heavier
+mechanism than was actually wanted (`TASK-0023` — a runtime-restricted wrapper
+object would have been a substantially larger, riskier change than the
+getter-without-a-setter the human actually asked for). Also worth noting for
+process improvement: the first `ask_user_input_v0` call in this task didn't
+reach the human before they replied in prose ("the option select disappeared
+before I was able to pick an option") — the Lead Agent accepted the prose answer
+directly rather than re-issuing the same tool call, since the human's words
+fully resolved the question either way. | | 2026-09-09 |
+TASK-0029-readme-accuracy-refresh (first of the final four documentation tasks
+in the `AUDIT-REMEDIATION-INDEX.md` execution-order batch; unlike
+TASK-0021/0022/0023, this task had no blocking human decision gate of its own,
+but the human redirected its scope mid-execution: "The Readme should be
+rewritten anyway to match the target audience (HomeAssistant Users)... Also
+important is the relation to the Effy project," explicitly superseding this
+task's own third Acceptance Criterion, which had scoped the change to only the
+Status line and "Core idea" section) | Given the scope had grown past a
+mechanical trim into real content/tone decisions, the Lead Agent produced a
+**chat-local proposal draft** first (not committed, not part of the task's
+normal single-pass flow) for human review before touching the repo — a
+deliberate, one-off departure from this batch's usual "implement then present"
+cadence, judged appropriate given the size of the redirect. The human's review
+round rewrote the "Relationship to Effy" and "Requirements" sections directly,
+revealing a fact the Lead Agent could not have sourced independently
+(github.com/eschnepel/effy does not appear in web search, so the Lead Agent's
+own first draft of that section was reconstructed solely from one-sided mentions
+in Shady's own ADRs, and undersold the relationship as "shared conventions only"
+when in fact Effy is a battery-management-system integration whose per-string
+output sensors are a literal, valid input source for Shady). The Lead Agent
+proof-read and polished the human's wording (typo, missing adverb,
+doubled-nested parentheses, hyphen/em-dash consistency with the rest of the
+document) and verified one technical claim — Home Assistant's
+short-term-statistics 10-day purge being a separate, currently non-configurable
+mechanism from `purge_keep_days` — via a live web search against Home
+Assistant's own documentation before asserting it, rather than trusting the
+plausible-sounding claim as written. The full file was then rewritten and
+committed: Status line re-derived live from `tasks/INDEX.md` (9/13 remediation
+tasks done at execution time, not the stale figure implied by this task's own
+Goal section), the old 84-line "Core idea" section replaced by a 40-line "Why
+this exists"/"How it works, in plain terms" pair with no ADR-derived numeric
+defaults duplicated inline, new "Requirements"/"Installation
+(HACS)"/"Configuration"/"Entities created" sections added (each fact-checked
+against the actual source — `hacs.json`,
+`custom_components/shady/translations/en.json`, and the real
+`sensor.py`/`select.py`/`button.py` class lists — not assumed), and the stale
+"Open questions for further brainstorming" section dropped (flagged to the human
+in the reviewed proposal as a candidate for ADR-011 instead; no objection came
+back, so it stays dropped, on record here). `git status --short` confirms
+exactly `README.md` changed. Full suite: 445/445 passed, unchanged (docs-only,
+no `.py` file touched); `mypy`/`ruff check`/`ruff format --check` all identical
+to the TASK-0023 baseline. No new external dependency. Reviewer pass (Phase 4b,
+inline): the scope deviation from this task's own Acceptance Criteria is real
+and is recorded explicitly in `Delivered Artifacts` rather than glossed over,
+but is fully authorized by direct, repeated human instruction across this task's
+own review round — **PASS**. `Status` moved `todo` → `done`. Zip archive updated
+and presented. | The clearest example in this remediation batch of a human
+catching something the Lead Agent structurally could not have gotten right alone
+(an external, unindexed sibling repo) — worth remembering for any future task
+that describes a relationship to something outside this repository's own text:
+verify what's verifiable, but flag
+confidently-sourced-yet-externally-unconfirmable claims for human review rather
+than presenting them as settled, exactly as the original proposal's own
+reviewer-note block did here. | | 2026-09-10 |
+TASK-0026-switch-select-rename-cleanup-round-3 (first of the final three
+`AUDIT-REMEDIATION-INDEX.md` "Suggested execution order" step-4 tasks remaining
+after TASK-0029, per the human's "run remediation tasks strictly sequentially in
+the suggested execution order" instruction, resuming a new session) |
+Implemented, reviewed, and merged TASK-0026 in full — a purely mechanical
+continuation of `TASK-0018`'s already-decided switch→select cleanup, no new
+decision: `docs/architecture.mmd`'s `Diag` subgraph label and its `SWITCH` node
+(renamed `SELECT`, matching the diagram's own existing `([...])` sensor-node
+shape/labeling convention) both corrected, with both edges referencing the node
+updated to the new id; `adr/002-coordinator-update-strategy.md` §1a's platform
+list corrected to "`sensor`/`select`/`button`";
+`adr/007-coordinator-cache-split.md`'s module diagram `entity_glue` node and
+matching prose bullet both corrected from `switch.py` to `select.py`.
+`git status --short` confirms exactly the three files in the Estimated Footprint
+changed, zero `.py` files touched. Verified via repo-wide case-insensitive grep
+for "switch" outside `tasks/`/`adr/`: no fourth location found beyond ordinary
+English-verb usage and `select.py`'s own already-correct "not a switch"
+docstring line — the task's own "no fourth location expected" note held. Full
+suite: 445/445 passed, unchanged from the TASK-0029 baseline (docs-only task);
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 source
+files; `ruff check .` clean repo-wide; `ruff format --check .` shows only the
+same one pre-existing, unrelated, already-documented drift file as every prior
+entry in this log, untouched. No new external dependency —
+`tasks/DEPENDENCIES.md` unchanged. Reviewer pass (Phase 4b, inline) checked all
+four Acceptance Criteria against the delivered diff: **PASS**. `Status` moved
+`todo` → `done`. Zip archive updated and presented. | Routine Phase 4c close-out
+entry — no Open Question was raised (none was expected per the task's own "Open
+Questions for Execution" section, and none surfaced); next up per the suggested
+execution order is `TASK-0027-module-diagram-and-docstring-accuracy`. | |
+2026-09-10 | TASK-0027-module-diagram-and-docstring-accuracy (second of the
+final three `AUDIT-REMEDIATION-INDEX.md` step-4 tasks, immediately following
+`TASK-0026` in the same session) | Implemented, reviewed, and merged TASK-0027
+in full — six independently-found "description drifted, behavior didn't" items
+batched, all fixed with no worker judgment call on *what* the correct text was,
+per the task's own "Known Decisions" note. **Finding 1**: `adr/005-...md`'s and
+`adr/000-...md` §3's nonexistent `aggregation --> forecast_adjust` edge removed
+from both diagrams (`aggregation.py` confirmed zero non-stdlib imports via
+`grep`). **Finding 2**: `adr/000-...md` §3's `init --> entity_glue` (no real
+import) replaced with the real `init --> coordinator` edge (confirmed via
+`__init__.py`'s own import list — only `.const`/`.coordinator`), `entity_glue`
+kept as a dashed non-import edge matching the diagram's existing convention.
+**Finding 3**: `adr/002-...md` §5 and its Consequences section (a bullet flipped
+Con→Pro, since the correction removes the described downside) rewritten to
+describe the actual single merged provider listener — one registration per
+entity, one handler doing both push and conditional recompute — confirmed
+against `coordinator.py`'s own `_register_provider_listeners`/`_make_listener`
+and
+`TestGenericProviderPushLoop.test_one_listener_per_forward_overriding_provider`.
+**Finding 4**: `adr/014-...md` §4 gained an explicit
+`_predict_day_basis`/`_clamp_basis` carve-out, wording adapted (not freshly
+drafted) from `TASK-0017`'s own already-reviewed Acceptance Criteria per the
+task's own "Open Questions" guidance — no human sign-off flag raised, since
+reusing already-accepted wording in a new register is not a new decision.
+**Finding 5**: `string_computation.py`'s module docstring and
+`predict_string_forecast`'s function docstring (the only `.py` file this task
+touches, docstrings only) corrected — neither now claims `coordinator.py`'s "no
+intraday correction" path calls `predict_string_forecast`; both now state its
+only real caller is `diagnostics/compare_regressions.py`, confirmed via `grep`
+showing `coordinator.py` never calls it (only imports/calls
+`reverse_transformed_forecast`/`clamp_output` directly, for both its paths).
+**Finding 6**: `adr/000-...md` §1's table corrected from a nonexistent `ci.yml`
+to the real `code_checker.yml`, and its Invocation column now reflects
+`ruff`/`mypy` running through `.pre-commit-config.yaml`'s hooks with `pytest` as
+a separate step — verified against the actual `.pre-commit-config.yaml` and
+`.github/workflows/code_checker.yml`. Dated `Amended:` header notes added to all
+four touched ADRs (a first one for `adr/005-...md`, which had none before).
+`tasks/adr-summary.md` checked against all six per the task's Definition of
+Done, and one further drifted line found and fixed in the same pass — its
+CI-gate bullet repeated the same stale `--config-file mypy.ini` phrasing Finding
+6 corrects at the source; its `predict_string_forecast` mention checked against
+Finding 5 and left as-is, since it is a general slot-count-agnostic-design
+statement, not a specific call-graph claim. Full suite: 445/445 passed,
+unchanged (findings 1–4/6 touch no `.py`/test file; finding 5's
+`tests/test_string_computation.py`'s 14 tests individually re-run, unmodified,
+still passing); `mypy --config-file mypy.ini custom_components/ tests/` clean on
+53 source files; `ruff check .` clean repo-wide; `ruff format --check .` shows
+only the same one pre-existing, unrelated, already-documented drift file as
+every prior entry in this log, untouched. No new external dependency. Reviewer
+pass (Phase 4b, inline): all seven Acceptance Criteria (six findings + the
+`adr-summary.md` check) verified against the delivered diff — **PASS**. `Status`
+moved `todo` → `done`. Zip archive updated and presented. | Routine Phase 4c
+close-out — no genuine ADR-conflict-level Open Question surfaced (item 4's "flag
+if sign-off needed" note was judged not to apply, since the added text is a
+direct register-adaptation of `TASK-0017`'s own already-human-reviewed wording,
+not a new decision); the one item worth a reader's attention is that
+`git`-commit granularity for this session's `TASK-0026`/`TASK-0027` pair could
+not be cleanly split after the fact (both touch `adr/002-...md` and
+`tasks/INDEX.md` with interleaved, uncommitted edits by the time this was
+noticed) — committed together as one commit rather than risk a lossy manual
+split; both tasks' own `Delivered Artifacts`/this log's entries remain the
+authoritative, task-scoped record regardless of commit boundaries. Next up per
+the suggested execution order is
+`TASK-0028-adr-0010-field-documentation-catchup`. | | 2026-09-10 |
+TASK-0028-adr010-field-documentation-catchup (third and final of the
+`AUDIT-REMEDIATION-INDEX.md` "Suggested execution order" step-4 tasks,
+immediately following `TASK-0027` in the same session) | Implemented, reviewed,
+and merged TASK-0028 in full — the smallest of the three remaining tasks: one
+missing ADR-010 amendment entry for `baseline_manual_shape` (a field
+`TASK-0009-patch-1-manual-baseline-shape` shipped correctly
+implemented/tested/translated, but never added to ADR-010's own field list or
+amendment history — `AUDIT-0010`'s finding). New entry added mirroring the
+existing `2026-08-25` `recency_decay_max` amendment's exact format (field name,
+step, purpose, one-line cross-reference to the patch task), with the field's
+shape/default
+(`"sensor_dict"`/`"sensor_list"`/`"weather_sunshine"`/`"weather_cloud"`, default
+`"sensor_dict"`) confirmed against `config_flow.py`'s own
+`_settings_schema`/`_BASELINE_SHAPES`/`_DEFAULT_MANUAL_SHAPE` rather than
+assumed. The task's one open, self-resolved question — retroactive dating vs.
+completion-dating the new entry — was resolved per the task's own explicit
+stated default (completion-dating, `2026-09-10`, since no human preference was
+given); not escalated, since the task file itself already framed this as a
+low-stakes default rather than a blocking decision. `tasks/adr-summary.md`
+checked per this task's Acceptance Criteria and confirmed to need no edit (§7
+already defers to ADR-010 as sole source of truth for the field list; no
+existing reference to this field either way). `git status --short` confirms
+exactly `adr/010-config-flow-shape.md` changed, zero `.py` files touched. Full
+suite: 445/445 passed, unchanged;
+`mypy --config-file mypy.ini custom_components/ tests/` clean on 53 source
+files; `ruff check .` clean repo-wide; `ruff format --check .` shows only the
+same one pre-existing, unrelated, already-documented drift file as every prior
+entry in this log, untouched. No new external dependency. Reviewer pass (Phase
+4b, inline): all three Acceptance Criteria verified against the delivered diff —
+**PASS**. `Status` moved `todo` → `done`. Zip archive updated and presented.
+**This closes out `AUDIT-REMEDIATION-INDEX.md`'s full "Suggested execution
+order": all thirteen remediation tasks (`TASK-0021` through `TASK-0033`) are now
+`done`.** | Routine Phase 4c close-out — no Open Question beyond the one the
+task itself already resolved with a stated default. With this entry, every
+FAIL/PARTIAL/Test-Coverage-GAP recorded across the original twelve
+`AUDIT-0001`–`AUDIT-0012` findings files has a corresponding `done` remediation
+task; nothing remains `todo` in `tasks/INDEX.md`'s task table as of this entry.
+Any further work on this project (new features, new ADRs, a fresh audit pass)
+starts a new planning cycle from Phase 0/1 rather than continuing this
+remediation batch. |

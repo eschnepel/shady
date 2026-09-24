@@ -1,0 +1,11 @@
+name: "Shady CodeQL config — main"
+
+# Everything except tests/, which has its own job/config
+# (codeql-config-tests.yml). See ADR-000 §1a for why the split exists
+# and why `py/ineffectual-statement` is excluded here but not there.
+paths-ignore:
+  - tests
+
+query-filters:
+  - exclude:
+      id: py/ineffectual-statement
