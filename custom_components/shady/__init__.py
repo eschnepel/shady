@@ -2,17 +2,17 @@
 
 Integration-level setup: constructs the `ShadyCoordinator`, stores it in
 `hass.data[DOMAIN][entry.entry_id]`, forwards this config entry's
-platforms (`sensor`/`select`/`button`/`datetime`), registers
+platforms (`sensor`/`select`/`button`/`datetime`/`switch`), registers
 `http_export.py`'s one `HomeAssistantView` (ADR-015, `TASK-0038` —
 guarded to run at most once per `hass`, not once per config entry, see
 `_register_http_view_once` below), and restores restart-persisted
 energy-integral state (ADR-005 §5/§6) — thin HA glue only (ADR-000 §3),
-no business logic of its own. The diagnosed-slot pin (ADR-004 §2a/§2f)
-is entity-only as of `datetime.py`'s `ShadyDiagnosticSlotDateTime`/
-`button.py`'s `ShadyClearDiagnosticSlotButton` — this module registers
-no domain-wide service of its own (the original
-`shady.select_diagnostic_slot` service this superseded is gone, not
-merely deprecated).
+no business logic of its own. The diagnosed-slot pin (ADR-004
+§2a/§2f/§2g) is entity-only as of `datetime.py`'s
+`ShadyDiagnosticSlotDateTime`/`switch.py`'s
+`ShadyFollowDiagnosticSlotSwitch` — this module registers no domain-wide
+service of its own (the original `shady.select_diagnostic_slot` service
+this superseded is gone, not merely deprecated).
 
 **Startup ordering (ADR-002 §1a, the reason this module exists as a
 real task rather than a trivial wire-up):** a config entry's referenced
@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "select", "button", "datetime"]
+PLATFORMS = ["sensor", "select", "button", "datetime", "switch"]
 
 # ADR-002 §1a, step 3: a short grace period before handing back to HA's
 # own ConfigEntryNotReady/backoff path once the deferred startup fit

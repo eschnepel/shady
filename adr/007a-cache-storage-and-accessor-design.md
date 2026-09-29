@@ -5,7 +5,7 @@
 because the concrete storage scheme and accessor API are a separable, and
 independently heavily cross-referenced, concern from the *decision to extract
 `cache.py` as its own module* in the first place. No behavior changed by this
-split. **Last updated:** 2026-09-22
+split. **Last updated:** 2026-09-24
 
 This ADR is kept current in place: §2/§3's hybrid push/query handling for
 provider-backed predictor series (baseline `FC`, temperature), and §5's
@@ -362,15 +362,21 @@ not one per string.** `cache.py` holds it as a single scalar,
 `pinned_reference: date | None`, set via `pin_reference(date)` and cleared via
 `clear_reference()` — no `sensor_id` argument to either, in the same spirit as
 `window_days` (see Context above) being one setup-level value rather than
-something re-supplied, or re-scoped, per call. `coordinator.py` calls these in
-direct response to `datetime.py`'s `ShadyDiagnosticSlotDateTime`/`button.py`'s
-`ShadyClearDiagnosticSlotButton` (ADR-004 §2a/§2f), neither of which is
+something re-supplied, or re-scoped, per call. `coordinator.py` calls
+`pin_reference` when the diagnosed slot becomes genuinely pinned
+(`datetime.py`'s `ShadyDiagnosticSlotDateTime` set, or `switch.py`'s
+`ShadyFollowDiagnosticSlotSwitch` turned off) and `clear_reference` when
+auto-follow is turned back on (ADR-004 §2a/§2g), neither entity being
 entity-targeted at any `ShadyDiagnosticsSensor` — there is no per-
 `ShadyDiagnosticsSensor` "am I pinned" state anywhere, in `cache.py` or
-otherwise. Every diagnostics sensor (each string's, and ADR-004 §2b's summed
-one) simply reads whether `pinned_reference` is currently set each time it needs
-to know which slot to show: `cache.py`'s one scalar is the *complete* answer,
-not one input alongside separate per-entity state.
+otherwise. `pinned_reference` stays unset while auto-following, even though
+ADR-004 §2g's coordinator-side stored diagnosed slot is then advanced every
+tick: this scalar means "genuinely pinned", and the cap below depends on that
+distinction (its auto-tracking cap is only ever a ceiling on the stored slot, so
+§2g changes nothing here). Every diagnostics sensor (each string's, and ADR-004
+§2b's summed one) simply reads whether `pinned_reference` is currently set each
+time it needs to know which slot to show: `cache.py`'s one scalar is the
+*complete* answer, not one input alongside separate per-entity state.
 
 Diagnostics gets its own dedicated accessor for this — rather than a
 `pinned: bool` flag bolted onto a shared method — because pin-resolution below

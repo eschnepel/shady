@@ -32,6 +32,7 @@ rule.
 | TASK-0037-patch-1-ridge-regularization-and-exception-isolation | `wls2`/`wls3` Genuinely Raising `LinAlgError: Singular Matrix` for Real-Scale, Low-Variety `FC` (Diagnostic "selected" Series Still Missing After `TASK-0037`) | done | TASK-0037-pinned-slot-pool-not-yet-elapsed-freeze | Lead Agent (inline) |
 | TASK-0037-patch-2-allow-historical-backfill-for-get-time-range | A Push-Sourced (`forecast_solar`-Shaped) Baseline's Already-Elapsed History Was Never Fetched At All (Diagnostic "selected" Series/Accuracy Still Missing After `TASK-0037-patch-1`) | done | TASK-0037-patch-1-ridge-regularization-and-exception-isolation | Lead Agent (inline) |
 | TASK-0037-patch-3-forward-fill-pushed-baseline-series | `_push_provider_series` Never Forward-Filled a Coarser-Than-5-Minute `forward()` Series (Diagnostic "selected" Series Only Ever Appeared On The Hour) | done | TASK-0037-patch-2-allow-historical-backfill-for-get-time-range | Lead Agent (inline) |
+| TASK-0037-patch-4-follow-latest-diagnostic-slot-toggle | Diagnosed-Slot Companion Button Replaced by an Auto-Follow Toggle (`ShadyClearDiagnosticSlotButton` → `ShadyFollowDiagnosticSlotSwitch`) | done | TASK-0037-patch-3-forward-fill-pushed-baseline-series | Lead Agent (inline) |
 | TASK-0015b-patch-1-apexcharts-card-series-format | `series` Entries Reshaped for Direct `apexcharts-card` Use | done | TASK-0015b-diagnostics-select-and-scatter-sensors | Lead Agent (inline) |
 | TASK-0015b-patch-2-plotly-graph-xy-series-format | `series` Entries Reshaped Again — `custom:plotly-graph` x/y Arrays, Not `apexcharts-card` | done | TASK-0015b-patch-1-apexcharts-card-series-format | Lead Agent (inline) |
 | TASK-0015b-patch-3-xy-series-entry-on-base-class | `_xy_series_entry` Moved to `DiagnosticMode` — Shared by Every Diagnostic Mode | done | TASK-0015b-patch-2-plotly-graph-xy-series-format | Lead Agent (inline) |
@@ -253,7 +254,46 @@ open-ended ("all meta data needed"), so the Lead Agent enumerated the chain's
 inputs against the export rather than guessing; the cache-staleness fix was
 folded in because without it the strengthened replay is unreliable on real
 exports, and it is recorded in ADR-015's Amendment as a Lead-Agent decision
-**pending human confirmation**. |
+**pending human confirmation**. | | 2026-09-24 |
+TASK-0037-patch-3-forward-fill-pushed-baseline-series | Created and implemented
+`TASK-0037-patch-4` (Phase 6 Scenario C, chained off patch-3, the latest task in
+the diagnostic-module rework): the human found the companion clear button
+(`ShadyClearDiagnosticSlotButton`, ADR-004 §2f) "not very helpful" and specified
+its replacement — a toggle between one pinned slot and automatic slot following,
+where automatic mode *sets* the pinned slot on every cadence (so the `datetime`
+entity's own state is the dashboard's "as of" timestamp) and diagnostics always
+read the currently configured slot, pinned or automatic. Recorded honestly: the
+button was introduced in the same commit as `TASK-0037-patch-1`/`-2`/`-3` but
+never had a task file or INDEX row of its own — only ADR-004 §2f — so there was
+no earlier task to chain onto directly. Amended ADR-004 *before* implementation,
+per Phase 0 (new §2g; §2f marked superseded in part rather than deleted,
+following §2c's precedent; §2a/§5/header updated to match), plus ADR-000 §2/§3
+(which had also never listed `datetime.py`), ADR-007a §6, `adr/INDEX.md`,
+`tasks/adr-summary.md`, `tasks/adr-capability.md`. Design details chosen by the
+Lead Agent and flagged to the human for confirmation rather than asked up front,
+since the request was otherwise unambiguous: the switch is `on` = following;
+turning it off pins the slot as currently shown; setting the datetime while
+following pins and turns following off; "every cadence" = the existing 5-minute
+tick, run first in `_intraday_tick_sync` and independent of whether a diagnostic
+mode is active; `cache.pinned_reference` stays unset while following so ADR-007a
+§6's pinned-vs-auto-tracking cap is untouched; no push mechanism (entities keep
+default polling); not persisted across restarts; no registry migration for the
+removed button. Implemented and verified inline (Lead Agent as Worker then
+Reviewer) — **PASS**: `coordinator.py` replaced `_pinned_slot_index` with an
+always-set `_diagnostic_slot_index` plus `_follow_latest_diagnostic_slot`,
+`diagnosed_slot()` now reads the stored index unconditionally, new
+`set_follow_latest_diagnostic_slot`/`is_following_latest_diagnostic_slot`/`diagnostic_slot_timestamp`/`_advance_followed_diagnostic_slot`,
+removed `clear_diagnostic_slot`/`pinned_diagnostic_slot`; new `switch.py`;
+`datetime.py`'s `native_value` never `None`; `button.py` reduced to
+`ShadyRecalculateButton`; `PLATFORMS` gained `switch`. Full suite green:
+`pytest` 683 passed (659 baseline + 24 net: `tests/test_switch.py` 10 new,
+coordinator/datetime/init additions, minus the removed clear-button tests),
+`mypy --config-file mypy.ini custom_components/ tests/` clean (63 files),
+`ruff check .`/`ruff format --check .` clean. No new external dependency.
+`Status` → `done`. | A `done` task's delivered interface (the diagnosed-slot
+pin/clear surface) found insufficient by the human in use, after the fact —
+Phase 6 Scenario C's own trigger, same as `TASK-0037-patch-1`/`-2`/`-3`.
+Original tasks' `Status` untouched. |
 
 ## Audit Groups
 

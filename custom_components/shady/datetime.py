@@ -1,35 +1,38 @@
 """`datetime.py` — `ShadyDiagnosticSlotDateTime`, one per config entry
-(ADR-004 §2a/§2f): pins the diagnosed slot (every diagnostic sensor,
-ADR-004 §2) to the 5-minute slot containing a chosen timestamp, instead
-of auto-tracking the last complete slot.
+(ADR-004 §2a/§2f/§2g): shows, and lets a person pin, the 5-minute slot
+every diagnostic sensor (ADR-004 §2) is currently diagnosing.
 
 Supersedes the original `shady.select_diagnostic_slot` service (ADR-004
 §2a as first written) with a native `datetime` entity — a Lovelace-
 pickable input instead of a Developer Tools -> Actions call, matching
 this project's existing thin-entity-glue platforms (`select.py`,
 `button.py`) rather than a bespoke service for what is, underneath,
-just one more piece of per-config-entry state. `native_value` reads
-`coordinator.py`'s `pinned_diagnostic_slot()` (`None` while auto-
-tracking); `async_set_value` pins it via `pin_diagnostic_slot()`,
-raising `HomeAssistantError` if the chosen timestamp falls beyond the
-available forecast horizon (ADR-004 §2a) — the same rejection
+just one more piece of per-config-entry state.
+
+`native_value` is **always** the currently-configured diagnosed slot's
+start timestamp (`coordinator.py`'s `diagnostic_slot_timestamp()`),
+whether pinned or following the newest complete slot (ADR-004 §2g) —
+never `None`/`unknown`. While following, the coordinator sets that
+value on every 5-minute tick, so a dashboard shows the "as of" moment
+of every diagnostic sensor by displaying this entity, with no template
+logic of its own. `async_set_value` pins the chosen slot via
+`pin_diagnostic_slot()` — which also switches following off, so the
+companion `switch.py` toggle reads off from then on — raising
+`HomeAssistantError` if the chosen timestamp falls beyond the available
+forecast horizon (ADR-004 §2a), the same rejection
 `pin_diagnostic_slot()` itself already signals via its `bool` return,
-just surfaced as an entity-service error here instead of a
-`ServiceValidationError`.
+just surfaced as an entity-service error here.
 
-Clearing the pin (going back to auto-tracking) is deliberately **not**
-done through this entity: Home Assistant's own `datetime` domain has no
-"clear to unknown" affordance anywhere in its frontend (its more-info
-dialog always constructs a new value from the entity's current one, and
-never offers to unset it) — seen directly in the frontend's own
-`more-info-datetime` dialog, which always feeds a concrete `Date`
-back to `datetime.set_value`. `button.py`'s companion
-`ShadyClearDiagnosticSlotButton` (ADR-004 §2f) is the clear
-mechanism instead, mirroring how `ShadyRecalculateButton` already
-covers a different single-purpose trigger via the same platform.
+Going back to following is deliberately **not** done through this
+entity: Home Assistant's own `datetime` domain has no "clear to
+unknown" affordance anywhere in its frontend (its more-info dialog
+always constructs a new value from the entity's current one and feeds a
+concrete `Date` back to `datetime.set_value` — seen directly in the
+frontend's own `more-info-datetime` dialog). `switch.py`'s companion
+`ShadyFollowDiagnosticSlotSwitch` (ADR-004 §2g) is that path instead.
 
-Thin HA glue only (ADR-000 §3): no business logic lives here — pinning/
-clearing/reading the pin are all `coordinator.py`'s own methods.
+Thin HA glue only (ADR-000 §3): no business logic lives here — pinning
+and reading the slot are `coordinator.py`'s own methods.
 
 Platform-level `async_setup_entry` only (matching `sensor.py`/
 `select.py`/`button.py`'s own established scope note): `custom_
@@ -72,7 +75,7 @@ async def async_setup_entry(
 
 
 class ShadyDiagnosticSlotDateTime(DateTimeEntity):  # type: ignore[misc]
-    """One diagnostic-slot pin per config entry (ADR-004 §2a/§2f) —
+    """One diagnosed-slot entity per config entry (ADR-004 §2a/§2g) —
     there is exactly one diagnosed-slot state config-entry-wide, not
     one per diagnostic sensor, so this entity is not itself entity-
     targeted at any sensor either."""
@@ -85,8 +88,8 @@ class ShadyDiagnosticSlotDateTime(DateTimeEntity):  # type: ignore[misc]
         self._attr_device_info = device_info(entry)
 
     @property
-    def native_value(self) -> datetime | None:
-        return self._coordinator.pinned_diagnostic_slot()
+    def native_value(self) -> datetime:
+        return self._coordinator.diagnostic_slot_timestamp()
 
     async def async_set_value(self, value: datetime) -> None:
         if not self._coordinator.pin_diagnostic_slot(value):

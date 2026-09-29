@@ -1,5 +1,5 @@
 """Tests for `datetime.py`'s `ShadyDiagnosticSlotDateTime` (ADR-004
-§2a/§2f).
+§2a/§2f/§2g).
 
 `datetime.py` is HA-facing (real, non-`TYPE_CHECKING` imports of
 `homeassistant.components.datetime` and `homeassistant.exceptions`) —
@@ -199,16 +199,37 @@ class TestAsyncSetupEntry:
 
 
 class TestNativeValue:
-    """Given a config entry's diagnosed-slot pin state (ADR-004 §2a),
-    When `native_value` is read, Then it reflects `coordinator.py`'s
-    `pinned_diagnostic_slot()` exactly — `None` while auto-tracking, the
-    pinned slot's own start timestamp otherwise."""
+    """Given a config entry's diagnosed slot (ADR-004 §2a/§2g), When
+    `native_value` is read, Then it is `coordinator.py`'s
+    `diagnostic_slot_timestamp()` exactly — the currently-configured
+    slot's own start timestamp in *both* modes, never `None`, so a
+    dashboard shows the "as of" moment with no logic of its own."""
 
-    def test_auto_tracking_reports_none(self) -> None:
+    def test_following_reports_the_latest_complete_slot(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        entity = ShadyDiagnosticSlotDateTime(coordinator, coordinator.entry)
+
+        # `_NOW` is 10:00 sharp: the slot starting 10:00 has not
+        # completed yet, so the last complete one starts at 09:55.
+        assert entity.native_value == datetime(2026, 6, 15, 9, 55, tzinfo=UTC)
+
+    def test_following_value_is_never_none(self) -> None:
         coordinator, _hass = _make_coordinator()
         entity = ShadyDiagnosticSlotDateTime(coordinator, coordinator.entry)
 
-        assert entity.native_value is None
+        assert coordinator.is_following_latest_diagnostic_slot() is True
+        assert entity.native_value is not None
+
+    def test_following_value_moves_with_every_tick(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        entity = ShadyDiagnosticSlotDateTime(coordinator, coordinator.entry)
+        before = entity.native_value
+
+        coordinator._advance_followed_diagnostic_slot(_NOW + timedelta(minutes=5))
+
+        assert entity.native_value == before + timedelta(minutes=5)
 
     def test_pinned_slot_reports_its_start_timestamp(self) -> None:
         coordinator, _hass = _make_coordinator()
@@ -218,13 +239,24 @@ class TestNativeValue:
 
         assert entity.native_value == Cache.timestamp_for(Cache.index_for(target))
 
+    def test_pinned_value_does_not_move_on_a_tick(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        target = datetime(2026, 6, 15, 14, 0, tzinfo=UTC)
+        coordinator.pin_diagnostic_slot(target, now=_NOW)
+        entity = ShadyDiagnosticSlotDateTime(coordinator, coordinator.entry)
+
+        coordinator._advance_followed_diagnostic_slot(_NOW + timedelta(hours=1))
+
+        assert entity.native_value == Cache.timestamp_for(Cache.index_for(target))
+
 
 class TestAsyncSetValue:
-    """Given `async_set_value` is called (ADR-004 §2a), When the chosen
-    timestamp is within the forecast horizon, Then it pins the
-    diagnosed slot; when it falls beyond that horizon, Then it raises
-    `HomeAssistantError` and leaves the pin untouched, mirroring the
-    original service's own validation (the same `bool` return from
+    """Given `async_set_value` is called (ADR-004 §2a/§2g), When the
+    chosen timestamp is within the forecast horizon, Then it pins the
+    diagnosed slot and switches following off; when it falls beyond
+    that horizon, Then it raises `HomeAssistantError` and leaves the
+    slot and following state untouched, mirroring the original
+    service's own validation (the same `bool` return from
     `coordinator.pin_diagnostic_slot()` either way)."""
 
     def test_pins_a_valid_in_horizon_timestamp(self) -> None:
@@ -234,11 +266,26 @@ class TestAsyncSetValue:
 
         _run(entity.async_set_value(target))
 
-        assert coordinator._pinned_slot_index == Cache.index_for(target)
+        assert coordinator.diagnosed_slot().index == Cache.index_for(target)
+
+    def test_setting_a_value_while_following_switches_following_off(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        coordinator.set_follow_latest_diagnostic_slot(True)
+        entity = ShadyDiagnosticSlotDateTime(coordinator, coordinator.entry)
+        target = datetime(2026, 6, 15, 8, 0, tzinfo=UTC)
+
+        _run(entity.async_set_value(target))
+        coordinator._advance_followed_diagnostic_slot(_NOW + timedelta(hours=1))
+
+        assert coordinator.is_following_latest_diagnostic_slot() is False
+        # The next tick did not overwrite the chosen slot.
+        assert entity.native_value == Cache.timestamp_for(Cache.index_for(target))
 
     def test_raises_home_assistant_error_beyond_horizon(self) -> None:
         coordinator, _hass = _make_coordinator()
+        coordinator.set_follow_latest_diagnostic_slot(True)
         entity = ShadyDiagnosticSlotDateTime(coordinator, coordinator.entry)
+        before = entity.native_value
         far_future = datetime(2026, 7, 1, tzinfo=UTC)
 
         raised = False
@@ -248,8 +295,9 @@ class TestAsyncSetValue:
             raised = True
 
         assert raised
-        # Rejected -- no state change.
-        assert coordinator._pinned_slot_index is None
+        # Rejected -- no state change: still following, slot unmoved.
+        assert coordinator.is_following_latest_diagnostic_slot() is True
+        assert entity.native_value == before
 
 
 class TestUniqueId:

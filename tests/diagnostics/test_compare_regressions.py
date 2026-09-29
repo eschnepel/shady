@@ -1122,8 +1122,11 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
         def configured_regression_method(self) -> str:
             return metadata["regression_method_configured"]
 
-        def pinned_diagnostic_slot(self) -> datetime | None:
-            return diagnosed_at if is_pinned else None
+        def is_following_latest_diagnostic_slot(self) -> bool:
+            return not is_pinned
+
+        def diagnostic_slot_timestamp(self) -> datetime:
+            return diagnosed_at
 
         def now(self) -> datetime:
             return diagnosed_at

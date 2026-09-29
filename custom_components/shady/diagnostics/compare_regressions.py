@@ -642,7 +642,7 @@ class CompareRegressionsMode(DiagnosticMode):
         accessor — `_gather_pool`'s arrays already carry it."""
         window_days = pool.fc_by_offset[0].shape[1]
         diagnosed_at = self._coordinator.cache.timestamp_for(diagnosed.index)
-        is_pinned = self._coordinator.pinned_diagnostic_slot() is not None
+        is_pinned = not self._coordinator.is_following_latest_diagnostic_slot()
         return {
             "string_index": str(string_index),
             "string_name": string_name,
@@ -689,8 +689,11 @@ class CompareRegressionsMode(DiagnosticMode):
         applies."""
         now = self._coordinator.now()
         today = now.date()
-        pinned = self._coordinator.pinned_diagnostic_slot()
-        anchor = pinned.date() if pinned is not None and pinned.date() <= today else today
+        if self._coordinator.is_following_latest_diagnostic_slot():
+            anchor = today
+        else:
+            pinned_date = self._coordinator.diagnostic_slot_timestamp().date()
+            anchor = min(pinned_date, today)
         return anchor - timedelta(days=window_days - 1)
 
     def _export_training_pool_rows(

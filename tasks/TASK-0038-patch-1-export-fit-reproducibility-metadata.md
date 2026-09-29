@@ -1,11 +1,11 @@
 # Task: Patch — Make the CSV Export Sufficient to Recompute the Fit (Close the Replay Blind Spot)
 
 - **Status:** done
-- **Related ADRs:** [ADR-015 (§2, §5, §5a, and the 2026-09-29 Amendment this
+- **Related ADRs:** \[ADR-015 (§2, §5, §5a, and the 2026-09-29 Amendment this
   task implements), ADR-014 (`string_computation.py` — the three functions the
-  replay now runs for real), ADR-003a §1/§1a, ADR-003b §1/§1a/§1b/§1c
-  (the correction parameters that were missing), ADR-001 §2, ADR-011 §1-§3,
-  ADR-004 §5 (`StringComputationConfig`), ADR-000 §6]
+  replay now runs for real), ADR-003a §1/§1a, ADR-003b §1/§1a/§1b/§1c (the
+  correction parameters that were missing), ADR-001 §2, ADR-011 §1-§3, ADR-004
+  §5 (`StringComputationConfig`), ADR-000 §6\]
 - **Dependencies:** [TASK-0038-diagnostic-slot-raw-data-csv-export]
 
 ## Goal
@@ -25,13 +25,13 @@ the replay actually does so.
 | Fit-chain function | Input | In export before? |
 | -- | -- | -- |
 | `apply_training_corrections` | `converter_limit_w` | **no** |
-| | `coefficient_per_c` | **no** |
-| | `provider_already_corrects` | **no** |
-| | `rated_dc_capacity_wp` | **no** |
-| | `temperature_tier`, `clipping_threshold`, `max_uplift_c`, raw fc/pv/temperature | yes |
+|  | `coefficient_per_c` | **no** |
+|  | `provider_already_corrects` | **no** |
+|  | `rated_dc_capacity_wp` | **no** |
+|  | `temperature_tier`, `clipping_threshold`, `max_uplift_c`, raw fc/pv/temperature | yes |
 | `fit_string_model` | `smoothing_radius`, `neighbor_fitting_cutoff`, `recency_decay_max`, `window_days`, method (all four) | yes |
 | `predict_string_forecast` | `fc_selected`, `target_cell_temperature` | yes |
-| | `coefficient_per_c`, `provider_already_corrects`, `converter_limit_w` | **no** (same three as above) |
+|  | `coefficient_per_c`, `provider_already_corrects`, `converter_limit_w` | **no** (same three as above) |
 
 Four missing scalars in total (`StringComputationConfig`'s remaining fields).
 Independently: `# predictions` came from `cache.diagnostic_fit(sensor_id)`,
@@ -43,11 +43,11 @@ nor populated at all for a registered-but-inactive `mode` (ADR-015 §4a) — so
 ## Acceptance Criteria
 
 - Given any exportable string, when `export_csv` runs, then `# metadata` gains
-  four columns appended after `max_uplift_c`, in `StringComputationConfig`
-  field order: `converter_limit_w`, `coefficient_per_c`,
-  `provider_already_corrects`, `rated_dc_capacity_wp` — floats via `repr()`,
-  the bool as `true`/`false`, and a blank for `None` (same blank-means-absent
-  convention as `temperature_tier`). `# metadata` is now 19 columns.
+  four columns appended after `max_uplift_c`, in `StringComputationConfig` field
+  order: `converter_limit_w`, `coefficient_per_c`, `provider_already_corrects`,
+  `rated_dc_capacity_wp` — floats via `repr()`, the bool as `true`/`false`, and
+  a blank for `None` (same blank-means-absent convention as `temperature_tier`).
+  `# metadata` is now 19 columns.
 - Given an export and *nothing else*, when the replay rebuilds the inputs and
   calls the **real** `apply_training_corrections`, `fit_string_model` (all four
   `REGRESSION_STRATEGIES`) and `predict_string_forecast`, then every
@@ -55,8 +55,8 @@ nor populated at all for a registered-but-inactive `mode` (ADR-015 §4a) — so
   plain string, a `weather`-tier string with `rated_dc_capacity_wp` and a
   non-zero `coefficient_per_c`, a string whose `converter_limit_w` excludes
   training samples, and a `provider_already_corrects` string.
-- Given the replay, then nothing in `string_computation` is monkeypatched and
-  no `predictions` dict is injected: tampering with a `pv_corrected` value, a
+- Given the replay, then nothing in `string_computation` is monkeypatched and no
+  `predictions` dict is injected: tampering with a `pv_corrected` value, a
   `predicted` value, or any of the four new metadata scalars in a fixture makes
   the replay disagree with it (the three layers ADR-015 §5a formerly listed as
   "echoed, not checked").
@@ -71,8 +71,8 @@ nor populated at all for a registered-but-inactive `mode` (ADR-015 §4a) — so
   `series`/`accuracy` still read the cache — untouched.)
 - Given `_predict_all_methods` raises for the exported string, then the export
   still returns its other sections with an empty `# predictions` and logs the
-  exception — a debugging aid must not 500 on exactly the weird fit it exists
-  to explain.
+  exception — a debugging aid must not 500 on exactly the weird fit it exists to
+  explain.
 - Given `fc_selected is None`, then `# predictions` is empty (no fabricated
   rows), as with the previous "no cached prediction → omit" contract.
 - Every other `TASK-0038` acceptance criterion (section order, `None` for
@@ -87,8 +87,9 @@ nor populated at all for a registered-but-inactive `mode` (ADR-015 §4a) — so
 
 - `diagnostics/compare_regressions.py` — `_export_metadata_row` (+4 columns),
   `export_csv` (fresh predictions + failure isolation), docstrings
-- `tests/diagnostics/test_compare_regressions.py` — `_replay_compare_regressions`
-  rewritten (no stub, no injected predictions, real config), new tests
+- `tests/diagnostics/test_compare_regressions.py` —
+  `_replay_compare_regressions` rewritten (no stub, no injected predictions,
+  real config), new tests
 - `tests/fixtures/csv_regression/{README.md,synthetic/*}` — regenerated + new
 - `adr/015-…`, `adr/INDEX.md`, `tasks/adr-summary.md` §8b, `tasks/INDEX.md`
 - No change to `regression/`, `string_computation.py`, `coordinator*.py`,
@@ -104,7 +105,8 @@ nor populated at all for a registered-but-inactive `mode` (ADR-015 §4a) — so
 
 ## Consumed Interfaces
 
-From `TASK-0038-diagnostic-slot-raw-data-csv-export` (its `Delivered Artifacts`):
+From `TASK-0038-diagnostic-slot-raw-data-csv-export` (its
+`Delivered Artifacts`):
 
 - `CompareRegressionsMode.export_csv`, `_export_metadata_row`,
   `_export_predictions_rows`, `_export_prediction_inputs_rows` from
@@ -114,21 +116,22 @@ From `TASK-0038-diagnostic-slot-raw-data-csv-export` (its `Delivered Artifacts`)
 - `DiagnosticMode._write_csv_sections` from
   `custom_components/shady/diagnostics/base.py`
 - `parse_csv_sections`, `compare_sections` from `tests/csv_fixture_support.py`
-- `_replay_compare_regressions` from `tests/diagnostics/test_compare_regressions.py`
+- `_replay_compare_regressions` from
+  `tests/diagnostics/test_compare_regressions.py`
 - `StringComputationConfig` from `custom_components/shady/coordinator_like.py`
 
 ## Delivered Artifacts
 
 Production (`custom_components/shady/`):
 
-- `diagnostics/compare_regressions.py` → `CompareRegressionsMode._export_metadata_row`
-  now emits 19 columns (`converter_limit_w`, `coefficient_per_c`,
-  `provider_already_corrects`, `rated_dc_capacity_wp` appended after
-  `max_uplift_c`); new `CompareRegressionsMode._export_optional_float`
-  (static, `None` → blank); new `CompareRegressionsMode._export_predictions(...)
-  -> dict[str, float]` (wraps `_predict_all_methods`; `{}` when `fc_selected is
-  None` or fitting raises, logged); `export_csv` uses it instead of
-  `cache.diagnostic_fit`.
+- `diagnostics/compare_regressions.py` →
+  `CompareRegressionsMode._export_metadata_row` now emits 19 columns
+  (`converter_limit_w`, `coefficient_per_c`, `provider_already_corrects`,
+  `rated_dc_capacity_wp` appended after `max_uplift_c`); new
+  `CompareRegressionsMode._export_optional_float` (static, `None` → blank); new
+  `CompareRegressionsMode._export_predictions(...) -> dict[str, float]` (wraps
+  `_predict_all_methods`; `{}` when `fc_selected is None` or fitting raises,
+  logged); `export_csv` uses it instead of `cache.diagnostic_fit`.
 - No other production file changed. `tasks/DEPENDENCIES.md`: no change.
 
 Tests (`tests/`):
@@ -143,10 +146,11 @@ Tests (`tests/`):
   hand-injected predictions were refuted by the real fit); new:
   `clipping_excludes_sample_pass.csv`, `derating_weather_active_pass.csv`,
   `provider_already_corrects_pass.csv`, `tampered_pv_corrected_fail.csv`,
-  `tampered_predicted_fail.csv`, `tampered_coefficient_fail.csv`. READMEs updated.
+  `tampered_predicted_fail.csv`, `tampered_coefficient_fail.csv`. READMEs
+  updated.
 
-Docs: `adr/015-…` (Amendment 2026-09-29; §5a rewritten), `adr/INDEX.md`
-(missing ADR-015 row added), `tasks/adr-summary.md` §8b, `tasks/INDEX.md`,
+Docs: `adr/015-…` (Amendment 2026-09-29; §5a rewritten), `adr/INDEX.md` (missing
+ADR-015 row added), `tasks/adr-summary.md` §8b, `tasks/INDEX.md`,
 `tasks/TASK-0038-…` (cross-reference only; status unchanged).
 
 ## Review (Phase 4b, inline — no sub-agents available)
