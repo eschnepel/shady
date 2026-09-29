@@ -35,7 +35,7 @@ rule.
 | TASK-0015b-patch-1-apexcharts-card-series-format | `series` Entries Reshaped for Direct `apexcharts-card` Use | done | TASK-0015b-diagnostics-select-and-scatter-sensors | Lead Agent (inline) |
 | TASK-0015b-patch-2-plotly-graph-xy-series-format | `series` Entries Reshaped Again — `custom:plotly-graph` x/y Arrays, Not `apexcharts-card` | done | TASK-0015b-patch-1-apexcharts-card-series-format | Lead Agent (inline) |
 | TASK-0015b-patch-3-xy-series-entry-on-base-class | `_xy_series_entry` Moved to `DiagnosticMode` — Shared by Every Diagnostic Mode | done | TASK-0015b-patch-2-plotly-graph-xy-series-format | Lead Agent (inline) |
-| TASK-0038-diagnostic-slot-raw-data-csv-export | Raw-Data CSV Export for a Diagnosed Slot (Debugging/Analysis Aid) | review | — | — |
+| TASK-0038-diagnostic-slot-raw-data-csv-export | Raw-Data CSV Export for a Diagnosed Slot (Debugging/Analysis Aid) | done | — | Lead Agent (inline) |
 
 ## Refinement Log
 
@@ -114,6 +114,111 @@ text-stage iteration loop the two rows above it already used, plus a self-caught
 documentation-quality issue recorded in the same entry rather than split into
 its own row, since it was found and fixed while doing this exact piece of work
 rather than as an unrelated discovery. |
+
+| 2026-09-27 | TASK-0038-diagnostic-slot-raw-data-csv-export | Human confirmed
+ADR-015 after review (`Status: Proposed` → `Accepted`), satisfying Phase 0's own
+draft-ADR procedure, and requested three further amendments at the same time,
+wired directly into ADR-015's text (draft-ADR amendment convention — Phase 0:
+"Draft ADRs get amendments wired into the text") rather than appended as dated
+blocks: (1) a `tests/diagnostics/` sub-package mirroring the production
+`diagnostics/` package, one file per diagnostic mode
+(`test_base.py`/`test_compare_regressions.py`, moved unchanged from the former
+flat `tests/test_diagnostics_*.py` pair) plus a non-test-prefixed
+`csv_fixture_support.py` for the fully generic parse/compare mechanism — new
+ADR-015 §7, plus a dated Amendment to ADR-000 §6 (accepted, non-draft —
+amendment appended, not wired in) recording the general convention this
+establishes; (2) `http_export.py`'s view gains an optional `mode` query
+parameter (new ADR-015 §4a), defaulting to the coordinator's own currently
+configured mode, resolved via a new
+`ShadyCoordinator.diagnostic_mode_by_key(key)` accessor; (3) the fixture
+mechanism's `parse_csv_sections` returns `dict[str, list[dict[str, str]]]`
+rather than the original draft's `list[tuple[str, ...]]`, making section-name
+uniqueness structural (raises loudly on a duplicate `#`-marker name) — ADR-015
+§5 Amendment; the *write* side (`_write_csv_sections`) is unaffected. While
+wiring these in, also recorded an implementation-time clarification in ADR-015
+§6 that the sample CSV itself required resolving: `build_pool`'s new
+`WeightBreakdown.magnitude_weight` must be captured *before* ADR-011 §2's
+neighbor-exclusion zeroing (not after), or the Acceptance Criteria's own
+`combined_weight` reconstruction formula doesn't hold — confirmed against the
+sample's own row 3 (`neighbor_excluded=1` alongside a nonzero illustrative
+`magnitude_weight`). Also recorded, as a new task-file Decision rather than left
+implicit: `export_csv("sum")` returns `None` (unsupported) — the
+pointwise-summed pseudo-string has no single coherent per-string
+`temperature_tier`/config the one-row `# metadata` schema could represent —
+added as its own Acceptance Criterion. `tasks/adr-summary.md` §8a's ADR-015
+bullet moved into a new §8b (no longer "drafted but not scheduled" — it's
+scheduled and in progress), and its module-dependency-chain diagram gained
+`http_export.py` plus the new `diagnostics --> regression` edge. `TASK-0038`
+itself updated in step: Related ADRs list, a new "Decisions addendum" section
+recording all three amendments, Acceptance Criteria gained four new entries
+(mode-parameter behavior, `sum`-id exclusion, duplicate-section-name rejection,
+and the corrected/un-mangled `combined_weight` formula), and the Estimated
+Footprint list revised for the new coordinator accessors and test file layout.
+`Status` `review` → `todo` → `in-progress` in the same sitting (Phase 3's
+readiness check cleared immediately — no dependency tasks). Implementation
+itself begins in the same session, no sub-agents available in this environment
+(Lead Agent acting as Worker, then Reviewer, per this project's own
+inline-execution fallback). | Human-requested amendments at implementation
+kickoff, resolved in text before any code was written — the same low-cost
+text-stage iteration loop this project's task-file intermediate step exists for,
+immediately followed by Phase 3/4 in the same session since no open question
+remained after this row. |
+
+| 2026-09-27 | TASK-0038-diagnostic-slot-raw-data-csv-export | Relocated
+`csv_fixture_support.py` from `tests/diagnostics/` to top-level `tests/` (human
+caught this during implementation review, before the file had any real content
+beyond its own docstring — no downstream code yet depended on the wrong path).
+It parses/compares the generic `# name`-marker CSV section format only — nothing
+diagnostics-specific — the same reasoning that already kept
+`tests/fixtures/csv_regression/` itself top-level rather than nested under
+`tests/diagnostics/`; a future package adopting the same fixture convention
+reuses it directly. Every doc reference written in the row above (ADR-000 §6's
+Amendment, ADR-015 §7, `TASK-0038`'s Decisions addendum/footprint) corrected to
+the new path in place, rather than left pointing at a location the file was
+never actually implemented under for more than a few tool calls. | The
+`tests/diagnostics/` sub-package convention (this same row's own first entry) is
+specifically for content differentiated *per diagnostic mode* — a mode-agnostic
+file placed inside it would have quietly broken that boundary the same session
+it was drawn. |
+
+| 2026-09-27 | TASK-0038-diagnostic-slot-raw-data-csv-export | Implementation
+completed and self-reviewed (no sub-agents available: Lead Agent acted as
+Worker, then Reviewer against the Acceptance Criteria, ADR-015 and
+`Delivered Artifacts`); `in-progress` → `done`. Human requested, while the
+fixture runner was being written, (1) an optional `expected` = `PASS`/`FAIL`
+column on the `# diagnostic_mode` row (absent/blank = `PASS`; exports never
+write it) so the test system can be tested, and (2) two fixture folders —
+`curated/` for real exports, `synthetic/` for the developer-written ones — with
+the six fixtures written in this session kept in `synthetic/`. Wired into
+ADR-015 as new §5a (draft-ADR convention: in the text), and into `TASK-0038`'s
+Decisions addendum, Acceptance Criteria and footprint; failure output now
+mirrors the folder (`_generated/<folder>/<file>`). Three things surfaced during
+implementation and are recorded here rather than left implicit: **(a)** a real
+bug in the first version of `parse_csv_sections` — it split only on `\r\n`, but
+`Path.read_text()` (and git `autocrlf`) yields `\n`, so any fixture read from
+disk parsed to nothing; it now accepts both, with a test. **(b)** The first
+tampered `synthetic/` fixture (a metadata scalar) was *accepted* by the replay,
+because metadata scalars, raw `fc`/`pv`/`temperature`, `pv_corrected` and each
+method's `predicted` are inputs the replay echoes, not values it derives; only
+`build_pool`'s weight decomposition, `is_valid`, dates and `accuracy` are
+recomputed. The fixture was replaced with a derived-value tamper, and the limit
+is documented in ADR-015 §5a and the fixtures README — a green `curated/` run
+does **not** cover `fit()`/`predict()` or `apply_training_corrections`. Whether
+the replay should be widened to re-run `fit()` is left as an open question for
+the human rather than decided here. **(c)** Moving the diagnostics tests into
+`tests/diagnostics/` changed collection order and exposed a latent
+order-dependence (several test files replace
+`sys.modules['homeassistant']`/`shady.*` under the same names):
+`test_coordinator.py` now snapshots its modules and exposes
+`_restore_modules()`, called by the five files that import it as `tc`. Verified
+with a mutation check (temporarily altering `build_pool`'s `time_weight` turned
+exactly the three `PASS` synthetic fixtures red and left their regenerated files
+under `_generated/synthetic/`). Final state: 722 tests pass (640 before this
+task), ruff and `mypy --strict` clean over `custom_components/shady` and
+`tests`. | Phase 4c PASS. The `expected` column and folder split are
+human-requested amendments; (a)–(c) are implementation findings, logged so the
+audit trail shows the fixture mechanism's real detection boundary instead of
+implying it covers the whole regression path. |
 
 ## Audit Groups
 

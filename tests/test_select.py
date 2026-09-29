@@ -10,7 +10,7 @@ needs neither the full `FakeHomeAssistant` recorder-stub convention
 (`test_coordinator.py`) nor a real `ShadyCoordinator` — a hand-written
 `-> Any`-typed stand-in exposing only the two methods `select.py` ever
 calls, the same "fake object standing in for a strictly-typed
-dependency" pattern `test_diagnostics_base.py`'s own `_stub_coordinator()`
+dependency" pattern `tests/diagnostics/test_base.py`'s own `_stub_coordinator()`
 already establishes, is enough to exercise every acceptance criterion.
 Fully self-contained: registers its own minimal `homeassistant.
 components.select` stub before file-path-loading `select.py`,
@@ -68,7 +68,7 @@ def _stub_coordinator(initial_mode: str = "off") -> Any:
     `active_diagnostic_mode()`/`set_active_diagnostic_mode()` — nothing
     else `ShadyCoordinator` provides. `-> Any` so `mypy` doesn't demand
     a real `ShadyCoordinator` here, mirroring
-    `test_diagnostics_base.py`'s own `_stub_coordinator()`."""
+    `tests/diagnostics/test_base.py`'s own `_stub_coordinator()`."""
 
     class _StubCoordinator:
         def __init__(self) -> None:

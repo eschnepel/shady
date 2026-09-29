@@ -2,14 +2,17 @@
 
 Integration-level setup: constructs the `ShadyCoordinator`, stores it in
 `hass.data[DOMAIN][entry.entry_id]`, forwards this config entry's
-platforms (`sensor`/`select`/`button`/`datetime`), and restores restart-
-persisted energy-integral state (ADR-005 §5/§6) — thin HA glue only
-(ADR-000 §3), no business logic of its own. The diagnosed-slot pin
-(ADR-004 §2a/§2f) is entity-only as of `datetime.py`'s
-`ShadyDiagnosticSlotDateTime`/`button.py`'s
-`ShadyClearDiagnosticSlotButton` — this module registers no domain-wide
-service of its own (the original `shady.select_diagnostic_slot` service
-this superseded is gone, not merely deprecated).
+platforms (`sensor`/`select`/`button`/`datetime`), registers
+`http_export.py`'s one `HomeAssistantView` (ADR-015, `TASK-0038` —
+guarded to run at most once per `hass`, not once per config entry, see
+`_register_http_view_once` below), and restores restart-persisted
+energy-integral state (ADR-005 §5/§6) — thin HA glue only (ADR-000 §3),
+no business logic of its own. The diagnosed-slot pin (ADR-004 §2a/§2f)
+is entity-only as of `datetime.py`'s `ShadyDiagnosticSlotDateTime`/
+`button.py`'s `ShadyClearDiagnosticSlotButton` — this module registers
+no domain-wide service of its own (the original
+`shady.select_diagnostic_slot` service this superseded is gone, not
+merely deprecated).
 
 **Startup ordering (ADR-002 §1a, the reason this module exists as a
 real task rather than a trivial wire-up):** a config entry's referenced
@@ -55,6 +58,7 @@ from homeassistant.helpers.start import async_at_started
 
 from .const import DOMAIN
 from .coordinator import ShadyCoordinator
+from .http_export import ShadyExportCsvView
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -73,10 +77,32 @@ PLATFORMS = ["sensor", "select", "button", "datetime"]
 # directly by then).
 _MISSING_ENTITIES_RELOAD_DELAY_S: float = 30.0
 
+# `hass.data[DOMAIN]` key for the "has `ShadyExportCsvView` already been
+# registered for this `hass`" guard (ADR-015 §1/§4, `TASK-0038`) --
+# distinct from every `entry.entry_id` key already stored there, since
+# it tracks a `hass`-wide fact, not a per-config-entry one.
+_HTTP_VIEW_REGISTERED_KEY = "_http_view_registered"
+
+
+def _register_http_view_once(hass: HomeAssistant) -> None:
+    """`hass.http.register_view` is HA's own view registry, keyed by
+    URL pattern -- calling it twice for the same view (e.g. a second
+    Shady config entry's own `async_setup_entry` run) would register a
+    second, dead route behind the first. The `{config_entry_id}` URL
+    segment already lets one registration serve every config entry, so
+    this runs at most once per `hass`, guarded by
+    `_HTTP_VIEW_REGISTERED_KEY` above rather than relying on
+    `hass.http.register_view` itself being idempotent (it isn't)."""
+    if hass.data[DOMAIN].get(_HTTP_VIEW_REGISTERED_KEY):
+        return
+    hass.http.register_view(ShadyExportCsvView())
+    hass.data[DOMAIN][_HTTP_VIEW_REGISTERED_KEY] = True
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Shady from a config entry (ADR-002 §1/§1a/§5)."""
     hass.data.setdefault(DOMAIN, {})
+    _register_http_view_once(hass)
 
     coordinator = ShadyCoordinator(hass, entry)
 

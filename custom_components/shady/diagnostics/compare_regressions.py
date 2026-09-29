@@ -47,6 +47,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -55,6 +56,7 @@ from numpy.typing import NDArray
 from .. import string_computation
 from ..aggregation import diagnostic_accuracy, sum_predicted, sum_values
 from ..cache import SLOTS_PER_DAY
+from ..regression.base import build_pool
 from .base import (
     DiagnosticCadence,
     DiagnosticFitResult,
@@ -92,19 +94,49 @@ def _to_float_array(values: list[float | None | str]) -> NDArray[np.float64]:
     return np.array([v if isinstance(v, float) else np.nan for v in values], dtype=np.float64)
 
 
+def _export_float_or_blank(value: float) -> str:
+    """`export_csv`'s own float formatting (ADR-015): `repr()`-level
+    precision — round-trip-safe for the fixture-regression tests
+    (`tests/diagnostics/csv_fixture_support.py`'s `parse_csv_sections`
+    reads it straight back via `float()`) — or an empty string for a
+    `NaN` pad/invalid/missing sample, never a literal `"nan"` string a
+    spreadsheet or a naive `float()` call would otherwise have to
+    special-case."""
+    if np.isnan(value):
+        return ""
+    return repr(float(value))
+
+
 class _GatheredPool:
     """One string's diagnosed-slot pool, gathered once and shared by
     both `_pool_series` (display) and `_predict_all_methods` (fitting)
     — avoids fetching/correcting the same offsets twice per string per
-    tick."""
+    tick.
+
+    `pv_by_offset`/`temperature_by_offset` (ADR-015 §2, `TASK-0038`):
+    the raw, *uncorrected* readings `_gather_pool` already computes on
+    the way to `corrected_pv_by_offset` (via `apply_training_corrections`)
+    but, before this task, discarded once that call returned.
+    `CompareRegressionsMode.export_csv`'s own `# training_pool` section
+    is the first consumer that needs the raw values alongside the
+    corrected ones, to show what a correction actually changed rather
+    than only its result. `temperature_by_offset` stays `None` for a
+    string with no configured `temperature_entity_id` — the same
+    "absent, not a placeholder" contract `_gather_pool` already gives
+    it.
+    """
 
     def __init__(
         self,
         fc_by_offset: dict[int, NDArray[np.float64]],
         corrected_pv_by_offset: dict[int, NDArray[np.float64]],
+        pv_by_offset: dict[int, NDArray[np.float64]],
+        temperature_by_offset: dict[int, NDArray[np.float64]] | None,
     ) -> None:
         self.fc_by_offset = fc_by_offset
         self.corrected_pv_by_offset = corrected_pv_by_offset
+        self.pv_by_offset = pv_by_offset
+        self.temperature_by_offset = temperature_by_offset
 
 
 @dataclass
@@ -308,6 +340,12 @@ class CompareRegressionsMode(DiagnosticMode):
                 )
                 for offset in offsets
             },
+            # `export_csv("sum")` is unsupported (see its own docstring) --
+            # nothing ever reads these two fields for the synthetic sum
+            # pool, so they stay unpopulated rather than pointwise-summed
+            # for no consumer.
+            pv_by_offset={},
+            temperature_by_offset=None,
         )
         series = self._pool_series(settings, summed_pool)
 
@@ -446,7 +484,274 @@ class CompareRegressionsMode(DiagnosticMode):
             config.rated_dc_capacity_wp,
             settings.max_uplift_c,
         )
-        return _GatheredPool(fc_by_offset, corrected_pv_by_offset)
+        return _GatheredPool(
+            fc_by_offset, corrected_pv_by_offset, pv_by_offset, temperature_by_offset
+        )
+
+    # -- export_csv() ------------------------------------------------------
+
+    def export_csv(self, sensor_id: str) -> str | None:
+        """ADR-015 §2/§3/§6 (`TASK-0038`): `sensor_id`'s current
+        diagnosed-slot raw regression inputs as a CSV — the leading
+        `# diagnostic_mode` section (this mode's own registry `key`,
+        `base.py`'s `_write_csv_sections` convention) plus four content
+        sections: `# metadata` (one row, everything needed to place the
+        rest in context), `# training_pool` (every neighbor-offset/day
+        training point, decomposed weight components included),
+        `# predictions` (all four `regression/` strategies' predicted
+        values for this slot), `# prediction_inputs` (the scalar inputs
+        those predictions were made from).
+
+        Only a real configured-string `sensor_id` ("0", "1", ...) is
+        supported — `sensor_id="sum"` (also one of `sensor_ids()`'s own
+        declared ids) returns `None` here: the pointwise-summed
+        pseudo-string has no single coherent per-string
+        `temperature_tier`/config the `# metadata` section's one-row
+        schema could represent, and "why did string 0's fit look weird"
+        (this task's own Goal) is inherently about one real string,
+        never the sum (implementation decision, 2026-09-27,
+        `TASK-0038`). Returns `None` the same way for any other
+        unrecognized `sensor_id`, and for a recognized string with no
+        `baseline_entity_id` configured (`_compute_sensor`'s own
+        contract) — `http_export.py` reports `HTTPStatus.NOT_FOUND` for
+        every one of these, indistinguishable from the HTTP caller's
+        point of view (ADR-015 §4).
+        """
+        try:
+            string_index = int(sensor_id)
+        except ValueError:
+            return None
+
+        names = dict(self._coordinator.strings())
+        string_name = names.get(string_index)
+        if string_name is None:
+            return None
+
+        config = self._coordinator.string_computation_config(string_index)
+        if config.baseline_entity_id is None:
+            return None
+
+        diagnosed = self._coordinator.diagnosed_slot()
+        settings = self._coordinator.regression_settings()
+        pool = self._gather_pool(config, settings, diagnosed)
+
+        _sample_pool, breakdown = build_pool(
+            pool.fc_by_offset,
+            pool.corrected_pv_by_offset,
+            settings.smoothing_radius,
+            settings.neighbor_fitting_cutoff,
+            settings.recency_decay_max,
+            return_weight_breakdown=True,
+        )
+
+        fc_selected = self._selected_value(config.baseline_entity_id, diagnosed.index)
+        pv_selected = (
+            self._selected_value(config.actual_yield_entity_id, diagnosed.index)
+            if diagnosed.is_elapsed
+            else None
+        )
+        predictions = self._coordinator.cache.diagnostic_fit(sensor_id) or {}
+        target_cell_temperature: float | None = None
+        if config.temperature_tier is not None:
+            target_cell_temperature = self._coordinator.target_cell_temperature_for_slot(
+                string_index, diagnosed.index
+            )
+
+        sections = [
+            ("diagnostic_mode", [{"diagnostic_mode": self.key}]),
+            (
+                "metadata",
+                [
+                    self._export_metadata_row(
+                        string_index, string_name, diagnosed, settings, config, pool
+                    )
+                ],
+            ),
+            ("training_pool", self._export_training_pool_rows(settings, pool, breakdown)),
+            ("predictions", self._export_predictions_rows(predictions, pv_selected)),
+            (
+                "prediction_inputs",
+                self._export_prediction_inputs_rows(
+                    fc_selected, target_cell_temperature, pv_selected
+                ),
+            ),
+        ]
+        return self._write_csv_sections(sections)
+
+    def _export_metadata_row(
+        self,
+        string_index: int,
+        string_name: str,
+        diagnosed: DiagnosedSlot,
+        settings: RegressionSettings,
+        config: StringComputationConfig,
+        pool: _GatheredPool,
+    ) -> dict[str, str]:
+        """The `# metadata` section's one row — everything needed to
+        place `# training_pool`/`# predictions`/`# prediction_inputs`
+        in context without a second file. `window_days` is read off
+        `pool.fc_by_offset[0]`'s own shape rather than a new coordinator
+        accessor — `_gather_pool`'s arrays already carry it."""
+        window_days = pool.fc_by_offset[0].shape[1]
+        diagnosed_at = self._coordinator.cache.timestamp_for(diagnosed.index)
+        is_pinned = self._coordinator.pinned_diagnostic_slot() is not None
+        return {
+            "string_index": str(string_index),
+            "string_name": string_name,
+            "diagnosed_at": diagnosed_at.isoformat(),
+            "diagnosed_index": str(diagnosed.index),
+            "slot_of_day": str(diagnosed.slot_of_day),
+            "is_pinned": "true" if is_pinned else "false",
+            "is_elapsed": "true" if diagnosed.is_elapsed else "false",
+            "regression_method_configured": self._coordinator.configured_regression_method(),
+            "temperature_tier": config.temperature_tier or "",
+            "window_days": str(window_days),
+            "smoothing_radius": str(settings.smoothing_radius),
+            "neighbor_fitting_cutoff": repr(float(settings.neighbor_fitting_cutoff)),
+            "recency_decay_max": repr(float(settings.recency_decay_max)),
+            "clipping_threshold": repr(float(settings.clipping_threshold)),
+            "max_uplift_c": repr(float(settings.max_uplift_c)),
+        }
+
+    def _export_window_start_date(self, window_days: int) -> date:
+        """The calendar date of `# training_pool`'s `day_index=0`
+        column — mirrors `cache.py`'s own `get_pinned_slot_pool` anchor
+        resolution exactly (ADR-007a §6), so this export's own
+        `sample_date`/`day_age` columns describe the same window
+        `_gather_pool` actually fetched. Not re-derived from `diagnosed`
+        alone, which doesn't carry the "does a *future* pin still anchor
+        the window at today" nuance that method's own `is_pinned` check
+        applies."""
+        now = self._coordinator.now()
+        today = now.date()
+        pinned = self._coordinator.pinned_diagnostic_slot()
+        anchor = pinned.date() if pinned is not None and pinned.date() <= today else today
+        return anchor - timedelta(days=window_days - 1)
+
+    def _export_training_pool_rows(
+        self,
+        settings: RegressionSettings,
+        pool: _GatheredPool,
+        breakdown: Any,
+    ) -> list[dict[str, str]]:
+        """The `# training_pool` section — one row per (`offset`,
+        `day_index`), decomposed weight components included (ADR-015
+        §6). `breakdown` is a `regression.base.WeightBreakdown`
+        (annotated `Any` here to avoid a `TYPE_CHECKING`-only import
+        purely for a local variable's type, matching this module's own
+        `DiagnosedSlot`/`RegressionSettings`/`StringComputationConfig`
+        convention for names only ever used as attribute-access
+        targets — `build_pool` itself, imported for real above, is the
+        only symbol from `regression/base.py` this module's runtime
+        code actually needs)."""
+        window_days = pool.fc_by_offset[0].shape[1]
+        window_start_date = self._export_window_start_date(window_days)
+
+        rows: list[dict[str, str]] = []
+        for offset in range(-settings.smoothing_radius, settings.smoothing_radius + 1):
+            fc_row = pool.fc_by_offset[offset][0]
+            pv_raw_row = pool.pv_by_offset[offset][0]
+            pv_corrected_row = pool.corrected_pv_by_offset[offset][0]
+            temperature_row = (
+                pool.temperature_by_offset[offset][0]
+                if pool.temperature_by_offset is not None
+                else None
+            )
+            valid_row = breakdown.valid_mask[offset][0]
+            magnitude_row = breakdown.magnitude_weight[offset][0]
+            combined_row = breakdown.combined_weight[offset][0]
+            time_weight = breakdown.time_weight[offset]
+            recency_row = breakdown.recency_weight
+            neighbor_excluded = bool(breakdown.neighbor_excluded[offset][0])
+            neighbor_scale = float(breakdown.neighbor_scale[offset][0])
+
+            for day_index in range(window_days):
+                sample_date = window_start_date + timedelta(days=day_index)
+                day_age = (window_days - 1) - day_index
+                is_valid = bool(valid_row[day_index])
+                rows.append(
+                    {
+                        "offset": str(offset),
+                        "day_index": str(day_index),
+                        "sample_date": sample_date.isoformat(),
+                        "day_age": str(day_age),
+                        "fc_raw": _export_float_or_blank(fc_row[day_index]),
+                        "pv_raw": _export_float_or_blank(pv_raw_row[day_index]),
+                        "pv_corrected": _export_float_or_blank(pv_corrected_row[day_index]),
+                        "temperature_raw": (
+                            _export_float_or_blank(temperature_row[day_index])
+                            if temperature_row is not None
+                            else ""
+                        ),
+                        "is_valid": "1" if is_valid else "0",
+                        "magnitude_weight": repr(float(magnitude_row[day_index])),
+                        "time_weight": repr(float(time_weight)),
+                        "recency_weight": repr(float(recency_row[day_index])),
+                        "neighbor_excluded": "1" if neighbor_excluded else "0",
+                        "neighbor_scale": repr(neighbor_scale),
+                        "combined_weight": repr(float(combined_row[day_index])),
+                    }
+                )
+        return rows
+
+    def _export_predictions_rows(
+        self, predictions: dict[str, float], pv_selected: float | None
+    ) -> list[dict[str, str]]:
+        """The `# predictions` section — one row per `regression/`
+        strategy that has a cached `extra_fit()` prediction this tick.
+        `pv_selected`/`accuracy` are blank, not fabricated, for a
+        not-yet-elapsed diagnosed slot (mirrors
+        `_append_selected_series`'s own contract)."""
+        rows: list[dict[str, str]] = []
+        for method in string_computation.REGRESSION_STRATEGIES:
+            predicted = predictions.get(method)
+            if predicted is None:
+                # No cached extra_fit() prediction yet for this method
+                # this tick (ADR-004 §4's "extra fitting cost only
+                # while active" -- e.g. a freshly-switched-on mode's
+                # very first tick, before extra_fit() has run once) --
+                # omit the row rather than fabricate one.
+                continue
+            row = {"method": method, "predicted": repr(float(predicted))}
+            if pv_selected is not None:
+                row["pv_selected"] = repr(float(pv_selected))
+                row["accuracy"] = repr(float(diagnostic_accuracy(predicted, pv_selected)))
+            else:
+                row["pv_selected"] = ""
+                row["accuracy"] = ""
+            rows.append(row)
+        return rows
+
+    def _export_prediction_inputs_rows(
+        self,
+        fc_selected: float | None,
+        target_cell_temperature: float | None,
+        pv_selected: float | None,
+    ) -> list[dict[str, str]]:
+        """The `# prediction_inputs` section — key/value pairs, not a
+        wide row, specifically so `target_cell_temperature` can be
+        *absent* for a non-temperature-tier string rather than shown as
+        a blank column (ADR-015's own schema note)."""
+        rows: list[dict[str, str]] = [
+            {
+                "key": "fc_selected",
+                "value": repr(float(fc_selected)) if fc_selected is not None else "",
+            }
+        ]
+        if target_cell_temperature is not None:
+            rows.append(
+                {
+                    "key": "target_cell_temperature",
+                    "value": repr(float(target_cell_temperature)),
+                }
+            )
+        rows.append(
+            {
+                "key": "pv_selected",
+                "value": repr(float(pv_selected)) if pv_selected is not None else "",
+            }
+        )
+        return rows
 
     # -- extra_fit() ------------------------------------------------------
 

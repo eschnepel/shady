@@ -98,6 +98,8 @@ maintain by hand.
 
 from __future__ import annotations
 
+import csv
+import io
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -258,6 +260,61 @@ class DiagnosticMode(ABC):
         mode that doesn't need extra fitting."
         """
         return None
+
+    def export_csv(self, sensor_id: str) -> str | None:
+        """Optional. A raw-data CSV export of `sensor_id`'s own current
+        diagnosed state, for a human to analyse -- one of this mode's
+        own declared `sensor_ids()` (ADR-004 §5). Returns `None` if
+        `sensor_id` is not one of this mode's own, or if this mode does
+        not support export at all (ADR-015 §2, `TASK-0038`). Base
+        default: `None`, the same role `None` already plays for
+        `extra_fit()` above -- every mode is free to override this or
+        not, at zero cost to the ones that don't.
+
+        `http_export.py`'s registered view is this method's only real
+        caller, mode-agnostic itself: it resolves *some* `DiagnosticMode`
+        (the active one, or an explicit override, ADR-015 §4/§4a) and
+        calls `mode.export_csv(sensor_id)` with zero knowledge of what
+        the result contains, reporting `HTTPStatus.NOT_FOUND` for `None`.
+        """
+        return None
+
+    @staticmethod
+    def _write_csv_sections(sections: list[tuple[str, list[dict[str, str]]]]) -> str:
+        """Format-only helper (ADR-015 §3, `TASK-0038`) shared by every
+        concrete mode's own `export_csv` -- a `# name` marker line, a
+        header row (the first row's own keys, in insertion order), the
+        data rows, then a blank line, repeated per section in the order
+        given. Mirrors `_xy_series_entry`'s own placement rationale
+        exactly: a `@staticmethod` on the base class specifically so
+        every mode gets identical file mechanics for free, without
+        importing a sibling mode's module -- never the column
+        *content*, which stays entirely each mode's own. Every mode's
+        own export's first section is, by convention (not enforced
+        here -- a mode-owned choice, ADR-015 §3), `# diagnostic_mode`,
+        one column, one row identifying which mode produced the file,
+        ahead of everything else, in this exact same shape.
+
+        A section with zero rows still gets its `# name` marker line
+        but no header row (nothing to derive one from) -- not expected
+        in practice (every section this codebase's one mode produces
+        always has at least one row, `CompareRegressionsMode.export_csv`'s
+        own `# predictions` section included, since it always has
+        exactly the four `regression/` strategies even when their
+        accuracy isn't known yet), but handled rather than raising,
+        matching ADR-000 §8's clamp-over-exception preference for a
+        case this formatting-only helper has no reason to treat as
+        invalid.
+        """
+        buffer = io.StringIO()
+        for name, rows in sections:
+            buffer.write(f"# {name}\r\n")
+            if rows:
+                writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+            buffer.write("\r\n")
+        return buffer.getvalue()
 
     @staticmethod
     def _xy_series_entry(name: str, points: list[list[float]]) -> dict[str, Any]:

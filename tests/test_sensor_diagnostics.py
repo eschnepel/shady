@@ -5,7 +5,7 @@ Reuses `test_sensor_forecast.py`'s already-executed HA-stub/module-load
 harness wholesale (`ShadyCoordinator`, `_sensor_mod`, `FakeHomeAssistant`,
 `_make_ready_coordinator`, ...) rather than re-registering the same
 `homeassistant.*` stand-ins a second time — the same "reuse, don't
-reimplement" convention `test_diagnostics_compare_regressions.py`
+reimplement" convention `tests/diagnostics/test_compare_regressions.py`
 already applies to `test_coordinator.py`'s own harness.
 
 `test_coordinator.py`'s `TestDiagnosticResultCaching` already proves
@@ -36,7 +36,7 @@ _diagnostics_base_mod = sys.modules["shady.diagnostics.base"]
 
 # TYPE_CHECKING-only static import mirroring the runtime file-path load
 # `test_sensor_forecast.py` already performed (ADR-000 §6) — gives mypy
-# real types for these names, the same convention `test_diagnostics_base
+# real types for these names, the same convention `tests/diagnostics/test_base
 # .py`/`test_coordinator.py` already establish, without reintroducing a
 # package import here.
 if TYPE_CHECKING:
@@ -145,7 +145,7 @@ class TestDiagnosticsSensorUniqueIdDistinctness:
     constructed, Then their `_attr_unique_id` values differ (ADR-004
     §5). The underlying guarantee — that `sensor_ids()`-produced ids are
     themselves distinct — is already tested at the producer level in
-    `test_diagnostics_compare_regressions.py`; nothing in this entity
+    `tests/diagnostics/test_compare_regressions.py`; nothing in this entity
     layer's own tests exercised the consumer side directly until now."""
 
     def test_unique_id_differs_across_two_sensor_ids(self) -> None:

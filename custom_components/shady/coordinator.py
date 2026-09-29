@@ -1312,6 +1312,20 @@ class ShadyCoordinator:
         Amendment)."""
         return self._diagnostic_modes.get(self._active_diagnostic_mode)
 
+    def diagnostic_mode_by_key(self, key: str) -> DiagnosticMode | None:
+        """Any *registered* `DiagnosticMode` by its own `key` (`const.py`'s
+        `DIAGNOSTIC_MODES`, ADR-013 §2's registry convention) — not just
+        the currently *active* one `diagnostic_mode()` above returns.
+        `http_export.py`'s own optional `mode` query-parameter override
+        (ADR-015 §4a, `TASK-0038`) is this method's only caller:
+        exporting a registered mode's data should not require first
+        switching `select.py`'s own live selection to it. Returns
+        `None` for an unregistered key (including `"off"`, never
+        registered here — ADR-004 §1) — the same "nothing to export"
+        contract `diagnostic_mode()` already has for the active-mode
+        case."""
+        return self._diagnostic_modes.get(key)
+
     def diagnostic_result(self) -> DiagnosticResult | None:
         """The active mode's cached `compute()` output, or `None` while
         off (ADR-004 §5, 2026-09-03 Amendment). `_diagnostics_tick_sync`
@@ -1414,6 +1428,19 @@ class ShadyCoordinator:
             clipping_threshold=self._clipping_threshold,
             max_uplift_c=self._max_uplift_c,
         )
+
+    def configured_regression_method(self) -> str:
+        """The globally configured shading-model regression method
+        (`const.py`'s `REGRESSION_METHODS`, `CONF_REGRESSION_METHOD`) —
+        which of the four `regression/` strategies `_fit_string`
+        actually uses for the live forecast, as opposed to the other
+        three `CompareRegressionsMode` only ever compares against
+        (ADR-004 §2). Exposed read-only so a `DiagnosticMode` can
+        identify it without reaching into `coordinator.py`'s private
+        state (ADR-004 §5, second Amendment) —
+        `CompareRegressionsMode.export_csv`'s own `# metadata` section
+        (ADR-015, `TASK-0038`) is its first consumer."""
+        return self._regression_method
 
     def string_computation_config(self, string_index: int) -> StringComputationConfig:
         """One configured string's remaining per-string inputs to

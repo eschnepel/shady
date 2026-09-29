@@ -42,6 +42,8 @@ _make_entry = tc._make_entry
 _make_coordinator = tc._make_coordinator
 hass_pushed_values = tc.hass_pushed_values
 
+# Collection-order guard, see `tc._restore_modules`'s own comment.
+tc._restore_modules()
 _forecast_adjust_mod = sys.modules["shady.forecast_adjust"]
 clamp_output = _forecast_adjust_mod.clamp_output
 

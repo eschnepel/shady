@@ -1,11 +1,15 @@
 # ADR-015 – Diagnostic Slot Raw-Data CSV Export: HTTP View, Mode-Owned Serialization
 
-**Date:** 2026-09-24 **Status:** Proposed — draft, pending human review before
-`TASK-0038` moves `review` -> `todo` (Phase 0's own draft-ADR procedure: "Any
-new ADR starts in a draft state until review confirmed by a human"). **Last
-updated:** 2026-09-26 -- Decision 2/3/4/5 below rewritten (delivery mechanism
-and `build_pool`'s extension, Decision 1/6 here, are unchanged from the original
-2026-09-24 text).
+**Date:** 2026-09-24 **Status:** Accepted — confirmed by human, 2026-09-27,
+alongside three further amendments (§4a/§5/§7 below) requested at confirmation
+time; `TASK-0038` moves `review` -> `todo` the same day (Phase 0's own draft-ADR
+procedure: "Any new ADR starts in a draft state until review confirmed by a
+human" — satisfied). **Last updated:** 2026-09-27 -- §4a (mode-override query
+parameter), §5 (fixture-replay's own reader returns a `dict`, not a
+`list[tuple]`), and §7 (test package structure) added at confirmation time.
+Decision 2/3/4/5's 2026-09-26 rewrite (delivery mechanism and `build_pool`'s
+extension, Decision 1/6, unchanged since the original 2026-09-24 text) otherwise
+stands as written.
 
 ______________________________________________________________________
 
@@ -135,8 +139,9 @@ never the column *content*, which stays entirely each mode's own.
 passes them through this one shared formatter; a future mode does the same with
 its own sections.
 
-**Every export's first section is `# diagnostic_mode`, one column, one row** --
-`diagnostic_mode,<the mode's own registry name>` (ADR-013 §2's
+**Every export's first section is `# diagnostic_mode`, one column, one row** (a
+fixture file may add an optional second column, `expected`, §5a -- an export
+never does) -- `diagnostic_mode,<the mode's own registry name>` (ADR-013 §2's
 `_diagnostic_modes` registry key, e.g. `compare_regressions`) -- ahead of
 `# metadata`, not folded into it. Identifying which mode produced a file has to
 come before anything else, including before a generic reader can know how to
@@ -159,6 +164,34 @@ code in the HTTP layer -- the same generalization ADR-004 §5's fourth Amendment
 already forced onto `compute()`'s own output shape, applied one layer further
 out.
 
+### 4a — Amendment (2026-09-27): an optional `mode` query parameter, defaulting to the configured mode
+
+`GET /api/shady/{config_entry_id}/export_csv?sensor_id=...&mode=...` -- `mode`
+is optional and names a registered `DiagnosticMode` by its own registry `key`
+(§3's `# diagnostic_mode` value, e.g. `compare_regressions`), independent of
+whichever mode `select.py` currently has *active*. Omitted, it defaults to the
+coordinator's own currently configured mode (`coordinator.diagnostic_mode()`) --
+the view's original, and still default, behavior. A registered-but-not-
+currently-selected mode's data should be exportable without first switching the
+live selection just to read it back afterward: a human comparing two modes' raw
+inputs side by side, for instance, would otherwise have to flip `select.py` back
+and forth between requests, silently changing what every other diagnostic sensor
+shows in the meantime.
+
+Resolved via a new
+`ShadyCoordinator.diagnostic_mode_by_key(key: str) -> DiagnosticMode | None`
+accessor (`coordinator.py`) -- any *registered* mode, not just the active one,
+mirroring `diagnostic_mode()`'s own "unregistered key (including `\"off\"`)
+behaves as nothing to export" contract. Not added to `ShadyCoordinatorLike`
+(`coordinator_like.py`): no `DiagnosticMode` itself ever needs to look up a
+*different* mode by key, only `http_export.py`, which already holds a real
+`ShadyCoordinator` reference (§1's `http_export --> coordinator` edge is a
+genuine import, not the `TYPE_CHECKING`-only one `diagnostics/` uses), so
+extending the narrower Protocol has no reason to. `HTTPStatus.NOT_FOUND` for an
+unresolvable `mode` value, the same contract as an unresolvable `sensor_id` --
+both cases collapse to "nothing to export for what was asked," indistinguishable
+from the HTTP caller's own point of view.
+
 ### 5 — Fixture-test replay: generic parse, generic dispatch, mode-owned interpretation only
 
 `TASK-0038`'s own fixture-regression-test design (human addition, 2026-09-24) is
@@ -166,33 +199,54 @@ reworked the same way, splitting into three layers with the boundary drawn at
 exactly the same place as §2/§3 above:
 
 - **Generic, written once, reused by every mode forever:** a CSV-section parser,
-  `parse_csv_sections(text: str) -> list[tuple[str, list[dict[str, str]]]]` --
-  splits on the `#`-marker lines, `csv.DictReader` per section, returns the
-  sections in file order with their names. This is the read-side mirror of §3's
+  `parse_csv_sections(text: str) -> dict[str, list[dict[str, str]]]` -- splits
+  on the `#`-marker lines, `csv.DictReader` per section, keyed by section name
+  (`dict`, not the original `list[tuple[str, ...]]` draft -- **Amendment,
+  2026-09-27:** a `dict` makes section-name uniqueness structural rather than
+  merely conventional: building it raises loudly, naming the file and the
+  duplicated section, on a second occurrence of the same `#`-marker name, rather
+  than silently keeping the first/last one and losing the other -- exactly the
+  "fails the test loudly, naming the file and the problem" standard this
+  document's fixture design already holds every other malformed- fixture case
+  to. Every real export this codebase produces (§3's `_write_csv_sections`,
+  still `list[tuple[str, rows]]` on the *write* side, order still mattering
+  there for a human reading the file top to bottom) only ever writes each
+  section name once, so this is never expected to fire on a genuine export -- it
+  exists to catch a hand-edited or corrupted fixture file before it silently
+  passes with half its data discarded, which a `list`-of- duplicates would have
+  allowed by construction.) This is the read-side mirror of §3's
   `_write_csv_sections`; together they are the only two places the file *format*
   (as opposed to its content) is encoded at all. Test-only code (`tests/`), not
-  production -- production never needs to read its own output back.
+  production -- production never needs to read its own output back. Losing the
+  write side's own section *order* is not a real loss here -- §3's own fixed
+  section order (`diagnostic_mode`, then a mode's own sections in the order it
+  built them) is never itself asserted on by the fixture mechanism, only each
+  section's own name-addressed content is.
 - **Generic, written once:** dispatch by the leading `# diagnostic_mode`
   section's own value, against a small
-  `dict[str, Callable[[list[tuple[str, list[dict[str, str]]]]], str]]` registry
-  in `tests/test_csv_regression_fixtures.py` -- one entry per mode that has
-  fixture-replay support, today just
-  `"compare_regressions": _replay_compare_regressions`. An unregistered mode
-  name fails the fixture loudly (naming the file and the unknown mode), not
-  silently.
+  `dict[str, Callable[[dict[str, list[dict[str, str]]]], str]]` registry in
+  `tests/diagnostics/test_csv_regression_fixtures.py` -- one entry per mode that
+  has fixture-replay support, today just
+  `"compare_regressions": _replay_compare_regressions`, imported from
+  `tests/diagnostics/test_compare_regressions.py` (§7 below: that mode's own one
+  file, not a separate module). An unregistered mode name fails the fixture
+  loudly (naming the file and the unknown mode), not silently.
 - **Mode-owned, one function per mode:** `_replay_compare_regressions(sections)`
-  is the *only* mode-specific test code this design needs. It looks up
-  `"metadata"`/`"training_pool"`/`"prediction_inputs"` by name (not position --
-  robust to a future section being added or reordered) from the generic parsed
-  structure, reconstructs the real typed inputs
-  `CompareRegressionsMode.export_csv` itself needs, calls it, and returns the
-  fresh CSV text it produces. A future mode's own fixture support is exactly one
-  such function plus one registry line -- no change to the parser, the
-  dispatcher, or the comparator below.
+  is the *only* mode-specific test code this design needs, living in
+  `CompareRegressionsMode`'s own test file (§7) alongside every other test of
+  that mode. It looks up `"metadata"`/`"training_pool"`/`"prediction_inputs"` by
+  name (not position -- robust to a future section being added or reordered, and
+  now structurally guaranteed unique by the parser's `dict` shape, §5's own
+  Amendment above) from the generic parsed structure, reconstructs the real
+  typed inputs `CompareRegressionsMode.export_csv` itself needs, calls it, and
+  returns the fresh CSV text it produces. A future mode's own fixture support is
+  exactly one such function, in that mode's own test file, plus one registry
+  line in the generic runner -- no change to the parser, the dispatcher, or the
+  comparator below.
 
 **Comparison is also fully generic**, a consequence of both the original and the
-regenerated CSV existing as the same `list[tuple[str, list[dict[str, str]]]]`
-shape once parsed: `compare_sections(old, new, rel_tol) -> list[str]` (a list of
+regenerated CSV existing as the same `dict[str, list[dict[str, str]]]` shape
+once parsed: `compare_sections(old, new, rel_tol) -> list[str]` (a list of
 human-readable mismatch descriptions, empty if none) walks both structures
 section by section, row by row, field by field, attempting `float()` on each
 value and falling back to exact string equality -- no section or field name is
@@ -201,9 +255,46 @@ special-cased anywhere in this function. This also simplifies the original
 comparison happens on the **parsed, in-memory** structures, nothing needs to
 touch disk on a passing run at all -- only on a **mismatch** does the
 regenerated CSV get written, to
-`tests/fixtures/csv_regression/_generated/<same filename as the fixture>`, as
-the maintainer's ready-made replacement. A passing run is now zero I/O beyond
+`tests/fixtures/csv_regression/_generated/<fixture folder>/<same filename as the fixture>`,
+as the maintainer's ready-made replacement. A passing run is now zero I/O beyond
 reading the fixture itself, not "write then delete."
+
+#### 5a — Amendment (2026-09-27): two fixture folders, and an optional `expected` column
+
+**Two folders**, both replayed by the same runner: `curated/` holds real exports
+a maintainer downloaded and dropped in by hand (the regression net proper);
+`synthetic/` holds fixtures the developers wrote -- exports of the test
+scenarios, some deliberately tampered -- to test *the test system itself* (that
+a correct fixture passes and a wrong one is caught). Keeping them apart means a
+red `synthetic/` case indicts the mechanism while a red `curated/` case indicts
+the regression math, and a maintainer never has to wonder whether a file in
+`curated/` was ever a real export.
+
+**`expected`, an optional second column of the `# diagnostic_mode` row** --
+`diagnostic_mode,expected` / `compare_regressions,FAIL`. `PASS` or `FAIL`;
+absent or blank means `PASS`, so **exports never write it** (production
+`export_csv` emits the one-column shape of §3 unchanged) and a real export is a
+`PASS` fixture with no editing. `FAIL` marks a fixture that must be *rejected*
+(the regenerated CSV disagrees, or its mode is unregistered): the test passes
+only if the check genuinely fails, and fails if the fixture unexpectedly replays
+cleanly. The column lives on the `# diagnostic_mode` row because that is already
+the one row the generic runner reads before dispatching, so no new section or
+format rule is needed; the runner strips it before comparison (the regenerated
+export never has it). An `expected` value other than `PASS`/`FAIL` fails loudly
+naming the file. A fixture that cannot be parsed at all (duplicate section, no
+`# diagnostic_mode`) cannot declare an `expected`, so those failure modes are
+covered by unit tests against temporary files instead.
+
+**What a replay can and cannot check** (recorded so nobody over-trusts a green
+`curated/` run): `_replay_compare_regressions` reconstructs `export_csv`'s
+inputs from the fixture and recomputes what `export_csv` itself derives -- the
+`build_pool` weight decomposition, `is_valid`, `sample_date`/`day_age`,
+`accuracy`. It *echoes* the metadata scalars, raw `fc`/`pv`/`temperature`,
+`pv_corrected` (the correction parameters are not in the file, so
+`apply_training_corrections` is substituted with the recorded values) and each
+method's `predicted` (`fit()`/`predict()` are not re-run). A change to those
+layers is therefore not caught by a fixture; only a change to what `export_csv`
+derives is.
 
 ### 6 — `build_pool` gains a second, optional return value — CSV-only
 
@@ -213,6 +304,78 @@ Unchanged from the original decision (2026-09-24). `regression/base.py`'s
 `magnitude_weight`/`time_weight`/`recency_weight`/neighbor exclusion-or-scale
 components current callers never see -- no existing caller's signature changes.
 `CompareRegressionsMode.export_csv` is the only caller that ever passes `True`.
+
+**Decomposition point (implementation-time clarification, 2026-09-27, resolved
+against `TASK-0038`'s own sample CSV rather than left ambiguous):** the returned
+`magnitude_weight` component is captured *before* ADR-011 §2's
+neighbor-exclusion zeroing, not after -- `neighbor_excluded` is its own,
+independent factor, so
+`combined_weight = magnitude_weight * time_weight * recency_weight * (not neighbor_excluded) * is_valid`
+holds as a genuine decomposition a reader can multiply back together, rather
+than one column silently already absorbing another's effect (which `TASK-0038`'s
+own sample data -- a row with a nonzero `magnitude_weight` and
+`neighbor_excluded=1` alongside a `combined_weight` of `0.0` -- requires: a
+post-exclusion `magnitude_weight` would have shown `0.0` there too,
+indistinguishable from a row excluded for a genuinely different reason). This
+changes nothing about `weight`/`confidence` on the returned `SamplePool` itself,
+which still reflects the real, post-exclusion per-cell weight exactly as before.
+
+### 7 — Amendment (2026-09-27): test package structure mirrors `diagnostics/` itself
+
+`tests/` gains a `tests/diagnostics/` sub-package (its own `__init__.py`),
+mirroring `custom_components/shady/diagnostics/` being a package rather than a
+single module -- the same convention ADR-000 §6 records a general version of.
+`tests/test_diagnostics_base.py`/`tests/test_diagnostics_compare_regressions.py`
+move into it unchanged in content, renamed `tests/diagnostics/test_base.py`/
+`tests/diagnostics/test_compare_regressions.py`: **one file per diagnostic
+mode** (today, only `CompareRegressionsMode`'s own file; `DiagnosticMode`'s
+shared base-class mechanism keeps its own file, the same "generic mechanism gets
+its own home, mode-owned content gets its own" split §2/§3/§5 above already
+apply to the *production* code). `TASK-0038`'s own new tests follow this
+directly, not as a special case:
+
+- `CompareRegressionsMode.export_csv`'s own direct unit tests (the Acceptance
+  Criteria below: no-baseline -> `None`, not-yet-elapsed -> blank
+  `pv_selected`/`accuracy`, unrecognized `sensor_id` -> `None`, the
+  `combined_weight` reconstruction identity) and `_replay_compare_regressions`
+  (§5 above) both live in `tests/diagnostics/test_compare_regressions.py` --
+  everything about this one mode, in its one file, exactly as it already held
+  everything about `compute()`/`extra_fit()`/`sensor_ids()` before this task.
+- The fully generic fixture mechanism (`parse_csv_sections`/`compare_sections`,
+  §5 above) lives in a new, top-level, non-test-prefixed
+  `tests/csv_fixture_support.py` -- **not** nested under `tests/diagnostics/`,
+  since the mechanism itself knows nothing about diagnostic modes, only the
+  generic `# name`-marker-section file format `_write_csv_sections` happens to
+  be the first writer of; a future package adopting the same fixture convention
+  reuses it directly, the same reason `tests/fixtures/csv_regression/` itself
+  already stays top-level rather than nesting under `tests/diagnostics/` too.
+  Not embedded directly in the parametrized-runner test file either,
+  specifically so a mode's own test file (`test_compare_regressions.py`) can
+  import it too, for structural self-checks on its own `export_csv` output,
+  without creating an import cycle between two `test_*.py` files (the runner
+  file needs to import each mode's own replay function; a mode's own file
+  importing the parser back from the runner file would close that loop the wrong
+  way).
+- `tests/diagnostics/test_csv_regression_fixtures.py` holds only the generic
+  dispatch registry and the `glob`-based parametrized runner over
+  `tests/fixtures/csv_regression/{curated,synthetic}/*.csv` (the fixture root
+  stays top-level -- it is not diagnostics-specific in principle, even though
+  every mode with fixture support today happens to be one; the two folders are
+  the 2026-09-27 amendment below).
+- `http_export.py`'s own tests (`tests/test_http_export.py`) stay top-level, not
+  nested under `tests/diagnostics/` -- `http_export.py` itself is a top-level
+  module (§1/§4), not part of the `diagnostics/` package, so its test file
+  mirrors that placement the same way every other module's test file already
+  mirrors its own.
+
+Not a retroactive reorganization of every other package's own tests
+(`regression/`'s own `tests/test_regression.py` stays exactly as it is, one file
+for the whole package, covering all four strategies via ADR-000 §6's
+shared-scenario-fixture convention already) -- this amendment establishes the
+convention for a package gaining its first genuinely mode-differentiated test
+content (fixture-replay support, per-mode by construction), not a mandate to
+split every existing single-file test module that happens to sit next to a
+multi-file production package.
 
 ______________________________________________________________________
 
@@ -226,9 +389,15 @@ Python import, HA's own forwarding-equivalent registration" style the existing
 2026-09-24 amendment:** no `diagnostics/export.py` node -- Decision 2 above
 places the export logic on `CompareRegressionsMode` itself (inside the existing
 `diagnostics/` node, no new edge) plus a shared static helper on
-`DiagnosticMode` in `diagnostics/base.py` (likewise already inside that node) --
-`http_export --> diagnostics` remains the only new edge this ADR adds to the
-diagram.
+`DiagnosticMode` in `diagnostics/base.py` (likewise already inside that node).
+**Amendment, 2026-09-27:** one further new edge, `diagnostics --> regression` --
+`CompareRegressionsMode.export_csv` calls `regression/base.py`'s `build_pool`
+directly (with `return_weight_breakdown=True`, §6 above), a layer below
+`string_computation.fit_string_model`'s own existing wrapper, since the weight
+breakdown is method-independent (ADR-001 §2) and no fitting is actually needed
+here -- `extra_fit()`'s own cached predictions already cover the `# predictions`
+section. `http_export --> diagnostics` and `diagnostics --> regression` are the
+two new edges this ADR adds to the diagram in total.
 
 **ADR-004** (diagnostics sensors): a cross-reference note near §5's "thin entity
 glue" framing, pointing to this document -- the CSV export reads the same

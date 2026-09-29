@@ -25,7 +25,6 @@ from tests.support import _load, _run
 from tests.support_ha import ConfigEntryState, FakeHomeAssistant, _install_ha_stub
 
 _install_ha_stub()
-
 # `coordinator.py` does `from .regression import kernel, linear, wls2,
 # wls3` (package-level, not `from .regression.kernel import ...`) —
 # resolving that requires the top-level `shady` package itself to be a
@@ -80,15 +79,37 @@ _coordinator_mod = _load("coordinator.py", "shady.coordinator")
 # `KeyError`/`IndexError`/wrong `%`-arg count would raise from *inside*
 # `_LOGGER.warning`'s own call, not be silently swallowed). Both
 # modules were already file-path-loaded above for this file's own
-# tests; `test_diagnostics_compare_regressions.py` and every other
+# tests; `tests/diagnostics/test_compare_regressions.py` and every other
 # file that does `from tests import test_coordinator as tc` reuses
 # these same `sys.modules` entries rather than loading its own, so
 # setting this once here covers the whole suite.
 _coordinator_mod._DIAGNOSTIC_LOG = True  # type: ignore[attr-defined]
 _compare_regressions_mod._DIAGNOSTIC_LOG = True  # type: ignore[attr-defined]
 
+# Snapshot of every `shady.*`/`homeassistant.*` module this file just loaded.
+# Other test files install their own, differently-shaped `homeassistant` trees
+# and reload `shady.*` modules under the same names, replacing these in
+# `sys.modules` depending on *collection* order -- `tests/diagnostics/`
+# collecting first (ADR-000 §6 Amendment, 2026-09-27) made a latent
+# order-dependence visible. Every file that does `from tests import
+# test_coordinator as tc` and then reads `sys.modules["shady.*"]` at import
+# time calls `tc._restore_modules()` first, so it sees the same module
+# objects `tc`'s own `ShadyCoordinator` was built from (e.g. a `FittedModel`
+# `isinstance` check must compare against the class the coordinator's own
+# `regression.base` produced, not a later reload of it).
+_TC_MODULES = {
+    name: module
+    for name, module in sys.modules.items()
+    if name in ("shady", "homeassistant") or name.startswith(("shady.", "homeassistant."))
+}
+
+
+def _restore_modules() -> None:
+    sys.modules.update(_TC_MODULES)
+
+
 # TYPE_CHECKING-only static import mirroring the runtime file-path load
-# above (ADR-000 §6, matching `test_diagnostics_base.py`'s own
+# above (ADR-000 §6, matching `tests/diagnostics/test_base.py`'s own
 # convention) — gives mypy a real type for `DiagnosticMode` so
 # `_CountingDiagnosticMode` below type-checks normally, without
 # reintroducing the package import (and therefore `homeassistant.*`)
@@ -205,7 +226,7 @@ def _make_temperature_aware_coordinator() -> tuple[Any, FakeHomeAssistant]:
     (`_predict_target_slot_temperature`) gates to `None` without it.
 
     Used both for `_fit_string`'s own temperature-aware branch
-    (`coordinator.py`) and, via `tests/test_diagnostics_compare_
+    (`coordinator.py`) and, via `tests/diagnostics/test_compare_
     regressions.py`'s reuse of this module, `CompareRegressionsMode.
     extra_fit()`'s temperature-aware `_gather_pool`/`_predict_all_
     methods` branches — both previously only exercised formula-by-

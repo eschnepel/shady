@@ -243,6 +243,24 @@ class FakeServices:
         await handler(SimpleNamespace(data=data))
 
 
+class FakeHttp:
+    """Real (non-`Mock`) stand-in for `hass.http` — records every
+    registered view instance for assertions (ADR-015 §1, `TASK-0038`)
+    rather than performing real aiohttp route registration, matching
+    `FakeConfigEntries`'s own "records calls" convention.
+    `http_export.py`'s tests call a registered view's own `get()`
+    method directly (with a hand-built fake request) instead of routing
+    through this class — the same "call the real code path directly"
+    convention `FakeServices.async_call` already uses for a registered
+    service handler."""
+
+    def __init__(self) -> None:
+        self.registered_views: list[Any] = []
+
+    def register_view(self, view: Any) -> None:
+        self.registered_views.append(view)
+
+
 class FakeHomeAssistant:
     def __init__(self) -> None:
         self.states = FakeStates()
@@ -256,6 +274,7 @@ class FakeHomeAssistant:
         self.store_data: dict[str, Any] = {}
         self.config_entries = FakeConfigEntries()
         self.services = FakeServices()
+        self.http = FakeHttp()
         # ADR-002 §1a's own pivot: True by default (the common case for
         # a config-entry reload/late setup) -- tests that exercise the
         # "Home Assistant is still starting" branch set this False
@@ -469,3 +488,63 @@ def _install_sensor_stub() -> None:
 
     sys.modules["homeassistant.const"] = ha_const
     sys.modules["homeassistant.components.sensor"] = ha_components_sensor
+
+
+def _install_http_stub() -> None:
+    """Extends the already-installed core stub (call `_install_ha_stub()`
+    first) with `homeassistant.components.http` (`HomeAssistantView`)
+    and a minimal, hand-written `aiohttp`/`aiohttp.web` (`Response`) —
+    `__init__.py` (transitively, via `http_export.py`) and
+    `http_export.py`'s own tests are the first two consumers. Real Home
+    Assistant always has real `aiohttp` installed (a hard HA
+    dependency); this project's own dev/test environment does not
+    (ADR-000 §6: pytest-only, no real `homeassistant`/`aiohttp`
+    installed — see `tasks/DEPENDENCIES.md`), so `aiohttp` joins the
+    same hand-rolled-stub convention already established for
+    `homeassistant.*` itself, rather than being a real test
+    dependency."""
+    ha_components = sys.modules["homeassistant.components"]
+    ha_http = ModuleType("homeassistant.components.http")
+    aiohttp_mod = ModuleType("aiohttp")
+    aiohttp_web = ModuleType("aiohttp.web")
+
+    class HomeAssistantView:
+        """Real (non-`Mock`) stand-in — just enough surface for
+        `http_export.py`'s own subclass: plain class attributes
+        (`url`/`name`/`requires_auth`) read directly off the subclass,
+        no `register()` machinery (`FakeHttp.register_view` above never
+        calls it — tests call a view's own `get()` directly instead,
+        bypassing real aiohttp routing entirely)."""
+
+        url: str
+        name: str
+        requires_auth: bool = True
+
+    class Response:
+        """Real (non-`Mock`) stand-in for `aiohttp.web.Response` — the
+        handful of keyword arguments `http_export.py` actually
+        constructs one with, recorded as plain attributes for
+        assertions."""
+
+        def __init__(
+            self,
+            *,
+            text: str | None = None,
+            status: int = 200,
+            content_type: str | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> None:
+            self.text = text
+            self.status = status
+            self.content_type = content_type
+            self.headers = headers or {}
+
+    ha_http.HomeAssistantView = HomeAssistantView  # type: ignore[attr-defined]
+    aiohttp_web.Response = Response  # type: ignore[attr-defined]
+    aiohttp_mod.web = aiohttp_web  # type: ignore[attr-defined]
+
+    ha_components.http = ha_http  # type: ignore[attr-defined]
+
+    sys.modules["homeassistant.components.http"] = ha_http
+    sys.modules["aiohttp"] = aiohttp_mod
+    sys.modules["aiohttp.web"] = aiohttp_web

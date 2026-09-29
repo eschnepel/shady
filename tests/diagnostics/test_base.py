@@ -1,6 +1,15 @@
 """Tests for `diagnostics/base.py` (ADR-004 §1/§5, Amendment 2026-09-01,
 Amendment 2026-09-02, second Amendment 2026-09-02).
 
+Moved from the former flat `tests/test_diagnostics_base.py`, unchanged in
+content beyond this docstring paragraph and the `export_csv`/
+`_write_csv_sections` tests appended at the end (ADR-000 §6's
+2026-09-27 Amendment, ADR-015 §7, `TASK-0038`): `tests/diagnostics/` now
+mirrors `custom_components/shady/diagnostics/` being a package, this
+file covering the shared base-class mechanism specifically — one
+concrete mode's own tests live in `tests/diagnostics/test_compare_regressions.py`
+instead.
+
 Loaded via direct file-path import, not package import, so that
 `custom_components/shady/__init__.py` (which imports `homeassistant.*`)
 is never pulled in just to test this module.
@@ -421,3 +430,65 @@ class TestDiagnosticModeUsesCoordinatorInCompute:
         by_id = {sensor.sensor_id: sensor for sensor in result.sensors}
         assert by_id["0"].attributes["name"] == "south"
         assert by_id["1"].attributes["name"] == "north"
+
+
+class TestDiagnosticModeExportCsvDefault:
+    """Given a dummy subclass that does not override export_csv, When
+    it is called with any sensor_id, Then it returns None — the same
+    zero-cost-when-unneeded base default extra_fit() already has
+    (ADR-015 §2, TASK-0038)."""
+
+    def test_export_csv_defaults_to_none(self) -> None:
+        mode = DummyModeMinimal(_stub_coordinator())
+        assert mode.export_csv("0") is None
+        assert mode.export_csv("anything") is None
+
+
+class TestWriteCsvSections:
+    """Given DiagnosticMode._write_csv_sections (ADR-015 §3, TASK-0038),
+    When it formats one or more (name, rows) sections, Then the output
+    is a '# name' marker line, a header row, the data rows, and a
+    blank line, per section, in the order given — the shared,
+    format-only mechanism every mode's own export_csv builds on."""
+
+    def test_single_section_single_row(self) -> None:
+        text = DiagnosticMode._write_csv_sections(
+            [("diagnostic_mode", [{"diagnostic_mode": "compare_regressions"}])]
+        )
+        assert text == "# diagnostic_mode\r\ndiagnostic_mode\r\ncompare_regressions\r\n\r\n"
+
+    def test_multiple_sections_in_given_order(self) -> None:
+        text = DiagnosticMode._write_csv_sections(
+            [
+                ("first", [{"a": "1", "b": "2"}]),
+                ("second", [{"x": "9"}]),
+            ]
+        )
+        first_marker = text.index("# first")
+        second_marker = text.index("# second")
+        assert first_marker < second_marker
+        assert "a,b\r\n1,2\r\n" in text
+        assert "x\r\n9\r\n" in text
+
+    def test_multiple_rows_share_one_header(self) -> None:
+        text = DiagnosticMode._write_csv_sections(
+            [
+                (
+                    "training_pool",
+                    [{"offset": "-1", "day_index": "0"}, {"offset": "-1", "day_index": "1"}],
+                )
+            ]
+        )
+        assert text.count("offset,day_index") == 1
+        assert "-1,0\r\n" in text
+        assert "-1,1\r\n" in text
+
+    def test_zero_row_section_gets_marker_but_no_header(self) -> None:
+        text = DiagnosticMode._write_csv_sections([("predictions", [])])
+        assert text == "# predictions\r\n\r\n"
+
+    def test_header_uses_first_rows_own_key_order(self) -> None:
+        text = DiagnosticMode._write_csv_sections([("metadata", [{"z": "1", "a": "2"}])])
+        # Insertion order preserved (z before a), not alphabetized.
+        header_line = text.splitlines()[1]
+        assert header_line == "z,a"

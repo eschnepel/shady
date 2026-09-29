@@ -61,6 +61,8 @@ _synthetic_wh_period = tc._synthetic_wh_period
 _seed_actual_yield_statistics = tc._seed_actual_yield_statistics
 ShadyCoordinator = tc.ShadyCoordinator
 
+# Collection-order guard, see `tc._restore_modules`'s own comment.
+tc._restore_modules()
 _coordinator_mod = sys.modules["shady.coordinator"]
 _yield_correction_mod = sys.modules["shady.yield_correction"]
 _providers_temperature_mod = sys.modules["shady.providers.temperature"]

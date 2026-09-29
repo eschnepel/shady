@@ -218,3 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 custom_components/shady.zip
+
+# tests/fixtures/csv_regression/_generated/ (ADR-015, TASK-0038): only ever
+# holds a file between a failing fixture-replay test run and the next one --
+# see tests/diagnostics/test_csv_regression_fixtures.py and this directory's
+# own README.md.
+tests/fixtures/csv_regression/_generated/

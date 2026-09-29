@@ -177,6 +177,7 @@ flowchart BT
     diagnostics --> aggregation
     diagnostics --> string_computation
     diagnostics --> cache
+    diagnostics --> regression
     providers --> cache
     coordinator --> aggregation
     coordinator --> cache
@@ -241,21 +242,26 @@ flowchart BT
   ADR-012 §1) plus one concrete mode today, `CompareRegressionsMode`; see
   ADR-004 §1/§5 for the source of truth. Calls `string_computation.py` for its
   own extra per-slot fitting (ADR-014) and `aggregation.py` for the accuracy
-  calculation. **As of draft ADR-015 §2/§3 (`TASK-0038`, not yet implemented):**
-  `DiagnosticMode` gains an optional `export_csv(sensor_id)` method (base
-  default `None`, the same role `None` already plays for `extra_fit()`) plus a
-  shared, format-only `_write_csv_sections` static helper — each mode owns its
-  own export content the same way it owns `compute()`/`extra_fit()`; there is no
-  separate `export.py` module. **As of the 2026-09-01 amendment, no longer
-  pure:** every `DiagnosticMode` is constructed with the owning
-  `ShadyCoordinator` instance and may call its public interface directly
-  (`cache`, `strings()`, and any accessor added later) — `coordinator.py` no
-  longer needs to pre-build each mode's full input context itself, only persist
-  whatever a mode's `extra_fit()` returns (the same division of labor it already
-  has for `push()`-ing a provider's `forward()` result). The dependency this
-  creates back onto `coordinator.py` is resolved at the import level only
-  (`TYPE_CHECKING`-only, dashed edge above) — it is a real runtime dependency on
-  an HA-facing object, not just a type reference.
+  calculation. **As of ADR-015 §2/§3 (`TASK-0038`):** `DiagnosticMode` gains an
+  optional `export_csv(sensor_id)` method (base default `None`, the same role
+  `None` already plays for `extra_fit()`) plus a shared, format-only
+  `_write_csv_sections` static helper — each mode owns its own export content
+  the same way it owns `compute()`/`extra_fit()`; there is no separate
+  `export.py` module. `CompareRegressionsMode.export_csv` also calls
+  `regression/base.py`'s `build_pool` directly (`return_weight_breakdown=True`,
+  ADR-015 §6, the `diagnostics --> regression` edge above) — one layer below
+  `string_computation.fit_string_model`'s own wrapper, since the weight
+  breakdown is method-independent (ADR-001 §2) and no fitting is needed for the
+  export itself. **As of the 2026-09-01 amendment, no longer pure:** every
+  `DiagnosticMode` is constructed with the owning `ShadyCoordinator` instance
+  and may call its public interface directly (`cache`, `strings()`, and any
+  accessor added later) — `coordinator.py` no longer needs to pre-build each
+  mode's full input context itself, only persist whatever a mode's `extra_fit()`
+  returns (the same division of labor it already has for `push()`-ing a
+  provider's `forward()` result). The dependency this creates back onto
+  `coordinator.py` is resolved at the import level only (`TYPE_CHECKING`-only,
+  dashed edge above) — it is a real runtime dependency on an HA-facing object,
+  not just a type reference.
 - **`cache.py`** — pure logic: index-addressable time-series store, generic over
   any `sensor_id` (used for FC/PV history and the day-snapshot array, and, per
   ADR-003c, weather-forecast/cell-or-ambient temperature pairs), plus simple
@@ -312,13 +318,15 @@ flowchart BT
   `AUDIT-0009-entity-layer`) — not module-level drift, and not a case this
   diagram's `entity_glue --> coordinator` edge needs a second edge for, since
   `sensor.py` still never *imports* `cache.py` itself.
-- **`http_export.py`** (ADR-015, draft) — one `HomeAssistantView`, registered
-  from `__init__.py` the same way platforms are forwarded (dashed edge above,
-  HA's own registration mechanism, not a Python import); resolves the active
-  `DiagnosticMode` via `coordinator.py`'s public interface and calls that mode's
-  own `export_csv(sensor_id)` — mode-agnostic itself, no knowledge of which mode
-  is active or what its export contains. Not entity glue — no entity involved —
-  hence its own node rather than folded into `entity_glue` above.
+- **`http_export.py`** (ADR-015, `TASK-0038`) — one `HomeAssistantView`,
+  registered once per `hass` from `__init__.py` the same way platforms are
+  forwarded (dashed edge above, HA's own registration mechanism, not a Python
+  import); resolves the requested (or, absent an explicit override, the
+  currently configured) `DiagnosticMode` via `coordinator.py`'s public interface
+  and calls that mode's own `export_csv(sensor_id)` — mode-agnostic itself, no
+  knowledge of which mode is active or what its export contains. Not entity glue
+  — no entity involved — hence its own node rather than folded into
+  `entity_glue` above.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 Dependencies point upward only. The pure-tier modules (§6's canonical list)
@@ -437,6 +445,50 @@ PV forecast or weather integration is supplying the baseline.
   class. Each of the four `regression/` strategies is tested against the same
   shared scenario fixtures (see ADR-001 §2), so their outputs are comparable
   rather than each having its own bespoke test data.
+
+#### Amendment — 2026-09-27
+
+**Reason:** `TASK-0038`/ADR-015 introduced the first genuinely
+mode-differentiated test content for `diagnostics/` (per-mode CSV-export
+fixture-replay support) — a flat `tests/test_diagnostics_*.py` pair no longer
+gave each concern (the shared base class; one concrete mode; the fully generic
+fixture mechanism) a home of its own the way the equivalent production code
+already does.
+
+**Decision:** when a production package gains test content that is itself
+differentiated per concrete subclass/implementation (not just per module), its
+tests move into a matching `tests/<package>/` sub-package, one file per concrete
+implementation plus one file for the shared base-class mechanism — mirroring the
+production package's own file layout rather than the flat
+`tests/test_<module>.py` convention every single-module production file still
+uses. `diagnostics/` is the first (and, as of this amendment, only) package this
+applies to: `tests/diagnostics/__init__.py`, `tests/diagnostics/test_base.py`
+(was `tests/test_diagnostics_base.py`),
+`tests/diagnostics/test_compare_regressions.py` (was
+`tests/test_diagnostics_compare_regressions.py`, now also holding
+`CompareRegressionsMode.export_csv`'s own tests and its
+`_replay_compare_regressions` fixture-replay function, ADR-015 §5/§7), and
+`tests/diagnostics/test_csv_regression_fixtures.py` (the fully generic
+parser-dispatch-comparator runner, ADR-015 §5). The parser/comparator mechanism
+itself (`parse_csv_sections`/`compare_sections`) lives in a new, top-level,
+non-test-prefixed `tests/csv_fixture_support.py` — *not* nested under
+`tests/diagnostics/`, since it knows nothing about diagnostic modes
+specifically, only the generic `# name`-marker-section file format
+`diagnostics/base.py`'s `_write_csv_sections` happens to be the first writer of;
+any future package adopting the same fixture convention reuses it directly
+rather than duplicating it under its own `tests/<package>/`. Imported by both
+the runner and `test_compare_regressions.py` itself, which also avoids an import
+cycle between the two `test_*.py` files a diagnostics-nested version would
+otherwise risk. This is additive, not a retroactive mandate: `regression/`'s own
+`tests/test_regression.py` stays a single file, since ADR-000 §6's own
+shared-scenario-fixture convention already gives its four strategies comparable,
+non-duplicated coverage without needing a file each — nothing about their own
+tests is differentiated the way `diagnostics/`'s CSV-export fixture-replay
+support now is. A module whose own top-level placement (`http_export.py`, not
+nested under any package) has no `tests/<package>/` home to move into keeps its
+flat `tests/test_http_export.py` file, unaffected by this amendment.
+
+**Decided by:** human / Lead Agent (confirmed by human).
 
 ### 7 — Documentation: ADRs over inline essays
 

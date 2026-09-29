@@ -54,6 +54,10 @@ from tests.support_ha import FakeHomeAssistant
 # `_install_ha_stub()` again, which would otherwise replace `tc`'s own
 # `homeassistant.config_entries`/etc with a functionally-identical but
 # distinct set of stub objects.
+# Restore `tc`'s own stub tree first -- another test file's differently-shaped
+# `homeassistant` stub may have replaced it in `sys.modules` since `tc` was
+# first imported (collection-order dependent, see `tc._HA_STUB_MODULES`).
+tc._restore_modules()
 _WEATHER_DATA_COMPONENT_KEY = object()
 _ha_components = sys.modules["homeassistant.components"]
 _ha_weather = ModuleType("homeassistant.components.weather")

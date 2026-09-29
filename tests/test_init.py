@@ -28,7 +28,7 @@ from types import ModuleType
 from typing import Any
 
 from tests.support import _load, _run
-from tests.support_ha import FakeHomeAssistant, _install_ha_stub
+from tests.support_ha import FakeHomeAssistant, _install_ha_stub, _install_http_stub
 
 
 def _install_init_extras_stub() -> None:
@@ -71,6 +71,9 @@ def _install_init_extras_stub() -> None:
 
 _install_ha_stub()
 _install_init_extras_stub()
+# `__init__.py` imports `http_export.py` (ADR-015, TASK-0038), which needs
+# `homeassistant.components.http`/`aiohttp` at import time.
+_install_http_stub()
 
 _shady_pkg = ModuleType("shady")
 _shady_pkg.__path__ = []
@@ -97,6 +100,7 @@ _load("diagnostics/base.py", "shady.diagnostics.base")
 _load("diagnostics/compare_regressions.py", "shady.diagnostics.compare_regressions")
 _load("coordinator_like.py", "shady.coordinator_like")
 _coordinator_mod = _load("coordinator.py", "shady.coordinator")
+_load("http_export.py", "shady.http_export")
 _init_mod = _load("__init__.py", "shady")
 
 ShadyCoordinator = _coordinator_mod.ShadyCoordinator
@@ -370,3 +374,32 @@ class TestAsyncUnloadEntry:
 
         assert result is True
         assert entry.entry_id not in hass.data[DOMAIN]
+
+
+class TestAsyncSetupEntryRegistersExportViewOnce:
+    """ADR-015 §1/§4 (TASK-0038): `http_export.py`'s one view is
+    registered once per `hass`, not once per config entry -- the
+    `{config_entry_id}` URL segment already lets one registration serve
+    every entry, and `hass.http.register_view` itself is not idempotent."""
+
+    def test_first_setup_registers_the_view(self) -> None:
+        hass = FakeHomeAssistant()
+        entry = _make_entry()
+        _seed_required_entities(hass)
+
+        _run(async_setup_entry(hass, entry))
+
+        assert len(hass.http.registered_views) == 1
+        assert type(hass.http.registered_views[0]).__name__ == "ShadyExportCsvView"
+
+    def test_second_config_entry_does_not_register_a_second_view(self) -> None:
+        hass = FakeHomeAssistant()
+        first = _make_entry()
+        _seed_required_entities(hass)
+        _run(async_setup_entry(hass, first))
+
+        second = _make_entry()
+        second.entry_id = "second_entry"
+        _run(async_setup_entry(hass, second))
+
+        assert len(hass.http.registered_views) == 1

@@ -78,8 +78,14 @@ providers/ (discovery.py, normalize.py, base.py, temperature.py)
             → cache.py  -- providers/discovery.py also imports ServiceResponseCache/service_call_key directly (2026-09-19, TASK-0036), the same narrow exception diagnostics/compare_regressions.py's own SLOTS_PER_DAY import already established
               → coordinator.py  -- reads diagnostics/ via a per-instance mode registry (ADR-004 §5); no longer does fit/predict computation itself (ADR-014); passes itself into each DiagnosticMode at construction (ADR-004 §5, 2026-09-01)
                 → sensor.py / config_flow.py / select.py / button.py
-                  → __init__.py
+                → http_export.py  -- ADR-015, TASK-0038: also reads coordinator.py directly (a real import, unlike diagnostics/'s TYPE_CHECKING-only one) and calls the resolved DiagnosticMode's own export_csv(); not entity glue, its own node
+                  → __init__.py  -- registers http_export.py's one HomeAssistantView once per hass (HA's own view registry, not a Python import), alongside forwarding sensor.py/config_flow.py/select.py/button.py as platforms
 ```
+
+`diagnostics/` also gains a `→ regression/` edge as of ADR-015 §6/`TASK-0038`:
+`CompareRegressionsMode.export_csv` calls `regression/base.py`'s `build_pool`
+directly (`return_weight_breakdown=True`), one layer below
+`string_computation.fit_string_model`'s own wrapper — see §8b below.
 
 - **`providers/`** — `discovery.py`+`normalize.py`: baseline (unshaded FC)
   discovery/scoring/normalization (ADR-009). Two `weather.*` proxy-baseline
@@ -543,29 +549,59 @@ canonical: correction → **one** final output clamp
   base class doesn't need revisiting later. No task exists for either; unlike §9
   below, this is not a permanent rejection — either may be scheduled in a future
   planning pass.
-- **Diagnostic slot raw-data CSV export** (ADR-015, `Status: Proposed`,
-  `TASK-0038` `review`) — a registered `HomeAssistantView` (`http_export.py`,
-  new §2 node) is genuinely mode-agnostic: it resolves the active
-  `DiagnosticMode` and calls that mode's own optional `export_csv(sensor_id)`
-  method, a new addition to `DiagnosticMode` itself (`diagnostics/base.py`, base
-  default `None`, the same role `None` already plays for `extra_fit()`) plus a
-  shared, format-only `_write_csv_sections` static helper (mirrors
-  `_xy_series_entry`'s own placement). `CompareRegressionsMode` overrides it
-  with a CSV covering one string's diagnosed-slot training data (every
-  neighbor-offset/day point, decomposed weight components, all four
-  `regression/` strategies' predictions) — deliberately not a standalone
-  `diagnostics/export.py` module, since ADR-013's own sketched future modes have
-  fundamentally different raw-data shapes no single schema could serve.
-  `build_pool` (`regression/base.py`) gains an optional second return value (a
-  keyword-only flag, default off) carrying the weight-component breakdown
-  current callers never see — no existing caller's signature changes. Chosen
-  over a clipboard-copy button + custom frontend card specifically because it
-  needs no new frontend technology (`hass.http.register_view` is a plain Python
-  API; a Markdown card's sanitizer strips `onclick` handlers but preserves plain
-  links) — see ADR-015 for the full comparison, and its §3 for why ADR-013's own
-  "no change to `diagnostics/base.py`" claim needed narrowing. `TASK-0038` stays
-  `review` pending human confirmation of this draft ADR before implementation
-  begins.
+
+## 8b — Diagnostic slot raw-data CSV export (ADR-015, `Status: Accepted`, `TASK-0038`)
+
+A registered `HomeAssistantView` (`http_export.py`, new §2 node, registered once
+per `hass` from `__init__.py`) is genuinely mode-agnostic:
+`GET /api/shady/{config_entry_id}/export_csv?sensor_id=...&mode=...` resolves
+the requested `DiagnosticMode` — `mode` if given
+(`ShadyCoordinator .diagnostic_mode_by_key`, any *registered* mode, not just the
+active one), else the coordinator's own currently configured mode — and calls
+that mode's own optional `export_csv(sensor_id)` method. That method is a new
+addition to `DiagnosticMode` itself (`diagnostics/base.py`, base default `None`,
+the same role `None` already plays for `extra_fit()`) plus a shared, format-only
+`_write_csv_sections` static helper (mirrors `_xy_series_entry`'s own
+placement). `CompareRegressionsMode` overrides it with a CSV covering one
+configured string's diagnosed-slot training data — a leading, uniformly-shaped
+`# diagnostic_mode` section identifying which mode produced the file, then
+`# metadata`/`# training_pool`/`# predictions`/`# prediction_inputs` (every
+neighbor-offset/day training point with decomposed weight components, all four
+`regression/` strategies' predictions, and the scalar prediction inputs) —
+deliberately not a standalone `diagnostics/export.py` module, since ADR-013's
+own sketched future modes have fundamentally different raw-data shapes no single
+schema could serve. `sensor_id="sum"` (the pointwise-summed aggregate
+`sensor_ids()` also declares) is not exportable — no single coherent per-string
+`temperature_tier`/config for `# metadata`'s one-row schema to represent —
+`export_csv` returns `None` for it, same as an unrecognized id.
+
+`build_pool` (`regression/base.py`) gains an optional second return value (a
+keyword-only `return_weight_breakdown` flag, default off) — a `WeightBreakdown`
+carrying the decomposed `magnitude_weight` (captured *before* ADR-011 §2's
+neighbor-exclusion zeroing)/`time_weight`/`recency_weight`/`neighbor_excluded`/
+`neighbor_scale` components current callers never see — no existing caller's
+signature or return shape changes. `CompareRegressionsMode.export_csv` is the
+only caller that ever passes `True`, calling `build_pool` directly rather than
+through `string_computation.fit_string_model`'s wrapper (a new
+`diagnostics --> regression` edge, §2 above) since the weight breakdown is
+method-independent and no fitting is actually needed for the export
+(`extra_fit()`'s own cached predictions already cover `# predictions`).
+
+Chosen over a clipboard-copy button + custom frontend card specifically because
+it needs no new frontend technology (`hass.http.register_view` is a plain Python
+API; a Markdown card's sanitizer strips `onclick` handlers but preserves plain
+links) — see ADR-015 for the full comparison, and its §3 for why ADR-013's own
+"no change to `diagnostics/base.py`" claim needed narrowing. Fixture-based
+regression testing (`tests/fixtures/csv_regression/`, a maintainer- curated
+golden-file mechanism replaying `CompareRegressionsMode.export_csv` against
+real, previously-exported CSVs, in `curated/`; a `synthetic/` sibling of
+developer-written and deliberately tampered fixtures tests the mechanism itself,
+steered by an optional `expected` = `PASS`/`FAIL` column on the
+`# diagnostic_mode` row that exports never write, ADR-015 §5a) lives in
+`tests/diagnostics/` (§6-Amendment-2026-09-27's package convention) —
+`test_csv_regression_fixtures .py` for the fully generic parse/dispatch/compare
+mechanism, `test_compare_regressions.py` for the one mode-owned replay function
+that reconstructs this mode's own typed inputs from a parsed fixture.
 
 ## 9 — Explicit exclusions (never implement these)
 

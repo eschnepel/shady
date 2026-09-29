@@ -1,5 +1,16 @@
 """Tests for `diagnostics/compare_regressions.py`'s `CompareRegressionsMode`
-(ADR-004 §2/§2a/§2b/§3/§4/§5, TASK-0015b).
+(ADR-004 §2/§2a/§2b/§3/§4/§5, TASK-0015b; ADR-015, `TASK-0038` for
+`export_csv`).
+
+Moved from the former flat `tests/test_diagnostics_compare_regressions.py`
+(ADR-000 §6's 2026-09-27 Amendment, ADR-015 §7): `tests/diagnostics/` now
+mirrors `custom_components/shady/diagnostics/` being a package,
+`CompareRegressionsMode` being the one concrete diagnostic mode gets its
+own file, alongside `tests/diagnostics/test_base.py` for the shared
+base-class mechanism. Also now holds `export_csv`'s own direct unit
+tests and `_replay_compare_regressions` (ADR-015 §5), the one
+mode-owned function `tests/diagnostics/test_csv_regression_fixtures.py`'s
+generic runner imports.
 
 Not zero-mocking (ADR-000 §6's 2026-09-01 update): `CompareRegressionsMode`
 requires a constructible `ShadyCoordinator`, so this reuses
@@ -19,20 +30,29 @@ written to fix.
 
 from __future__ import annotations
 
+import math
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 from tests import test_coordinator as tc
+from tests.csv_fixture_support import compare_sections, parse_csv_sections
 from tests.support_ha import FakeHomeAssistant
 
 # `test_coordinator.py`'s own harness already file-path-loaded
 # `aggregation.py` into `sys.modules["shady.aggregation"]` — reuse that
 # loaded module rather than a real package import (`custom_components.
 # shady.aggregation` isn't on any import path this harness sets up).
+# Collection-order guard, see `tc._restore_modules`'s own comment.
+tc._restore_modules()
 _aggregation_mod = sys.modules["shady.aggregation"]
 diagnostic_accuracy = _aggregation_mod.diagnostic_accuracy
-_string_computation_mod = sys.modules["shady.string_computation"]
+_string_computation_mod: Any = sys.modules["shady.string_computation"]
+_coordinator_like_mod = sys.modules["shady.coordinator_like"]
+_SLOTS_PER_DAY = sys.modules["shady.cache"].SLOTS_PER_DAY
 # ADR-004 §2d (2026-09-21 Amendment): `series` entries are complete
 # `plotly-graph` traces -- reuse the production builder itself for
 # expected values below rather than duplicating its shape and risking
@@ -573,3 +593,386 @@ class TestFuturePinnedSlotSelectedResolvesOffHourAlignment:
             entry for entry in string_0.attributes["series"] if entry["name"].startswith("selected")
         ]
         assert any(entry["name"].startswith("selected method_x") for entry in selected_series)
+
+
+class TestExportCsvUnsupportedSensorIds:
+    """Given a sensor_id that isn't a real configured string — including
+    `"sum"` (ADR-015 §2, TASK-0038's own 2026-09-27 implementation
+    decision: the pointwise-summed pseudo-string has no single coherent
+    per-string temperature_tier/config the `# metadata` schema could
+    represent) — When export_csv is called, Then it returns None, the
+    same "nothing to export" contract http_export.py reports as
+    HTTPStatus.NOT_FOUND for."""
+
+    def test_sum_is_not_exportable(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 500.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 300.0})
+        _activate(coordinator)
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        assert mode.export_csv("sum") is None
+
+    def test_unrecognized_sensor_id_returns_none(self) -> None:
+        coordinator, _hass = _make_two_string_setup()
+        _activate(coordinator)
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        assert mode.export_csv("5") is None
+        assert mode.export_csv("not-a-number") is None
+
+    def test_string_with_no_baseline_returns_none(self) -> None:
+        coordinator, _hass = _make_two_string_setup()
+        coordinator._global_baseline_entity_id = None
+        _activate(coordinator)
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        assert mode.export_csv("0") is None
+
+
+class TestExportCsvShapeAndWeightDecomposition:
+    """Given a diagnosed slot with a resolved baseline, When export_csv
+    is called for one of its strings, Then the returned CSV has the
+    leading `# diagnostic_mode` section plus the four content sections,
+    and every `training_pool` row's `combined_weight` equals
+    `magnitude_weight * time_weight * recency_weight *
+    (not neighbor_excluded) * is_valid` exactly — the pre-exclusion
+    `magnitude_weight` decomposition ADR-015 §6 clarifies (`TASK-0038`)."""
+
+    def test_sections_present_and_ordered(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 500.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 300.0})
+        coordinator._now = lambda: _PIN + timedelta(minutes=10)
+        ok = coordinator.pin_diagnostic_slot(_PIN, now=_PIN + timedelta(minutes=10))
+        assert ok
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        text = mode.export_csv("0")
+        assert text is not None
+
+        sections = parse_csv_sections(text, source="test")
+        assert list(sections) == [
+            "diagnostic_mode",
+            "metadata",
+            "training_pool",
+            "predictions",
+            "prediction_inputs",
+        ]
+        assert sections["diagnostic_mode"] == [{"diagnostic_mode": "compare_regressions"}]
+        assert len(sections["metadata"]) == 1
+        assert sections["metadata"][0]["string_index"] == "0"
+        assert sections["metadata"][0]["string_name"] == "Dach Süd"
+        # smoothing_radius=0 (`_make_two_string_setup`'s own config) ->
+        # exactly one offset ("0"), window_days=3 rows.
+        assert len(sections["training_pool"]) == _WINDOW_DAYS
+
+    def test_combined_weight_reconstructs_from_its_own_factors(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 500.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 300.0})
+        coordinator._now = lambda: _PIN + timedelta(minutes=10)
+        ok = coordinator.pin_diagnostic_slot(_PIN, now=_PIN + timedelta(minutes=10))
+        assert ok
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        text = mode.export_csv("0")
+        assert text is not None
+        sections = parse_csv_sections(text, source="test")
+
+        assert len(sections["training_pool"]) > 0
+        for row in sections["training_pool"]:
+            magnitude_weight = float(row["magnitude_weight"])
+            time_weight = float(row["time_weight"])
+            recency_weight = float(row["recency_weight"])
+            neighbor_excluded = row["neighbor_excluded"] == "1"
+            is_valid = row["is_valid"] == "1"
+            combined_weight = float(row["combined_weight"])
+            expected = (
+                magnitude_weight
+                * time_weight
+                * recency_weight
+                * (0.0 if neighbor_excluded else 1.0)
+                * (1.0 if is_valid else 0.0)
+            )
+            assert math.isclose(combined_weight, expected, rel_tol=1e-9, abs_tol=1e-12)
+
+
+class TestExportCsvNotYetElapsedBlanksSelectedFields:
+    """Given a not-yet-elapsed (future-pinned) diagnosed slot, When
+    export_csv is called, Then `predictions`' `pv_selected`/`accuracy`
+    and `prediction_inputs`' `pv_selected` are blank rather than
+    fabricated — the export mirrors `_append_selected_series`'s own
+    contract, not an approximation of it."""
+
+    def test_pv_selected_and_accuracy_blank_for_future_pin(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 500.0, _DAY_2: 480.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 300.0, _DAY_2: 50.0})
+        future_pin = _PIN + timedelta(hours=3)
+        ok = coordinator.pin_diagnostic_slot(future_pin)
+        assert ok
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator.cache.set_diagnostic_fit("0", {"linear": 500.0})
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        text = mode.export_csv("0")
+        assert text is not None
+        sections = parse_csv_sections(text, source="test")
+
+        prediction_row = next(row for row in sections["predictions"] if row["method"] == "linear")
+        assert prediction_row["predicted"] == repr(500.0)
+        assert prediction_row["pv_selected"] == ""
+        assert prediction_row["accuracy"] == ""
+
+        pv_selected_row = next(
+            row for row in sections["prediction_inputs"] if row["key"] == "pv_selected"
+        )
+        assert pv_selected_row["value"] == ""
+
+
+class TestExportReplayRoundTrip:
+    """Given a real export from a live coordinator, When it is parsed and
+    replayed through `_replay_compare_regressions` (the function the
+    generic fixture runner dispatches to), Then the regenerated CSV
+    matches the original section by section — the only end-to-end proof
+    the replay function reconstructs `export_csv`'s inputs faithfully,
+    since no curated golden fixtures exist yet (they are added by the
+    maintainer afterward, ADR-015 §5). Covers both a plain string and a
+    weather-tier one (the `temperature_raw`/`target_cell_temperature`
+    branches)."""
+
+    @staticmethod
+    def _round_trip(coordinator: Any, sensor_id: str) -> list[str]:
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        original_text = mode.export_csv(sensor_id)
+        assert original_text is not None
+        original = parse_csv_sections(original_text, source="original")
+        regenerated = parse_csv_sections(
+            _replay_compare_regressions(original), source="regenerated"
+        )
+        return compare_sections(original, regenerated)
+
+    def test_plain_string_round_trips(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 480.0, _DAY_2: 510.0})
+        _seed(hass, tc._SECOND_ACTUAL_YIELD_ENTITY, {_DAY_0: 300.0, _DAY_1: 290.0, _DAY_2: 310.0})
+        coordinator._now = lambda: _PIN + timedelta(minutes=10)
+        assert coordinator.pin_diagnostic_slot(_PIN, now=_PIN + timedelta(minutes=10))
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator._diagnostics_tick_sync(_PIN + timedelta(minutes=10))
+
+        assert self._round_trip(coordinator, "0") == []
+
+    def test_weather_tier_string_round_trips(self) -> None:
+        coordinator, _hass = tc._make_temperature_aware_coordinator()
+        assert coordinator.pin_diagnostic_slot(tc._NOW)
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        coordinator._diagnostics_tick_sync(tc._NOW)
+
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        text = mode.export_csv("0")
+        assert text is not None
+        sections = parse_csv_sections(text, source="original")
+        assert sections["metadata"][0]["temperature_tier"] == "weather"
+        assert any(row["key"] == "target_cell_temperature" for row in sections["prediction_inputs"])
+
+        assert self._round_trip(coordinator, "0") == []
+
+    def test_round_trip_detects_a_tampered_fixture(self) -> None:
+        """The comparison has teeth: changing one recorded weight in a
+        fixture makes the regenerated CSV disagree with it."""
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 480.0, _DAY_2: 510.0})
+        coordinator._now = lambda: _PIN + timedelta(minutes=10)
+        assert coordinator.pin_diagnostic_slot(_PIN, now=_PIN + timedelta(minutes=10))
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        text = mode.export_csv("0")
+        assert text is not None
+        original = parse_csv_sections(text, source="original")
+        original["training_pool"][0]["combined_weight"] = "123.0"
+
+        regenerated = parse_csv_sections(_replay_compare_regressions(original), source="regen")
+
+        assert compare_sections(original, regenerated) != []
+
+
+def _parse_or_none(value: str) -> float | None:
+    return float(value) if value != "" else None
+
+
+def _to_nan_array(values: list[float | None]) -> NDArray[np.float64]:
+    return np.array([v if v is not None else np.nan for v in values], dtype=np.float64)
+
+
+def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> str:
+    """ADR-015 §5's one mode-owned fixture-replay function
+    (`_replay_compare_regressions`, 2026-09-27 Amendment: `sections` is
+    now a `dict`, looked up by name — `tests/csv_fixture_support.py`).
+    Reconstructs `CompareRegressionsMode.export_csv`'s real typed
+    inputs from a parsed fixture, calls the real `export_csv`, and
+    returns the fresh CSV text it produces — imported by
+    `tests/diagnostics/test_csv_regression_fixtures.py`'s generic
+    runner, registered there under this mode's own key.
+
+    `apply_training_corrections`'s own correction parameters
+    (`converter_limit_w`/`coefficient_per_c`/`provider_already_corrects`/
+    `rated_dc_capacity_wp`) aren't part of the `# metadata` schema (only
+    `temperature_tier` is) — recomputing `pv_corrected` from `pv_raw`
+    would need config this replay doesn't have. Instead,
+    `string_computation.apply_training_corrections` is monkeypatched
+    for the duration of this one call to return the fixture's own
+    recorded `pv_corrected` values directly, bypassing recomputation —
+    the correction *logic* is `string_computation.py`'s own
+    zero-mocking test concern (`tests/test_string_computation.py`), not
+    this fixture's.
+    """
+    metadata = sections["metadata"][0]
+    string_index = int(metadata["string_index"])
+    string_name = metadata["string_name"]
+    window_days = int(metadata["window_days"])
+    smoothing_radius = int(metadata["smoothing_radius"])
+    temperature_tier = metadata["temperature_tier"] or None
+    slot_of_day = int(metadata["slot_of_day"])
+    diagnosed_index = int(metadata["diagnosed_index"])
+    is_pinned = metadata["is_pinned"] == "true"
+    is_elapsed = metadata["is_elapsed"] == "true"
+    diagnosed_at = datetime.fromisoformat(metadata["diagnosed_at"])
+
+    offsets = list(range(-smoothing_radius, smoothing_radius + 1))
+    slot_to_offset = {(slot_of_day + offset) % _SLOTS_PER_DAY: offset for offset in offsets}
+
+    fc_by_offset: dict[int, list[float | None]] = {
+        offset: [None] * window_days for offset in offsets
+    }
+    pv_raw_by_offset: dict[int, list[float | None]] = {
+        offset: [None] * window_days for offset in offsets
+    }
+    pv_corrected_by_offset: dict[int, list[float | None]] = {
+        offset: [None] * window_days for offset in offsets
+    }
+    temperature_by_offset: dict[int, list[float | None]] | None = (
+        {offset: [None] * window_days for offset in offsets}
+        if temperature_tier is not None
+        else None
+    )
+    for row in sections["training_pool"]:
+        offset = int(row["offset"])
+        day_index = int(row["day_index"])
+        fc_by_offset[offset][day_index] = _parse_or_none(row["fc_raw"])
+        pv_raw_by_offset[offset][day_index] = _parse_or_none(row["pv_raw"])
+        pv_corrected_by_offset[offset][day_index] = _parse_or_none(row["pv_corrected"])
+        if temperature_by_offset is not None:
+            temperature_by_offset[offset][day_index] = _parse_or_none(row["temperature_raw"])
+
+    prediction_inputs = {row["key"]: row["value"] for row in sections["prediction_inputs"]}
+    fc_selected = _parse_or_none(prediction_inputs.get("fc_selected", ""))
+    pv_selected = _parse_or_none(prediction_inputs.get("pv_selected", ""))
+    target_cell_temperature = _parse_or_none(prediction_inputs.get("target_cell_temperature", ""))
+    predictions = {row["method"]: float(row["predicted"]) for row in sections["predictions"]}
+
+    baseline_entity_id = "replay_baseline"
+    actual_yield_entity_id = "replay_actual_yield"
+    temperature_entity_id = "replay_temperature" if temperature_tier is not None else None
+
+    class _ReplayCache:
+        def timestamp_for(self, index: int) -> datetime:
+            return diagnosed_at
+
+        def get_pinned_slot_pool(
+            self, sensor_ids: list[str], offset_slot: int, **kwargs: Any
+        ) -> dict[str, list[float | None]]:
+            offset = slot_to_offset[offset_slot]
+            raw: dict[str, list[float | None]] = {
+                baseline_entity_id: fc_by_offset[offset],
+                actual_yield_entity_id: pv_raw_by_offset[offset],
+            }
+            if temperature_entity_id is not None:
+                assert temperature_by_offset is not None
+                raw[temperature_entity_id] = temperature_by_offset[offset]
+            return raw
+
+        def get_time_range(
+            self, sensor_ids: list[str], start: datetime, end: datetime, **kwargs: Any
+        ) -> dict[str, list[float | None]]:
+            sensor_id = sensor_ids[0]
+            if sensor_id == baseline_entity_id:
+                return {sensor_id: [fc_selected]}
+            if sensor_id == actual_yield_entity_id:
+                return {sensor_id: [pv_selected]}
+            return {sensor_id: [None]}
+
+        def diagnostic_fit(self, sensor_id: str) -> dict[str, float] | None:
+            return predictions or None
+
+    class _ReplayCoordinator:
+        cache = _ReplayCache()
+
+        def strings(self) -> list[tuple[int, str]]:
+            return [(string_index, string_name)]
+
+        def string_computation_config(self, index: int) -> Any:
+            return _coordinator_like_mod.StringComputationConfig(
+                baseline_entity_id=baseline_entity_id,
+                actual_yield_entity_id=actual_yield_entity_id,
+                temperature_entity_id=temperature_entity_id,
+                temperature_tier=temperature_tier,
+                converter_limit_w=None,
+                coefficient_per_c=0.0,
+                provider_already_corrects=False,
+                rated_dc_capacity_wp=None,
+            )
+
+        def diagnosed_slot(self, now: datetime | None = None) -> Any:
+            return _coordinator_like_mod.DiagnosedSlot(
+                index=diagnosed_index, slot_of_day=slot_of_day, is_elapsed=is_elapsed
+            )
+
+        def regression_settings(self) -> Any:
+            return _coordinator_like_mod.RegressionSettings(
+                smoothing_radius=smoothing_radius,
+                neighbor_fitting_cutoff=float(metadata["neighbor_fitting_cutoff"]),
+                recency_decay_max=float(metadata["recency_decay_max"]),
+                clipping_threshold=float(metadata["clipping_threshold"]),
+                max_uplift_c=float(metadata["max_uplift_c"]),
+            )
+
+        def configured_regression_method(self) -> str:
+            return metadata["regression_method_configured"]
+
+        def pinned_diagnostic_slot(self) -> datetime | None:
+            return diagnosed_at if is_pinned else None
+
+        def now(self) -> datetime:
+            return diagnosed_at
+
+        def target_cell_temperature_for_slot(self, index: int, slot_index: int) -> float | None:
+            return target_cell_temperature
+
+    def _passthrough_corrections(*_args: Any, **_kwargs: Any) -> dict[int, NDArray[np.float64]]:
+        return {
+            offset: _to_nan_array(pv_corrected_by_offset[offset])[None, :] for offset in offsets
+        }
+
+    original_corrections = _string_computation_mod.apply_training_corrections
+    _string_computation_mod.apply_training_corrections = _passthrough_corrections
+    try:
+        mode = _CompareRegressionsMode(_ReplayCoordinator())
+        result = mode.export_csv(str(string_index))
+    finally:
+        _string_computation_mod.apply_training_corrections = original_corrections
+
+    assert isinstance(result, str)
+    return result

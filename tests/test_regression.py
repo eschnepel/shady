@@ -712,3 +712,108 @@ class TestEveryStrategyHandlesTheSharedFixtures:
         adjusted, confidence = strategy.fit(pool).predict(np.full(n_slots, 300.0))
         assert np.all(np.isfinite(adjusted))
         assert np.all(np.isfinite(confidence))
+
+
+# -- ADR-015 §6 (TASK-0038): build_pool's optional WeightBreakdown ---------
+
+
+class TestWeightBreakdown:
+    """Given `build_pool(..., return_weight_breakdown=True)` (ADR-015 §6,
+    CSV-export-only), the returned `WeightBreakdown` decomposes the same
+    per-cell weight `SamplePool.weight` already carries — without
+    changing what any existing caller (the default, `False`) gets."""
+
+    @staticmethod
+    def _build(cutoff: float = 0.25, **kwargs: Any) -> Any:
+        fc_by_offset, pv_by_offset = _deviating_neighbor_pool(smoothing_radius=1)
+        return base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=cutoff,
+            recency_decay_max=0.5,
+            return_weight_breakdown=True,
+            **kwargs,
+        )
+
+    def test_default_still_returns_a_bare_sample_pool(self) -> None:
+        fc_by_offset, pv_by_offset = _deviating_neighbor_pool(smoothing_radius=1)
+
+        result = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.5,
+        )
+
+        assert isinstance(result, base_mod.SamplePool)
+
+    def test_pool_is_identical_with_and_without_the_flag(self) -> None:
+        fc_by_offset, pv_by_offset = _deviating_neighbor_pool(smoothing_radius=1)
+        plain = base_mod.build_pool(
+            fc_by_offset,
+            pv_by_offset,
+            smoothing_radius=1,
+            neighbor_fitting_cutoff=0.25,
+            recency_decay_max=0.5,
+        )
+
+        pool, _breakdown = self._build()
+
+        np.testing.assert_array_equal(pool.fc, plain.fc)
+        np.testing.assert_array_equal(pool.pv, plain.pv)
+        np.testing.assert_array_equal(pool.weight, plain.weight)
+        np.testing.assert_array_equal(pool.confidence, plain.confidence)
+
+    def test_combined_weight_reconstructs_from_its_own_factors(self) -> None:
+        _pool, breakdown = self._build()
+
+        for offset in (-1, 0, 1):
+            expected = (
+                breakdown.magnitude_weight[offset]
+                * breakdown.time_weight[offset]
+                * breakdown.recency_weight[None, :]
+                * (~breakdown.neighbor_excluded[offset])[:, None]
+                * breakdown.valid_mask[offset]
+            )
+            np.testing.assert_allclose(breakdown.combined_weight[offset], expected)
+
+    def test_combined_weights_concatenate_to_the_pool_weight(self) -> None:
+        pool, breakdown = self._build()
+
+        stacked = np.concatenate([breakdown.combined_weight[o] for o in (-1, 0, 1)], axis=1)
+
+        np.testing.assert_array_equal(pool.weight, stacked)
+
+    def test_excluded_neighbor_keeps_its_pre_exclusion_magnitude_weight(self) -> None:
+        """The point of ADR-015 §6's clarification: an excluded row's
+        `magnitude_weight` stays nonzero (the factor itself), while
+        `neighbor_excluded` (its own column) accounts for the zeroed
+        `combined_weight` — not one column silently absorbing the other."""
+        _pool, breakdown = self._build()
+
+        assert np.all(breakdown.neighbor_excluded[1])
+        assert np.any(breakdown.magnitude_weight[1] > 0.0)
+        assert np.all(breakdown.combined_weight[1] == 0.0)
+
+        assert not np.any(breakdown.neighbor_excluded[0])
+        assert not np.any(breakdown.neighbor_excluded[-1])
+
+    def test_center_offset_has_identity_neighbor_scale(self) -> None:
+        _pool, breakdown = self._build()
+
+        np.testing.assert_array_equal(breakdown.neighbor_scale[0], np.ones(3))
+        assert breakdown.time_weight[0] == 1.0
+
+    def test_rescale_sentinel_never_excludes_and_scales_the_deviating_neighbor(self) -> None:
+        _pool, breakdown = self._build(cutoff=base_mod.RESCALE_SENTINEL)
+
+        for offset in (-1, 0, 1):
+            assert not np.any(breakdown.neighbor_excluded[offset])
+        assert np.all(breakdown.neighbor_scale[1] > 1.0)  # center 0.8 / neighbor 0.3
+
+    def test_recency_weight_is_shared_across_offsets_and_day_shaped(self) -> None:
+        _pool, breakdown = self._build()
+
+        assert breakdown.recency_weight.shape == (16,)

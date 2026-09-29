@@ -28,6 +28,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -68,6 +69,51 @@ class SamplePool:
     pv: NDArray[np.float64]
     weight: NDArray[np.float64]
     confidence: NDArray[np.float64]
+
+
+@dataclass(frozen=True)
+class WeightBreakdown:
+    """CSV-export-only decomposition of `build_pool`'s per-cell
+    `combined_weight` into the individual factors it multiplies together
+    (ADR-001 §2, ADR-011 §1-§3) — returned only when
+    `return_weight_breakdown=True` (ADR-015 §6, `TASK-0038`), one entry
+    per offset for every field below.
+    `diagnostics/compare_regressions.py`'s `CompareRegressionsMode
+    .export_csv` is the only consumer; `SamplePool`'s own `weight` (the
+    real, already-combined per-cell weight `fit_weighted_polynomial`
+    actually uses) is completely unaffected by this dataclass existing
+    — the two are returned alongside each other, not one derived from
+    the other after the fact.
+
+    `magnitude_weight`/`valid_mask`/`combined_weight` share
+    `fc_by_offset[offset]`'s own `(n_slots, window_days)` shape — a
+    genuine per-(slot, day) value. `magnitude_weight` is captured
+    *before* ADR-011 §2's neighbor-exclusion zeroing, not after — so
+    `combined_weight == magnitude_weight * time_weight * recency_weight
+    * (not neighbor_excluded) * is_valid` holds as a real decomposition
+    a caller can multiply back together, rather than one column
+    silently already absorbing another's effect (a post-exclusion
+    `magnitude_weight` would read `0.0` on an excluded row for the same
+    reason as a row with genuinely no data, losing the distinction).
+
+    `time_weight`/`neighbor_excluded`/`neighbor_scale` are `(n_slots,)`
+    — constant across the day axis by construction (`_median_ratio`'s
+    median-over-days semantics, ADR-011 §2/§3, and `time_weight`'s own
+    per-offset-only formula); broadcasting one of these across
+    `window_days` for a per-cell view is the caller's job, not this
+    dataclass's. `recency_weight` is `(window_days,)`, identical for
+    every offset (`build_pool`'s own `_recency_weight` call, computed
+    once regardless of how many offsets there are) — included once,
+    not duplicated per offset.
+    """
+
+    magnitude_weight: dict[int, NDArray[np.float64]]
+    valid_mask: dict[int, NDArray[np.bool_]]
+    combined_weight: dict[int, NDArray[np.float64]]
+    time_weight: dict[int, float]
+    neighbor_excluded: dict[int, NDArray[np.bool_]]
+    neighbor_scale: dict[int, NDArray[np.float64]]
+    recency_weight: NDArray[np.float64]
 
 
 class FittedModel(ABC):
@@ -190,6 +236,32 @@ def _recency_weight(window_days: int, recency_decay_max: float) -> NDArray[np.fl
     return np.asarray(1.0 - (day_age / (window_days - 1)) * recency_decay_max)
 
 
+@overload
+def build_pool(
+    fc_by_offset: Mapping[int, NDArray[np.float64]],
+    pv_by_offset: Mapping[int, NDArray[np.float64]],
+    smoothing_radius: int,
+    neighbor_fitting_cutoff: float,
+    recency_decay_max: float,
+    *,
+    apply_magnitude_weight: bool = ...,
+    return_weight_breakdown: Literal[False] = ...,
+) -> SamplePool: ...
+
+
+@overload
+def build_pool(
+    fc_by_offset: Mapping[int, NDArray[np.float64]],
+    pv_by_offset: Mapping[int, NDArray[np.float64]],
+    smoothing_radius: int,
+    neighbor_fitting_cutoff: float,
+    recency_decay_max: float,
+    *,
+    apply_magnitude_weight: bool = ...,
+    return_weight_breakdown: Literal[True],
+) -> tuple[SamplePool, WeightBreakdown]: ...
+
+
 def build_pool(
     fc_by_offset: Mapping[int, NDArray[np.float64]],
     pv_by_offset: Mapping[int, NDArray[np.float64]],
@@ -198,7 +270,8 @@ def build_pool(
     recency_decay_max: float,
     *,
     apply_magnitude_weight: bool = True,
-) -> SamplePool:
+    return_weight_breakdown: bool = False,
+) -> SamplePool | tuple[SamplePool, WeightBreakdown]:
     """Build one batch's fully-weighted `SamplePool` from raw per-offset
     arrays (ADR-001 §2's `magnitude_weight_i`, ADR-011 §1's
     `time_weight_i`, ADR-001 §4a's `recency_weight_i`, and ADR-011
@@ -239,6 +312,21 @@ def build_pool(
     magnitude weighting would actively corrupt such a predictor's sample
     weights rather than merely fail to help. Defaults to `True`
     (today's ADR-001 §2 behavior) so no existing caller is affected.
+
+    `return_weight_breakdown=True` (ADR-015 §6, CSV-export-only,
+    `TASK-0038`) additionally returns a `WeightBreakdown` alongside the
+    usual `SamplePool` — the same per-offset factors this function
+    already computes internally on the way to `combined_weight`, kept
+    instead of discarded, for `CompareRegressionsMode.export_csv`'s own
+    `# training_pool` section to show decomposed rather than only the
+    final product (`WeightBreakdown`'s own docstring has the exact
+    per-field shapes and the pre-/post-exclusion `magnitude_weight`
+    distinction). Defaults to `False` so every existing caller
+    (`string_computation.fit_string_model`'s real fit path) keeps its
+    original single-`SamplePool` return, unchanged — the two
+    `@overload` signatures above give a caller passing a literal
+    `True`/`False` (or omitting the flag) the correspondingly precise
+    static return type.
     """
     offsets = list(range(-smoothing_radius, smoothing_radius + 1))
     center_fc = fc_by_offset[0]
@@ -250,6 +338,13 @@ def build_pool(
     pv_blocks: list[NDArray[np.float64]] = []
     weight_blocks: list[NDArray[np.float64]] = []
 
+    breakdown_magnitude_weight: dict[int, NDArray[np.float64]] = {}
+    breakdown_valid_mask: dict[int, NDArray[np.bool_]] = {}
+    breakdown_combined_weight: dict[int, NDArray[np.float64]] = {}
+    breakdown_time_weight: dict[int, float] = {}
+    breakdown_neighbor_excluded: dict[int, NDArray[np.bool_]] = {}
+    breakdown_neighbor_scale: dict[int, NDArray[np.float64]] = {}
+
     for offset in offsets:
         raw_fc = fc_by_offset[offset]
         raw_pv = pv_by_offset[offset]
@@ -260,9 +355,16 @@ def build_pool(
             if apply_magnitude_weight
             else valid_mask.astype(np.float64)
         )
+        # Captured here, before neighbor exclusion (below) may zero it
+        # for the *actual* fit weight -- `WeightBreakdown`'s own
+        # pre-exclusion contract (ADR-015 §6).
+        breakdown_magnitude_weight_for_offset = magnitude_weight
+
         time_weight = 1.0 - abs(offset) / (smoothing_radius + 1)
 
         neighbor_scale = np.ones(raw_fc.shape[0])
+        neighbor_excluded = np.zeros(raw_fc.shape[0], dtype=np.bool_)
+        effective_magnitude_weight = magnitude_weight
 
         if offset != 0:
             neighbor_median = _median_ratio(raw_fc, raw_pv, valid_mask)
@@ -288,21 +390,44 @@ def build_pool(
                 # `valid_mask`/`magnitude_weight` already zero out rows
                 # with no real data regardless.
                 excluded = deviation > neighbor_fitting_cutoff
-                magnitude_weight = np.where(excluded[:, None], 0.0, magnitude_weight)
+                effective_magnitude_weight = np.where(excluded[:, None], 0.0, magnitude_weight)
+                neighbor_excluded = excluded
 
         pv_contribution = raw_pv * neighbor_scale[:, None]
-        combined_weight = magnitude_weight * time_weight * recency_weight[None, :] * valid_mask
+        combined_weight = (
+            effective_magnitude_weight * time_weight * recency_weight[None, :] * valid_mask
+        )
 
         fc_blocks.append(np.where(valid_mask, raw_fc, 0.0))
         pv_blocks.append(np.where(valid_mask, pv_contribution, 0.0))
         weight_blocks.append(combined_weight)
+
+        if return_weight_breakdown:
+            breakdown_magnitude_weight[offset] = breakdown_magnitude_weight_for_offset
+            breakdown_valid_mask[offset] = valid_mask
+            breakdown_combined_weight[offset] = combined_weight
+            breakdown_time_weight[offset] = time_weight
+            breakdown_neighbor_excluded[offset] = neighbor_excluded
+            breakdown_neighbor_scale[offset] = neighbor_scale
 
     fc_pool = np.concatenate(fc_blocks, axis=1)
     pv_pool = np.concatenate(pv_blocks, axis=1)
     weight_pool = np.concatenate(weight_blocks, axis=1)
     confidence = weight_pool.sum(axis=1)
 
-    return SamplePool(fc=fc_pool, pv=pv_pool, weight=weight_pool, confidence=confidence)
+    pool = SamplePool(fc=fc_pool, pv=pv_pool, weight=weight_pool, confidence=confidence)
+    if not return_weight_breakdown:
+        return pool
+    breakdown = WeightBreakdown(
+        magnitude_weight=breakdown_magnitude_weight,
+        valid_mask=breakdown_valid_mask,
+        combined_weight=breakdown_combined_weight,
+        time_weight=breakdown_time_weight,
+        neighbor_excluded=breakdown_neighbor_excluded,
+        neighbor_scale=breakdown_neighbor_scale,
+        recency_weight=recency_weight,
+    )
+    return pool, breakdown
 
 
 def _ridge_term(xt_w_x: NDArray[np.float64], degree: int) -> NDArray[np.float64]:
