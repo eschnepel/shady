@@ -3,8 +3,8 @@ diagnostic_mode,expected
 compare_regressions,FAIL
 
 # metadata
-string_index,string_name,diagnosed_at,diagnosed_index,slot_of_day,is_pinned,is_elapsed,regression_method_configured,temperature_tier,window_days,smoothing_radius,neighbor_fitting_cutoff,recency_decay_max,clipping_threshold,max_uplift_c
-0,Dach Süd,2026-06-10T10:00:00+00:00,677496,120,true,true,wls2,,3,0,0.25,0.5,0.98,25.0
+string_index,string_name,diagnosed_at,diagnosed_index,slot_of_day,is_pinned,is_elapsed,regression_method_configured,temperature_tier,window_days,smoothing_radius,neighbor_fitting_cutoff,recency_decay_max,clipping_threshold,max_uplift_c,converter_limit_w,coefficient_per_c,provider_already_corrects,rated_dc_capacity_wp
+0,Dach Süd,2026-06-10T10:00:00+00:00,677496,120,true,true,wls2,,3,0,0.25,0.5,0.98,25.0,,0.0,false,
 
 # training_pool
 offset,day_index,sample_date,day_age,fc_raw,pv_raw,pv_corrected,temperature_raw,is_valid,magnitude_weight,time_weight,recency_weight,neighbor_excluded,neighbor_scale,combined_weight

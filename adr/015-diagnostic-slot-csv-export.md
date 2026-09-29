@@ -4,7 +4,8 @@
 alongside three further amendments (§4a/§5/§7 below) requested at confirmation
 time; `TASK-0038` moves `review` -> `todo` the same day (Phase 0's own draft-ADR
 procedure: "Any new ADR starts in a draft state until review confirmed by a
-human" — satisfied). **Last updated:** 2026-09-27 -- §4a (mode-override query
+human" — satisfied). **Last updated:** 2026-09-29 (Amendment at the end:
+fit-reproducibility metadata) / 2026-09-27 -- §4a (mode-override query
 parameter), §5 (fixture-replay's own reader returns a `dict`, not a
 `list[tuple]`), and §7 (test package structure) added at confirmation time.
 Decision 2/3/4/5's 2026-09-26 rewrite (delivery mechanism and `build_pool`'s
@@ -285,16 +286,16 @@ naming the file. A fixture that cannot be parsed at all (duplicate section, no
 `# diagnostic_mode`) cannot declare an `expected`, so those failure modes are
 covered by unit tests against temporary files instead.
 
-**What a replay can and cannot check** (recorded so nobody over-trusts a green
-`curated/` run): `_replay_compare_regressions` reconstructs `export_csv`'s
-inputs from the fixture and recomputes what `export_csv` itself derives -- the
-`build_pool` weight decomposition, `is_valid`, `sample_date`/`day_age`,
-`accuracy`. It *echoes* the metadata scalars, raw `fc`/`pv`/`temperature`,
-`pv_corrected` (the correction parameters are not in the file, so
-`apply_training_corrections` is substituted with the recorded values) and each
-method's `predicted` (`fit()`/`predict()` are not re-run). A change to those
-layers is therefore not caught by a fixture; only a change to what `export_csv`
-derives is.
+**What a replay checks** (rewritten by the 2026-09-29 Amendment below; the
+original text listed `pv_corrected`, `predicted` and the metadata scalars as
+*echoed, not checked*): `_replay_compare_regressions` runs the real
+`apply_training_corrections`, `fit_string_model` (all four strategies) and
+`predict_string_forecast` from the file alone, so `pv_corrected`, every
+`predicted`, `accuracy`, the weight decomposition, `is_valid` and
+`sample_date`/`day_age` are all recomputed and compared. Still taken on trust:
+the raw `fc`/`pv`/`temperature` readings and `fc_selected`/`pv_selected`
+(inputs, not derivations) and `target_cell_temperature` (how the coordinator
+resolves it is not part of the fit).
 
 ### 6 — `build_pool` gains a second, optional return value — CSV-only
 
@@ -394,10 +395,10 @@ places the export logic on `CompareRegressionsMode` itself (inside the existing
 `CompareRegressionsMode.export_csv` calls `regression/base.py`'s `build_pool`
 directly (with `return_weight_breakdown=True`, §6 above), a layer below
 `string_computation.fit_string_model`'s own existing wrapper, since the weight
-breakdown is method-independent (ADR-001 §2) and no fitting is actually needed
-here -- `extra_fit()`'s own cached predictions already cover the `# predictions`
-section. `http_export --> diagnostics` and `diagnostics --> regression` are the
-two new edges this ADR adds to the diagram in total.
+breakdown is method-independent (ADR-001 §2). (*2026-09-29:* `# predictions` no
+longer comes from `extra_fit()`'s cache -- see the Amendment at the end of this
+document.) `http_export --> diagnostics` and `diagnostics --> regression` are
+the two new edges this ADR adds to the diagram in total.
 
 **ADR-004** (diagnostics sensors): a cross-reference note near §5's "thin entity
 glue" framing, pointing to this document -- the CSV export reads the same
@@ -439,3 +440,68 @@ ______________________________________________________________________
   shared module or a shared schema; `build_pool` extended, not duplicated;
   fixture replay split into generic parse/dispatch/compare plus mode-owned
   interpretation only), not a full implementation spec.
+
+______________________________________________________________________
+
+## Amendment — 2026-09-29
+
+**Reason:** The export was meant to carry "all meta data needed to calculate the
+fitting models", but three gaps meant it did not, and §5a recorded the fixture
+replay's resulting blind spot rather than closing it:
+
+1. `# metadata` omitted four `StringComputationConfig` scalars the fit chain
+   consumes -- `converter_limit_w`, `coefficient_per_c`,
+   `provider_already_corrects`, `rated_dc_capacity_wp` (the first three feed
+   both `apply_training_corrections` and `predict_string_forecast`). The other
+   inputs (five `RegressionSettings` scalars, `temperature_tier`, `window_days`,
+   raw fc/pv/temperature, `fc_selected`, `target_cell_temperature`) were already
+   present.
+1. `# predictions` was read from `cache.diagnostic_fit(sensor_id)`, keyed by
+   `sensor_id` alone: not invalidated by `pin_diagnostic_slot` /
+   `clear_diagnostic_slot`, and never populated for a registered but inactive
+   `mode` (§4a). It could therefore describe a different slot than the
+   `# training_pool` gathered fresh beside it.
+1. Consequently the replay had to stub `apply_training_corrections`, hard-code
+   `converter_limit_w=None` / `coefficient_per_c=0.0` /
+   `provider_already_corrects=False` / `rated_dc_capacity_wp=None`, and inject
+   the recorded `predicted` values -- and a hand-written `synthetic/` fixture
+   (`wls2=450.0` on a pool with no valid data, where every strategy passes the
+   forecast through at 500.0) went unnoticed for that reason.
+
+**Decision:**
+
+- **`# metadata` gains four columns**, appended after `max_uplift_c` in
+  `StringComputationConfig` field order: `converter_limit_w`,
+  `coefficient_per_c`, `provider_already_corrects`, `rated_dc_capacity_wp` (19
+  columns total). Floats are `repr()`-level, the bool is `true`/`false`, and
+  `None` is a blank -- the same convention `temperature_tier` already uses in
+  this one-row table. A new column rather than a new section: all four are
+  always-present scalars of the same one string, exactly the case §3 gives for
+  the wide-row shape.
+- **`# predictions` is computed at export time from the exported pool**
+  (`_predict_all_methods`, the same function `extra_fit()` uses), not read from
+  the cache, so the section is reproducible from the file's own
+  `# training_pool` by construction. `sensor.py`'s own `series`/`accuracy` keep
+  reading the cache (unchanged). If fitting raises, the export still returns its
+  other sections with an empty `# predictions` and logs the exception -- the
+  export exists to explain a strange fit and must not turn into an HTTP 500 on
+  exactly that input. Cost: one single-slot fit per strategy per request, the
+  same work `extra_fit()` already does per string per tick.
+- **The replay runs the real chain** (§5a rewritten above): no monkeypatching of
+  `string_computation`, no injected `predictions`, config read from
+  `# metadata`.
+- **No backward compatibility shim.** A fixture lacking any of the four columns
+  predates this amendment and is rejected with an error naming them and telling
+  the maintainer to re-export -- never silently replayed against defaulted
+  config. The six existing `synthetic/` fixtures were migrated (their scenarios
+  used exactly the defaults, so the values appended are the ones they ran with);
+  `curated/` held none.
+- `compare_sections`' 1e-9 relative tolerance is unchanged. Measured: all four
+  strategies' predictions move by \<= ~1.2e-15 relative under a reordered
+  summation (the platform-dependent part of a BLAS/LAPACK solve), several orders
+  of magnitude inside it.
+
+**Decided by:** human (direction, 2026-09-29: "close the blind spot; extend the
+export CSV to contain all meta data needed to calculate the fitting models");
+Lead Agent (column names/placement, the switch away from the cache, and the
+no-shim rejection rule) -- **to be confirmed by the human at review.**

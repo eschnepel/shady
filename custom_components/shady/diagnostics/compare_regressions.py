@@ -499,8 +499,10 @@ class CompareRegressionsMode(DiagnosticMode):
         rest in context), `# training_pool` (every neighbor-offset/day
         training point, decomposed weight components included),
         `# predictions` (all four `regression/` strategies' predicted
-        values for this slot), `# prediction_inputs` (the scalar inputs
-        those predictions were made from).
+        values for this slot, computed from the same pool as
+        `# training_pool` -- never from the `diagnostic_fit` cache),
+        `# prediction_inputs` (the scalar inputs those predictions were
+        made from).
 
         Only a real configured-string `sensor_id` ("0", "1", ...) is
         supported — `sensor_id="sum"` (also one of `sensor_ids()`'s own
@@ -550,7 +552,17 @@ class CompareRegressionsMode(DiagnosticMode):
             if diagnosed.is_elapsed
             else None
         )
-        predictions = self._coordinator.cache.diagnostic_fit(sensor_id) or {}
+        # ADR-015 Amendment 2026-09-29: computed here, from the very
+        # `pool` this export's `# training_pool` is built from -- not read
+        # back from `cache.diagnostic_fit(sensor_id)`. That cache is keyed
+        # by `sensor_id` alone, is not invalidated by pinning/unpinning
+        # the diagnosed slot, and is never populated for a registered but
+        # inactive `mode` (§4a), so it could describe a different slot
+        # (or nothing) than the pool beside it -- an export whose
+        # predictions cannot be reproduced from its own training data.
+        predictions = self._export_predictions(
+            string_index, config, diagnosed, settings, pool, fc_selected
+        )
         target_cell_temperature: float | None = None
         if config.temperature_tier is not None:
             target_cell_temperature = self._coordinator.target_cell_temperature_for_slot(
@@ -578,6 +590,37 @@ class CompareRegressionsMode(DiagnosticMode):
         ]
         return self._write_csv_sections(sections)
 
+    def _export_predictions(
+        self,
+        string_index: int,
+        config: StringComputationConfig,
+        diagnosed: DiagnosedSlot,
+        settings: RegressionSettings,
+        pool: _GatheredPool,
+        fc_selected: float | None,
+    ) -> dict[str, float]:
+        """All four strategies' predictions for the exported pool, via
+        the same `_predict_all_methods` `extra_fit()` uses. Empty (no
+        `# predictions` rows, nothing fabricated) when there is no
+        `fc_selected` to predict from, and also when fitting raises: a
+        debugging aid for \"why did this fit look weird\" must not turn
+        into an HTTP 500 on exactly the input that made it weird, so the
+        training data is still exported and the failure is logged
+        (mirrors `extra_fit()`'s own per-string isolation)."""
+        if fc_selected is None:
+            return {}
+        try:
+            return self._predict_all_methods(
+                string_index, config, diagnosed, settings, pool, fc_selected
+            )
+        except Exception:
+            _LOGGER.exception(
+                "export_csv: fitting failed for string %d -- exporting its training data"
+                " without predictions",
+                string_index,
+            )
+            return {}
+
     def _export_metadata_row(
         self,
         string_index: int,
@@ -589,7 +632,12 @@ class CompareRegressionsMode(DiagnosticMode):
     ) -> dict[str, str]:
         """The `# metadata` section's one row — everything needed to
         place `# training_pool`/`# predictions`/`# prediction_inputs`
-        in context without a second file. `window_days` is read off
+        in context without a second file, *and* to recompute the fit
+        from this file alone (ADR-015 Amendment 2026-09-29): every
+        scalar `apply_training_corrections`, `fit_string_model` and
+        `predict_string_forecast` take is either a column here, a raw
+        `# training_pool` column, or a `# prediction_inputs` value.
+        `window_days` is read off
         `pool.fc_by_offset[0]`'s own shape rather than a new coordinator
         accessor — `_gather_pool`'s arrays already carry it."""
         window_days = pool.fc_by_offset[0].shape[1]
@@ -611,7 +659,24 @@ class CompareRegressionsMode(DiagnosticMode):
             "recency_decay_max": repr(float(settings.recency_decay_max)),
             "clipping_threshold": repr(float(settings.clipping_threshold)),
             "max_uplift_c": repr(float(settings.max_uplift_c)),
+            # ADR-015 Amendment 2026-09-29 (`TASK-0038-patch-1`): the four
+            # `StringComputationConfig` scalars `apply_training_corrections`
+            # / `predict_string_forecast` consume that the original schema
+            # left out -- with them, this file alone is enough to re-run
+            # correction -> pool -> fit -> predict. Blank = `None` (no
+            # inverter limit / no rated capacity configured).
+            "converter_limit_w": self._export_optional_float(config.converter_limit_w),
+            "coefficient_per_c": repr(float(config.coefficient_per_c)),
+            "provider_already_corrects": "true" if config.provider_already_corrects else "false",
+            "rated_dc_capacity_wp": self._export_optional_float(config.rated_dc_capacity_wp),
         }
+
+    @staticmethod
+    def _export_optional_float(value: float | None) -> str:
+        """`None` -> blank, else `repr()`-level precision -- the same
+        blank-means-absent convention `temperature_tier` already uses in
+        `# metadata`."""
+        return "" if value is None else repr(float(value))
 
     def _export_window_start_date(self, window_days: int) -> date:
         """The calendar date of `# training_pool`'s `day_index=0`

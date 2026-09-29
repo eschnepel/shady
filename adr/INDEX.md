@@ -30,6 +30,7 @@ see ADR-000 §7 for the mandatory-update rule this enforces.
 | [012](012-provider-architecture.md) | Accepted | Provider Architecture: Shared Base Class and Cache Reuse for External Series |
 | [013](013-whole-day-diagnostic-modes.md) | Proposed *(no implementation task; validates ADR-004's base class against future needs)* | Diagnostics: Whole-Day Comparison Modes (Draft — Future Work, Not Yet Scheduled) |
 | [014](014-string-computation-module.md) | Accepted | `string_computation.py`: A Shared, Pure Per-String Fit/Predict Module *(discovered while scoping TASK-0015b; relocates computation out of `coordinator.py`, replaces the `diagnostics --> regression` edge with `diagnostics --> string_computation`)* |
+| [015](015-diagnostic-slot-csv-export.md) | Accepted | Diagnostic Slot Raw-Data CSV Export: HTTP View, Mode-Owned Serialization *(amended 2026-09-29: export carries every input needed to recompute the fit; fixture replay runs the real correction/fit/predict chain)* |
 
 **Status key:** `Accepted` — in force, implemented or scheduled for
 implementation. `Superseded` — replaced by a later ADR, kept for history.

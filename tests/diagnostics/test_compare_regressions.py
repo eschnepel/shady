@@ -30,13 +30,13 @@ written to fix.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import numpy as np
-from numpy.typing import NDArray
+import pytest
 
 from tests import test_coordinator as tc
 from tests.csv_fixture_support import compare_sections, parse_csv_sections
@@ -720,7 +720,6 @@ class TestExportCsvNotYetElapsedBlanksSelectedFields:
         ok = coordinator.pin_diagnostic_slot(future_pin)
         assert ok
         coordinator.set_active_diagnostic_mode("compare_regressions")
-        coordinator.cache.set_diagnostic_fit("0", {"linear": 500.0})
         mode = coordinator.diagnostic_mode()
         assert mode is not None
 
@@ -729,7 +728,7 @@ class TestExportCsvNotYetElapsedBlanksSelectedFields:
         sections = parse_csv_sections(text, source="test")
 
         prediction_row = next(row for row in sections["predictions"] if row["method"] == "linear")
-        assert prediction_row["predicted"] == repr(500.0)
+        assert prediction_row["predicted"] != ""
         assert prediction_row["pv_selected"] == ""
         assert prediction_row["accuracy"] == ""
 
@@ -737,6 +736,170 @@ class TestExportCsvNotYetElapsedBlanksSelectedFields:
             row for row in sections["prediction_inputs"] if row["key"] == "pv_selected"
         )
         assert pv_selected_row["value"] == ""
+
+
+class TestExportFitReproducibility:
+    """ADR-015 Amendment 2026-09-29 (`TASK-0038-patch-1`): an export
+    carries every input needed to recompute the fit, and the replay
+    really recomputes it -- the real `apply_training_corrections`,
+    `fit_string_model` (all four strategies) and
+    `predict_string_forecast`, nothing stubbed, nothing injected."""
+
+    @staticmethod
+    def _export(coordinator: Any) -> dict[str, list[dict[str, str]]]:
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+        text = mode.export_csv("0")
+        assert text is not None
+        return parse_csv_sections(text, source="original")
+
+    @staticmethod
+    def _replays_cleanly(sections: dict[str, list[dict[str, str]]]) -> list[str]:
+        regenerated = parse_csv_sections(_replay_compare_regressions(sections), source="regen")
+        return compare_sections(sections, regenerated)
+
+    @staticmethod
+    def _plain_setup(*, converter_limit_w: float | None = None) -> Any:
+        coordinator, hass = _make_two_string_setup()
+        _seed(hass, tc._ACTUAL_YIELD_ENTITY, {_DAY_0: 500.0, _DAY_1: 480.0, _DAY_2: 470.0})
+        if converter_limit_w is not None:
+            coordinator._strings[0] = dataclasses.replace(
+                coordinator._strings[0], converter_limit_w=converter_limit_w
+            )
+        coordinator._now = lambda: _PIN + timedelta(minutes=10)
+        assert coordinator.pin_diagnostic_slot(_PIN, now=_PIN + timedelta(minutes=10))
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        return coordinator
+
+    @staticmethod
+    def _weather_setup(*, provider_already_corrects: bool = False) -> Any:
+        coordinator, hass = tc._make_temperature_aware_coordinator()
+        # Real yield history, so the derating correction changes values
+        # (the bare harness has none -> every training row blank).
+        hass.statistics[tc._ACTUAL_YIELD_ENTITY] = {
+            tc._NOW - timedelta(days=d): 450.0 for d in range(8)
+        }
+        coordinator._global_temperature_aware = provider_already_corrects
+        assert coordinator.pin_diagnostic_slot(tc._NOW)
+        coordinator.set_active_diagnostic_mode("compare_regressions")
+        return coordinator
+
+    # -- schema ------------------------------------------------------------
+
+    def test_metadata_carries_the_four_fit_scalars_with_defaults(self) -> None:
+        metadata = self._export(self._plain_setup())["metadata"][0]
+
+        assert len(metadata) == 19
+        assert list(metadata)[-4:] == list(_FIT_METADATA_COLUMNS)
+        assert metadata["converter_limit_w"] == ""
+        assert metadata["provider_already_corrects"] == "false"
+        assert metadata["rated_dc_capacity_wp"] == ""
+        assert float(metadata["coefficient_per_c"]) == -0.004
+
+    def test_metadata_records_configured_values(self) -> None:
+        clipped = self._export(self._plain_setup(converter_limit_w=490.0))["metadata"][0]
+        weather = self._export(self._weather_setup())["metadata"][0]
+        aware = self._export(self._weather_setup(provider_already_corrects=True))["metadata"][0]
+
+        assert clipped["converter_limit_w"] == "490.0"
+        assert weather["rated_dc_capacity_wp"] == "5000.0"
+        assert weather["provider_already_corrects"] == "false"
+        assert aware["provider_already_corrects"] == "true"
+
+    # -- the replay recomputes the whole chain -----------------------------
+
+    def test_clipping_branch_recomputed(self) -> None:
+        sections = self._export(self._plain_setup(converter_limit_w=490.0))
+
+        # 500.0 >= 0.98 * 490 -> excluded by the real exclude_clipped.
+        first = sections["training_pool"][0]
+        assert first["pv_raw"] == "500.0" and first["pv_corrected"] == ""
+        assert first["is_valid"] == "0"
+        assert self._replays_cleanly(sections) == []
+
+    def test_derating_branch_recomputed(self) -> None:
+        sections = self._export(self._weather_setup())
+
+        row = sections["training_pool"][0]
+        assert row["pv_raw"] == "450.0"
+        assert float(row["pv_corrected"]) == pytest.approx(450.0 / 1.03)
+        assert self._replays_cleanly(sections) == []
+
+    def test_provider_already_corrects_branch_recomputed(self) -> None:
+        sections = self._export(self._weather_setup(provider_already_corrects=True))
+
+        row = sections["training_pool"][0]
+        assert row["pv_corrected"] == row["pv_raw"]
+        assert self._replays_cleanly(sections) == []
+
+    # -- every formerly-echoed layer now has teeth -------------------------
+
+    @pytest.mark.parametrize(
+        ("setup", "section", "row", "field", "value"),
+        [
+            ("plain", "training_pool", 1, "pv_corrected", "479.0"),
+            ("plain", "predictions", 2, "predicted", "1.0"),
+            ("clipped", "metadata", 0, "converter_limit_w", "1000.0"),
+            ("weather", "metadata", 0, "coefficient_per_c", "-0.01"),
+            ("weather", "metadata", 0, "rated_dc_capacity_wp", "50000.0"),
+            ("weather", "metadata", 0, "provider_already_corrects", "true"),
+        ],
+    )
+    def test_tampering_with_a_formerly_echoed_value_is_caught(
+        self, setup: str, section: str, row: int, field: str, value: str
+    ) -> None:
+        coordinator = {
+            "plain": lambda: self._plain_setup(),
+            "clipped": lambda: self._plain_setup(converter_limit_w=490.0),
+            "weather": lambda: self._weather_setup(),
+        }[setup]()
+        sections = self._export(coordinator)
+        assert self._replays_cleanly(sections) == []
+
+        sections[section][row][field] = value
+
+        assert self._replays_cleanly(sections) != []
+
+    def test_fixture_predating_the_amendment_is_rejected_not_defaulted(self) -> None:
+        sections = self._export(self._plain_setup())
+        del sections["metadata"][0]["rated_dc_capacity_wp"]
+
+        with pytest.raises(AssertionError, match="predates.*rated_dc_capacity_wp"):
+            _replay_compare_regressions(sections)
+
+    # -- predictions come from the exported pool, never the cache ----------
+
+    def test_predictions_ignore_a_poisoned_cache(self) -> None:
+        coordinator = self._plain_setup()
+        clean = self._export(coordinator)["predictions"]
+        coordinator.cache.set_diagnostic_fit("0", {"linear": 12345.0, "wls2": -1.0})
+
+        assert self._export(coordinator)["predictions"] == clean
+
+    def test_predictions_present_with_an_empty_cache(self) -> None:
+        coordinator = self._plain_setup()
+        assert coordinator.cache.diagnostic_fit("0") is None
+
+        predictions = self._export(coordinator)["predictions"]
+
+        assert [row["method"] for row in predictions] == list(
+            _string_computation_mod.REGRESSION_STRATEGIES
+        )
+
+    def test_fit_failure_still_exports_training_data(self, monkeypatch: Any) -> None:
+        coordinator = self._plain_setup()
+        mode = coordinator.diagnostic_mode()
+        assert mode is not None
+
+        def _boom(*_args: Any, **_kwargs: Any) -> dict[str, float]:
+            raise RuntimeError("singular")
+
+        monkeypatch.setattr(mode, "_predict_all_methods", _boom)
+        sections = parse_csv_sections(mode.export_csv("0") or "", source="boom")
+
+        assert sections["predictions"] == []
+        assert len(sections["training_pool"]) == _WINDOW_DAYS
+        assert sections["metadata"][0]["converter_limit_w"] == ""
 
 
 class TestExportReplayRoundTrip:
@@ -809,12 +972,18 @@ class TestExportReplayRoundTrip:
         assert compare_sections(original, regenerated) != []
 
 
+#: The four `# metadata` columns ADR-015's 2026-09-29 Amendment added --
+#: the fit chain's remaining inputs. Absent = a pre-amendment export.
+_FIT_METADATA_COLUMNS = (
+    "converter_limit_w",
+    "coefficient_per_c",
+    "provider_already_corrects",
+    "rated_dc_capacity_wp",
+)
+
+
 def _parse_or_none(value: str) -> float | None:
     return float(value) if value != "" else None
-
-
-def _to_nan_array(values: list[float | None]) -> NDArray[np.float64]:
-    return np.array([v if v is not None else np.nan for v in values], dtype=np.float64)
 
 
 def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> str:
@@ -827,19 +996,28 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
     `tests/diagnostics/test_csv_regression_fixtures.py`'s generic
     runner, registered there under this mode's own key.
 
-    `apply_training_corrections`'s own correction parameters
-    (`converter_limit_w`/`coefficient_per_c`/`provider_already_corrects`/
-    `rated_dc_capacity_wp`) aren't part of the `# metadata` schema (only
-    `temperature_tier` is) — recomputing `pv_corrected` from `pv_raw`
-    would need config this replay doesn't have. Instead,
-    `string_computation.apply_training_corrections` is monkeypatched
-    for the duration of this one call to return the fixture's own
-    recorded `pv_corrected` values directly, bypassing recomputation —
-    the correction *logic* is `string_computation.py`'s own
-    zero-mocking test concern (`tests/test_string_computation.py`), not
-    this fixture's.
+    **Nothing is echoed or stubbed** (ADR-015 Amendment 2026-09-29,
+    `TASK-0038-patch-1`). The file's `# metadata` carries every per-string
+    scalar the fit chain needs (`converter_limit_w`/`coefficient_per_c`/
+    `provider_already_corrects`/`rated_dc_capacity_wp`, on top of the
+    five `RegressionSettings` scalars), so the real
+    `apply_training_corrections`, `fit_string_model` (all four
+    strategies) and `predict_string_forecast` run against the raw
+    `# training_pool` columns, and `pv_corrected`/`predicted`/`accuracy`
+    are recomputed and compared like everything else. The one value
+    taken on trust is `target_cell_temperature` (a `# prediction_inputs`
+    scalar): how the coordinator resolves it is outside the fit.
+
+    A fixture missing any of the four new metadata columns predates the
+    amendment; it is rejected loudly (never defaulted) so a stale file
+    cannot silently replay against made-up config.
     """
     metadata = sections["metadata"][0]
+    missing = [c for c in _FIT_METADATA_COLUMNS if c not in metadata]
+    assert not missing, (
+        f"fixture predates the fit-reproducibility metadata (missing {missing}); "
+        "re-export it from a current build (ADR-015 Amendment 2026-09-29)"
+    )
     string_index = int(metadata["string_index"])
     string_name = metadata["string_name"]
     window_days = int(metadata["window_days"])
@@ -860,9 +1038,6 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
     pv_raw_by_offset: dict[int, list[float | None]] = {
         offset: [None] * window_days for offset in offsets
     }
-    pv_corrected_by_offset: dict[int, list[float | None]] = {
-        offset: [None] * window_days for offset in offsets
-    }
     temperature_by_offset: dict[int, list[float | None]] | None = (
         {offset: [None] * window_days for offset in offsets}
         if temperature_tier is not None
@@ -873,7 +1048,6 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
         day_index = int(row["day_index"])
         fc_by_offset[offset][day_index] = _parse_or_none(row["fc_raw"])
         pv_raw_by_offset[offset][day_index] = _parse_or_none(row["pv_raw"])
-        pv_corrected_by_offset[offset][day_index] = _parse_or_none(row["pv_corrected"])
         if temperature_by_offset is not None:
             temperature_by_offset[offset][day_index] = _parse_or_none(row["temperature_raw"])
 
@@ -881,7 +1055,6 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
     fc_selected = _parse_or_none(prediction_inputs.get("fc_selected", ""))
     pv_selected = _parse_or_none(prediction_inputs.get("pv_selected", ""))
     target_cell_temperature = _parse_or_none(prediction_inputs.get("target_cell_temperature", ""))
-    predictions = {row["method"]: float(row["predicted"]) for row in sections["predictions"]}
 
     baseline_entity_id = "replay_baseline"
     actual_yield_entity_id = "replay_actual_yield"
@@ -914,9 +1087,6 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
                 return {sensor_id: [pv_selected]}
             return {sensor_id: [None]}
 
-        def diagnostic_fit(self, sensor_id: str) -> dict[str, float] | None:
-            return predictions or None
-
     class _ReplayCoordinator:
         cache = _ReplayCache()
 
@@ -929,10 +1099,10 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
                 actual_yield_entity_id=actual_yield_entity_id,
                 temperature_entity_id=temperature_entity_id,
                 temperature_tier=temperature_tier,
-                converter_limit_w=None,
-                coefficient_per_c=0.0,
-                provider_already_corrects=False,
-                rated_dc_capacity_wp=None,
+                converter_limit_w=_parse_or_none(metadata["converter_limit_w"]),
+                coefficient_per_c=float(metadata["coefficient_per_c"]),
+                provider_already_corrects=metadata["provider_already_corrects"] == "true",
+                rated_dc_capacity_wp=_parse_or_none(metadata["rated_dc_capacity_wp"]),
             )
 
         def diagnosed_slot(self, now: datetime | None = None) -> Any:
@@ -961,18 +1131,8 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
         def target_cell_temperature_for_slot(self, index: int, slot_index: int) -> float | None:
             return target_cell_temperature
 
-    def _passthrough_corrections(*_args: Any, **_kwargs: Any) -> dict[int, NDArray[np.float64]]:
-        return {
-            offset: _to_nan_array(pv_corrected_by_offset[offset])[None, :] for offset in offsets
-        }
-
-    original_corrections = _string_computation_mod.apply_training_corrections
-    _string_computation_mod.apply_training_corrections = _passthrough_corrections
-    try:
-        mode = _CompareRegressionsMode(_ReplayCoordinator())
-        result = mode.export_csv(str(string_index))
-    finally:
-        _string_computation_mod.apply_training_corrections = original_corrections
+    mode = _CompareRegressionsMode(_ReplayCoordinator())
+    result = mode.export_csv(str(string_index))
 
     assert isinstance(result, str)
     return result

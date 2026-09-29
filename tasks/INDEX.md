@@ -36,6 +36,7 @@ rule.
 | TASK-0015b-patch-2-plotly-graph-xy-series-format | `series` Entries Reshaped Again — `custom:plotly-graph` x/y Arrays, Not `apexcharts-card` | done | TASK-0015b-patch-1-apexcharts-card-series-format | Lead Agent (inline) |
 | TASK-0015b-patch-3-xy-series-entry-on-base-class | `_xy_series_entry` Moved to `DiagnosticMode` — Shared by Every Diagnostic Mode | done | TASK-0015b-patch-2-plotly-graph-xy-series-format | Lead Agent (inline) |
 | TASK-0038-diagnostic-slot-raw-data-csv-export | Raw-Data CSV Export for a Diagnosed Slot (Debugging/Analysis Aid) | done | — | Lead Agent (inline) |
+| TASK-0038-patch-1-export-fit-reproducibility-metadata | Patch — Make the CSV Export Sufficient to Recompute the Fit (Close the Replay Blind Spot) | done | TASK-0038-diagnostic-slot-raw-data-csv-export | Lead Agent (inline) |
 
 ## Refinement Log
 
@@ -219,6 +220,40 @@ task), ruff and `mypy --strict` clean over `custom_components/shady` and
 human-requested amendments; (a)–(c) are implementation findings, logged so the
 audit trail shows the fixture mechanism's real detection boundary instead of
 implying it covers the whole regression path. |
+
+| 2026-09-29 | TASK-0038-diagnostic-slot-raw-data-csv-export | Created and
+implemented `TASK-0038-patch-1` in one pass (Phase 6 Scenario C -- `TASK-0038`
+stays `done`, untouched) from a direct human request: "ADR-15 and task 38 are
+not completed for me. Close the blind spot. Extend the export CSV to contain all
+meta data needed to calculate the fitting models." Audit of the fit chain
+(`apply_training_corrections` -> `fit_string_model` x4 ->
+`predict_string_forecast`) against the export found **four missing scalars**
+(`converter_limit_w`, `coefficient_per_c`, `provider_already_corrects`,
+`rated_dc_capacity_wp`) and one further gap the request did not name but that
+defeats it: `# predictions` was read from `cache.diagnostic_fit`, keyed by
+`sensor_id` only and not invalidated by pin/unpin, so it could belong to a
+different slot than the freshly gathered `# training_pool` (a recomputing replay
+would then report false mismatches). Changes: `# metadata` 15 -> 19 columns;
+`# predictions` computed from the exported pool via `_predict_all_methods` (fit
+failure isolated -> empty section + log, not a 500);
+`_replay_compare_regressions` now runs the real correction/fit/predict chain (no
+stub, no injected predictions, config from the file). ADR-015 amended (Amendment
+block + §5a's "cannot check" paragraph rewritten); `adr/INDEX.md` gained the
+missing ADR-015 row. Six `synthetic/` fixtures migrated; one
+(`future_slot_blank_actuals_pass.csv`) had hand-injected `wls2=450.0` that the
+real fit refutes (all strategies pass 500.0 through on a pool with no valid
+data) -- regenerated; six new `synthetic/` fixtures (clipping, derating,
+provider-corrects, three tampered-layer `FAIL` cases). Pre-amendment exports are
+rejected loudly rather than defaulted; `curated/` held none, so nothing real was
+invalidated. Verified: full suite 743 passed (new class
+`TestExportFitReproducibility`, 15 cases, plus 6 new fixture cases), ruff/mypy
+clean, mutation check (replay ignoring the new columns -> 11 tests fail).
+Reviewer pass done inline (no sub-agents available). | The human's request was
+open-ended ("all meta data needed"), so the Lead Agent enumerated the chain's
+inputs against the export rather than guessing; the cache-staleness fix was
+folded in because without it the strengthened replay is unreliable on real
+exports, and it is recorded in ADR-015's Amendment as a Lead-Agent decision
+**pending human confirmation**. |
 
 ## Audit Groups
 

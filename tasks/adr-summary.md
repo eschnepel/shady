@@ -584,8 +584,19 @@ signature or return shape changes. `CompareRegressionsMode.export_csv` is the
 only caller that ever passes `True`, calling `build_pool` directly rather than
 through `string_computation.fit_string_model`'s wrapper (a new
 `diagnostics --> regression` edge, §2 above) since the weight breakdown is
-method-independent and no fitting is actually needed for the export
-(`extra_fit()`'s own cached predictions already cover `# predictions`).
+method-independent (`# predictions` is computed from the very pool the export
+carries, via `_predict_all_methods` -- not read from `extra_fit()`'s cache,
+which can belong to a different slot; ADR-015 Amendment 2026-09-29).
+
+**Self-sufficient for recomputing the fit (2026-09-29).** `# metadata` (19
+columns) carries every scalar the chain `apply_training_corrections` ->
+`fit_string_model` (x4) -> `predict_string_forecast` consumes: the five
+`RegressionSettings` scalars, `temperature_tier`, `window_days`, and
+`converter_limit_w`/`coefficient_per_c`/`provider_already_corrects`/
+`rated_dc_capacity_wp` (blank = `None`). A fixture replay therefore recomputes
+`pv_corrected`, every `predicted` and `accuracy` for real; only raw readings,
+`fc_selected`/`pv_selected` and `target_cell_temperature` are taken on trust. A
+pre-amendment export is rejected, never defaulted.
 
 Chosen over a clipboard-copy button + custom frontend card specifically because
 it needs no new frontend technology (`hass.http.register_view` is a plain Python

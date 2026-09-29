@@ -7,6 +7,13 @@
   original schema. Moved `review` → `todo` → `in-progress` in one sitting, no
   separate human gate in between (Phase 3's readiness check — no dependency
   tasks, nothing to propagate — cleared immediately).
+- **Superseded in part by:**
+  `TASK-0038-patch-1-export-fit-reproducibility-metadata` (2026-09-29) --
+  `# metadata` is now 19 columns (four fit scalars added), `# predictions` is
+  computed from the exported pool rather than read from the cache, and the
+  fixture replay no longer echoes `pv_corrected`/`predicted`. The schema sample
+  and the "echoed" statements below describe the original delivery. This task
+  stays `done`.
 - **Related ADRs:** ADR-015 (`Status: Accepted` — the delivery-mechanism/
   module-shape decision this task implements, including the 2026-09-27
   amendments), ADR-013 §3 (amended by ADR-015 — the "no change to
