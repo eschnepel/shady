@@ -1,6 +1,10 @@
 # ADR-000 – Code Quality Standards, Programming Style & Core Concepts
 
-**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-19
+**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-26 — §3's
+`http_export.py` bullet revised (no standalone `diagnostics/export.py` module —
+draft ADR-015 now places CSV export on `DiagnosticMode` itself, `TASK-0038`, not
+yet implemented); previously 2026-09-24 — §3 gained `http_export.py`; before
+that, 2026-09-19
 
 This ADR is kept current in place: each section below reflects the project's
 present conventions directly, rather than a separate change log. Notable
@@ -163,6 +167,7 @@ flowchart BT
     cache["cache.py"]
     coordinator["coordinator.py"]
     entity_glue["sensor.py / config_flow.py / select.py / button.py"]
+    http_export["http_export.py"]
     init["__init__.py"]
 
     forecast_adjust --> regression
@@ -180,10 +185,13 @@ flowchart BT
     coordinator --> providers
     entity_glue --> coordinator
     entity_glue --> providers
+    http_export --> coordinator
+    http_export --> diagnostics
     init --> coordinator
     forecast_adjust -.->|"reverse transform, ADR-003b §1b/§2"| yield_correction
     diagnostics -.->|"construction-time coordinator ref, TYPE_CHECKING-only (ADR-004 §5, 2026-09-01)"| coordinator
     init -.->|"platform forwarding, HA's own name-based mechanism — not a Python import"| entity_glue
+    init -.->|"hass.http.register_view, HA's own view registry — not a Python import (ADR-015)"| http_export
 ```
 
 - **`providers/`** (`discovery.py`, `normalize.py`, `base.py`, `temperature.py`)
@@ -233,16 +241,21 @@ flowchart BT
   ADR-012 §1) plus one concrete mode today, `CompareRegressionsMode`; see
   ADR-004 §1/§5 for the source of truth. Calls `string_computation.py` for its
   own extra per-slot fitting (ADR-014) and `aggregation.py` for the accuracy
-  calculation. **As of the 2026-09-01 amendment, no longer pure:** every
-  `DiagnosticMode` is constructed with the owning `ShadyCoordinator` instance
-  and may call its public interface directly (`cache`, `strings()`, and any
-  accessor added later) — `coordinator.py` no longer needs to pre-build each
-  mode's full input context itself, only persist whatever a mode's `extra_fit()`
-  returns (the same division of labor it already has for `push()`-ing a
-  provider's `forward()` result). The dependency this creates back onto
-  `coordinator.py` is resolved at the import level only (`TYPE_CHECKING`-only,
-  dashed edge above) — it is a real runtime dependency on an HA-facing object,
-  not just a type reference.
+  calculation. **As of draft ADR-015 §2/§3 (`TASK-0038`, not yet implemented):**
+  `DiagnosticMode` gains an optional `export_csv(sensor_id)` method (base
+  default `None`, the same role `None` already plays for `extra_fit()`) plus a
+  shared, format-only `_write_csv_sections` static helper — each mode owns its
+  own export content the same way it owns `compute()`/`extra_fit()`; there is no
+  separate `export.py` module. **As of the 2026-09-01 amendment, no longer
+  pure:** every `DiagnosticMode` is constructed with the owning
+  `ShadyCoordinator` instance and may call its public interface directly
+  (`cache`, `strings()`, and any accessor added later) — `coordinator.py` no
+  longer needs to pre-build each mode's full input context itself, only persist
+  whatever a mode's `extra_fit()` returns (the same division of labor it already
+  has for `push()`-ing a provider's `forward()` result). The dependency this
+  creates back onto `coordinator.py` is resolved at the import level only
+  (`TYPE_CHECKING`-only, dashed edge above) — it is a real runtime dependency on
+  an HA-facing object, not just a type reference.
 - **`cache.py`** — pure logic: index-addressable time-series store, generic over
   any `sensor_id` (used for FC/PV history and the day-snapshot array, and, per
   ADR-003c, weather-forecast/cell-or-ambient temperature pairs), plus simple
@@ -299,6 +312,13 @@ flowchart BT
   `AUDIT-0009-entity-layer`) — not module-level drift, and not a case this
   diagram's `entity_glue --> coordinator` edge needs a second edge for, since
   `sensor.py` still never *imports* `cache.py` itself.
+- **`http_export.py`** (ADR-015, draft) — one `HomeAssistantView`, registered
+  from `__init__.py` the same way platforms are forwarded (dashed edge above,
+  HA's own registration mechanism, not a Python import); resolves the active
+  `DiagnosticMode` via `coordinator.py`'s public interface and calls that mode's
+  own `export_csv(sensor_id)` — mode-agnostic itself, no knowledge of which mode
+  is active or what its export contains. Not entity glue — no entity involved —
+  hence its own node rather than folded into `entity_glue` above.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 Dependencies point upward only. The pure-tier modules (§6's canonical list)

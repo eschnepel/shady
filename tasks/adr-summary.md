@@ -543,6 +543,29 @@ canonical: correction → **one** final output clamp
   base class doesn't need revisiting later. No task exists for either; unlike §9
   below, this is not a permanent rejection — either may be scheduled in a future
   planning pass.
+- **Diagnostic slot raw-data CSV export** (ADR-015, `Status: Proposed`,
+  `TASK-0038` `review`) — a registered `HomeAssistantView` (`http_export.py`,
+  new §2 node) is genuinely mode-agnostic: it resolves the active
+  `DiagnosticMode` and calls that mode's own optional `export_csv(sensor_id)`
+  method, a new addition to `DiagnosticMode` itself (`diagnostics/base.py`, base
+  default `None`, the same role `None` already plays for `extra_fit()`) plus a
+  shared, format-only `_write_csv_sections` static helper (mirrors
+  `_xy_series_entry`'s own placement). `CompareRegressionsMode` overrides it
+  with a CSV covering one string's diagnosed-slot training data (every
+  neighbor-offset/day point, decomposed weight components, all four
+  `regression/` strategies' predictions) — deliberately not a standalone
+  `diagnostics/export.py` module, since ADR-013's own sketched future modes have
+  fundamentally different raw-data shapes no single schema could serve.
+  `build_pool` (`regression/base.py`) gains an optional second return value (a
+  keyword-only flag, default off) carrying the weight-component breakdown
+  current callers never see — no existing caller's signature changes. Chosen
+  over a clipboard-copy button + custom frontend card specifically because it
+  needs no new frontend technology (`hass.http.register_view` is a plain Python
+  API; a Markdown card's sanitizer strips `onclick` handlers but preserves plain
+  links) — see ADR-015 for the full comparison, and its §3 for why ADR-013's own
+  "no change to `diagnostics/base.py`" claim needed narrowing. `TASK-0038` stays
+  `review` pending human confirmation of this draft ADR before implementation
+  begins.
 
 ## 9 — Explicit exclusions (never implement these)
 

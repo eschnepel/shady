@@ -35,6 +35,14 @@ likely shape, but that is explicitly not decided in this document). This ADR's
 only real claim is architectural: **both fit inside ADR-004's `DiagnosticMode`
 base class as written, with no change to `diagnostics/base.py`.**
 
+**Amendment (2026-09-26, ADR-015):** narrowed — `diagnostics/base.py` does gain
+one small, optional, additive change to support a raw-data CSV export cleanly
+across every mode (`DiagnosticMode.export_csv`, base-default `None`, plus a
+shared formatting-only static helper), which this document did not anticipate
+when it was written. `DiagnosticResult`'s own shape still does not change, which
+is what this claim was actually protecting; see ADR-015 §2/§3 for the full
+addition.
+
 ______________________________________________________________________
 
 ## Decision
@@ -61,7 +69,9 @@ many values `compute()` decides to gather" freedom `CompareRegressionsMode`
 already has for its one slot, and no shared type to leave a field `None` in —
 both sketched modes simply build whatever per-slot shape they need internally,
 with no single "training pool" to plot per slot the way one diagnosed slot has
-(ADR-004 §2).
+(ADR-004 §2). (This specific claim is about `compute()`'s own output shape and
+still holds; see the header's 2026-09-26 amendment for the one place this
+document's broader "no change to `diagnostics/base.py`" claim was narrowed.)
 
 `compare_regressions_daily` would return one `sensor_id` (a fixed sentinel, or
 one per compared method if rendered as separate entities — still undecided, per

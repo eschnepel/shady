@@ -1,6 +1,7 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-23
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-24 — §5
+cross-references draft ADR-015 (`TASK-0038`, CSV export); previously 2026-09-23
 
 This ADR is kept current in place: §1/§1a describe the current
 `ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
@@ -933,7 +934,14 @@ are currently being displayed, rather than momentarily lagging behind it.
 `DIAGNOSTIC_MODES` option list and persisting the chosen option for
 `coordinator.py` to read — the same "thin entity glue" philosophy `button.py`'s
 `EffyRecalculateButton`-style pattern (ADR-002 §1) already established, just for
-a multi-value control instead of a single-purpose trigger. The actual diagnostic
+a multi-value control instead of a single-purpose trigger. **Amendment
+(2026-09-24, draft ADR-015):** a raw-data CSV export of a diagnosed slot's
+training inputs is a sibling concern to this section's own thin-glue framing —
+it reads the same `CompareRegressionsMode`-gathered data this ADR's sensors
+already expose, generalized from "thin entity glue" to "thin HA glue" more
+broadly — but is delivered via a registered HTTP view rather than an entity, and
+lives in `diagnostics/export.py`, not as a method on `CompareRegressionsMode`;
+see ADR-015 for the full decision, not repeated here. The actual diagnostic
 calculation lives in the new pure package `diagnostics/` (§1a has the full
 `DiagnosticMode` shape): `diagnostics/base.py` holds the shared `DiagnosticMode`
 ABC; `diagnostics/ compare_regressions.py` holds this ADR's one concrete mode,
