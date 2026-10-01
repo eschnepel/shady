@@ -3,22 +3,85 @@
   "name": "Shady",
   "config": {
     "step": {
-      "user": {
-        "title": "Shady konfigurieren",
-        "description": "Platzhalter – Config-Flow-Felder gemäß ADR-001 §6 (z.B. Baseline-Kandidat, Trainingsfenster, Regressionsmethode).",
-        "data": {}
+      "baseline": {
+        "title": "Shady \u2013 Baseline",
+        "description": "Die Standard-Baseline-Prognose, die jeder String verwendet, sofern er sie nicht überschreibt. Dies wird zuerst abgefragt, bevor irgendein String konfiguriert wird.",
+        "data": {
+          "baseline_candidate": "Standard-Baseline-Prognose",
+          "baseline_manual_entity_id": "Manuelle Baseline-Entity-ID",
+          "baseline_manual_attribute": "Manuelles Baseline-Attribut (optional)",
+          "baseline_manual_shape": "Manuelles Baseline-Datenformat",
+          "temperature_aware": "Baseline berücksichtigt Temperatur bereits"
+        }
+      },
+      "strings": {
+        "title": "Shady \u2013 Strings",
+        "description": "Jede Entity auswählen, die ein PV-String ist. Das Hinzufügen oder Entfernen einer Entity hier ist die einzige Möglichkeit, einen String hinzuzufügen oder zu entfernen.",
+        "data": {
+          "strings": "PV-String-Sensoren"
+        }
+      },
+      "string_settings_hub": {
+        "title": "Shady \u2013 String konfigurieren",
+        "description": "Einen String zum weiteren Konfigurieren auswählen, oder Fertig, um fortzufahren.",
+        "data": {
+          "entity_id": "String"
+        }
+      },
+      "string_settings_edit": {
+        "title": "Shady \u2013 String-Einstellungen",
+        "description": "Einstellungen für diesen einen String. Jedes Feld wird immer angezeigt; ein Feld auf seinem Standardwert belassen, um die zugehörige Korrektur für diesen String zu überspringen.",
+        "data": {
+          "name": "Name (optional)",
+          "baseline_override": "Baseline-Überschreibung (optional; bei Standardwert wird die globale Baseline verwendet)",
+          "temperature_source_entity_id": "Temperaturquelle überschreiben (optional)",
+          "converter_limit_w": "Wechselrichter-/Konverter-AC-Leistungsgrenze (W, optional)",
+          "temperature_coefficient_pct_per_c": "Temperaturkoeffizient (%/°C)",
+          "rated_dc_capacity_wp": "Nennleistung DC (Wp, optional)"
+        }
+      },
+      "regression_tuning": {
+        "title": "Shady \u2013 Regressions-Feinabstimmung",
+        "description": "Globale Einstellungen für die Verschattungsmodell-Regression. Diese gelten für jeden konfigurierten String.",
+        "data": {
+          "window_days": "Trainingsfenster (Tage)",
+          "regression_method": "Regressionsmethode",
+          "smoothing_radius": "Glättungsradius (Slots)",
+          "neighbor_fitting_cutoff": "Nachbar-Ausschlussschwelle",
+          "recency_decay_max": "Maximale Aktualitäts-Abschwächung",
+          "clipping_threshold": "Clipping-Schwelle (% der Wechselrichterleistung)"
+        }
+      },
+      "advanced_optional": {
+        "title": "Shady \u2013 Erweiterte & optionale Einstellungen",
+        "description": "Temperatur-Derating- und Intraday-Korrektur-Einstellungen. Global, gültig für jeden konfigurierten String, sofern ein String seine Temperaturquelle nicht überschreibt.",
+        "data": {
+          "default_temperature_source": "Standard-Temperaturquelle (optional)",
+          "max_uplift_c": "Maximaler Umgebungs-zu-Zelle-Aufschlag (°C)",
+          "weather_forecast_temperature_entity": "Wetter-Entity für Temperaturvorhersage (optional)",
+          "temperature_regression_method": "Regressionsmethode für Temperatur",
+          "intraday_correction_mode": "Intraday-Abweichungskorrektur-Modus",
+          "intraday_correction_cutoff": "Intraday-Abweichungskorrektur-Schwelle",
+          "window_slots": "Intraday-Rolling-Fenster (Slots)",
+          "ramp_slots": "Intraday-Ramp-/Blend-Dauer (Slots)"
+        }
+      },
+      "reconfigure": {
+        "title": "Shady \u2013 Neu konfigurieren",
+        "description": "Einen Bereich zum Ändern auswählen, oder Speichern & Fertig, um die Änderungen zu übernehmen.",
+        "menu_options": {
+          "baseline": "Baseline",
+          "strings": "Strings",
+          "regression_tuning": "Regressions-Feinabstimmung",
+          "advanced_optional": "Erweiterte & optionale Einstellungen",
+          "finish": "Speichern & Fertig"
+        }
       }
     },
-    "error": {}
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Shady Optionen",
-        "data": {}
-      }
-    },
-    "error": {}
+    "error": {},
+    "abort": {
+      "reconfigure_successful": "Neukonfiguration erfolgreich."
+    }
   },
   "entity": {
     "sensor": {}
