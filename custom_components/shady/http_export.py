@@ -14,9 +14,26 @@ contains; `HTTPStatus.NOT_FOUND` for every "nothing to export" case
 (unresolvable config entry, unresolvable `mode`, or `export_csv`
 returning `None`), indistinguishable from each other by design.
 
-`requires_auth = True` (ADR-015 §1): delegates entirely to Home
-Assistant's own session/long-lived-token auth, no credential surface of
-its own.
+`requires_auth = True` (ADR-015 §1, narrowed by ADR-015 §8): delegates
+entirely to Home Assistant's own bearer-token/signed-path auth, no
+credential surface of its own.
+
+**`mode.export_csv(sensor_id)` runs off the event loop (ADR-015 §9,
+2026-09-29 Amendment).** `get()` itself is an aiohttp handler, invoked
+directly on the event loop -- but `CompareRegressionsMode.export_csv`
+(and any future mode's own override) can reach `cache.
+get_pinned_slot_pool`'s same blocking recorder read
+`coordinator.py`'s own module docstring already warns
+`_fetch_actual_yield_statistics`/`diagnostic_result()` about, if the
+diagnosed slot's own cached pool has any gap left to fill. Dispatched
+via `homeassistant.components.recorder.get_instance(hass)
+.async_add_executor_job` -- the exact same recorder-executor pattern
+`coordinator.py`'s own `_async_recompute_diagnostic_result`/
+`async_refit`/`_async_intraday_tick` already use -- rather than calling
+it inline, which is what let a real Home Assistant install's own
+asyncio blocking-call detector (`homeassistant.util.loop.
+raise_for_blocking_call`) flag, then fail, the first real (signed-path-
+authenticated) request this view ever actually served.
 
 Registered once per `hass`, not once per config entry — see
 `__init__.py`'s own registration guard, since the `{config_entry_id}`
@@ -31,6 +48,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.recorder import get_instance
 
 from .const import DOMAIN
 
@@ -73,7 +91,12 @@ class ShadyExportCsvView(HomeAssistantView):  # type: ignore[misc]
         # branch here (ADR-015 §4: zero mode-specific validation in the
         # HTTP layer).
         sensor_id = request.query.get("sensor_id", "")
-        csv_text = mode.export_csv(sensor_id)
+        # Module docstring, ADR-015 §9: off the event loop, on the
+        # recorder's own dedicated executor -- `export_csv` may need to
+        # fill a gap in the diagnosed slot's cached pool via the same
+        # blocking recorder read `coordinator.py` already dispatches
+        # this same way everywhere else it can be reached.
+        csv_text = await get_instance(hass).async_add_executor_job(mode.export_csv, sensor_id)
         if csv_text is None:
             return web.Response(status=HTTPStatus.NOT_FOUND)
 

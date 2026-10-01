@@ -686,13 +686,19 @@ class CompareRegressionsMode(DiagnosticMode):
         `_gather_pool` actually fetched. Not re-derived from `diagnosed`
         alone, which doesn't carry the "does a *future* pin still anchor
         the window at today" nuance that method's own `is_pinned` check
-        applies."""
+        applies. Both dates are resolved in HA's configured local
+        timezone (`ShadyCoordinator.local_date`, TASK-0039), matching
+        `get_pinned_slot_pool`'s own local-calendar-day anchor — not
+        `.date()` directly on either `datetime`, which would silently
+        drift onto `UTC`'s calendar day instead."""
         now = self._coordinator.now()
-        today = now.date()
+        today = self._coordinator.local_date(now)
         if self._coordinator.is_following_latest_diagnostic_slot():
             anchor = today
         else:
-            pinned_date = self._coordinator.diagnostic_slot_timestamp().date()
+            pinned_date = self._coordinator.local_date(
+                self._coordinator.diagnostic_slot_timestamp()
+            )
             anchor = min(pinned_date, today)
         return anchor - timedelta(days=window_days - 1)
 

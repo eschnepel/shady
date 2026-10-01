@@ -198,11 +198,22 @@ class TestDiagnosticsSensorNeverCallsComputeItself:
         sensor_0 = ShadyDiagnosticsSensor(coordinator, tf._make_entry(), "0", "String 0")
 
         assert sensor_0.native_value == "ok"
-        assert sensor_0.extra_state_attributes == {"n": 1}
+        attrs = sensor_0.extra_state_attributes
+        # `export_csv_url` (ADR-015 §8) is a genuinely new key added on
+        # top of `result.attributes`'s own `{"n": 1}`, not a reshape of
+        # it — checked for its own real shape (not merely "present"),
+        # `"n"` checked for exact pass-through, same as before this key
+        # existed.
+        assert attrs["n"] == 1
+        assert attrs["export_csv_url"].startswith(
+            f"/api/shady/{tf._make_entry().entry_id}/export_csv?sensor_id=0&mode=compare_regressions"
+        )
+        assert "authSig=" in attrs["export_csv_url"]
+        assert set(attrs) == {"n", "export_csv_url"}
         # Reading again must not bump `n` (which only `compute()`
         # increments) — confirms the sensor is reading the same cached
         # object, not triggering a fresh call.
-        assert sensor_0.extra_state_attributes == {"n": 1}
+        assert sensor_0.extra_state_attributes["n"] == 1
         assert fake_mode.compute_calls == 1
 
 

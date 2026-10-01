@@ -39,9 +39,17 @@ TASK-0015b):** `pinned_reference` is a single cache-wide `date | None`
 scalar (`pin_reference()`/`clear_reference()`) — ADR-004 §2a's "one
 diagnosed-slot state per config entry, not one per sensor" lives here,
 since every diagnostic sensor's `get_pinned_slot_pool` call shares the
-one `Cache` instance. `get_pinned_slot_pool` is the third accessor
-promised (but deliberately deferred) by this module's docstring above:
-one value per day in a `window_days`-day window, all for the same
+one `Cache` instance. Both this `date` and "today" (`get_pinned_slot_
+pool`'s own fallback anchor) are always resolved in this cache's
+configured local timezone (`__init__`'s `local_tz`, `_local_date`/
+`_local_midnight` — TASK-0039), not whatever tzinfo a caller's `now`/
+`reference` happens to carry: a calendar day is a local-wall-clock
+concept (ADR-004 §2's "diagnosed slot" pin, `coordinator.py`'s own
+`diagnosed_slot()` `slot_of_day`), unlike the absolute-instant `index_
+for`/`timestamp_for` arithmetic above, which stays timezone-invariant
+by construction. `get_pinned_slot_pool` is the third accessor promised
+(but deliberately deferred) by this module's docstring above: one
+value per day in a `window_days`-day window, all for the same
 `slot_of_day`, anchored on `pinned_reference` when set to a date no
 later than today, otherwise today-anchored — see the method's own
 docstring for the exact window resolution.
@@ -73,6 +81,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from datetime import tzinfo as _tzinfo
 from typing import Any, Literal, Protocol, overload
 
 import numpy as np
@@ -276,9 +285,23 @@ class Cache:
     `fetch_fn` (injected, never imported directly).
     """
 
-    def __init__(self, window_days: int, fetch_fn: FetchFn) -> None:
+    def __init__(self, window_days: int, fetch_fn: FetchFn, local_tz: _tzinfo = UTC) -> None:
         self.window_days = window_days
         self._fetch_fn = fetch_fn
+        # HA's configured local timezone (`coordinator.py`'s own
+        # `ZoneInfo(hass.config.time_zone)`), defaulting to `UTC` for
+        # every caller — chiefly this module's own tests — that doesn't
+        # care. Every "which calendar date is this" question the
+        # pinned-diagnostic-reference machinery below asks (`pinned_
+        # reference`/`get_pinned_slot_pool`/`trim`'s own pinned floor)
+        # is answered in *this* timezone, not whatever arbitrary tzinfo
+        # the `datetime` passed in happens to carry — see `_local_date`/
+        # `_local_midnight` just below. Absolute-instant arithmetic
+        # elsewhere in this module (`index_for`/`timestamp_for`, every
+        # plain range read) is entirely unaffected: it never asks
+        # "which calendar day", only "how many 5-minute slots since
+        # `EPOCH`", which is timezone-invariant by construction.
+        self._local_tz = local_tz
         self._values: dict[str, list[float | None | str]] = {}
         self._list_offset: dict[str, int] = {}
         self._validated: dict[str, tuple[int, int | None]] = {}
@@ -355,6 +378,19 @@ class Cache:
     def timestamp_for(index: int) -> datetime:
         """The timestamp at the start of absolute slot `index`."""
         return EPOCH + index * SLOT_DURATION
+
+    def _local_date(self, moment: datetime) -> date:
+        """`moment`'s calendar date in this cache's configured local
+        timezone — not `moment`'s own (typically `UTC`) tzinfo's date,
+        which is what `.date()` directly on it would give. The one
+        place "what date is this" is answered anywhere in this module."""
+        return moment.astimezone(self._local_tz).date()
+
+    def _local_midnight(self, day: date) -> datetime:
+        """The absolute instant local midnight starts on `day`, in this
+        cache's configured local timezone — the inverse of `_local_
+        date`: `self._local_date(self._local_midnight(d)) == d`."""
+        return datetime(day.year, day.month, day.day, tzinfo=self._local_tz)
 
     # -- introspection (read-only; mainly for tests/callers to inspect state) --
 
@@ -569,12 +605,7 @@ class Cache:
         now = reference if reference is not None else datetime.now(UTC)
         floor = self.index_for(now) - self._window_length() + 1
         if self._pinned_reference is not None:
-            pinned_now = datetime(
-                self._pinned_reference.year,
-                self._pinned_reference.month,
-                self._pinned_reference.day,
-                tzinfo=UTC,
-            )
+            pinned_now = self._local_midnight(self._pinned_reference)
             floor = min(floor, self.index_for(pinned_now) - self._window_length() + 1)
 
         for sensor_id in list(self._values):
@@ -932,14 +963,14 @@ class Cache:
         `None` instead of the real data the slot has by then.
         """
         now = reference if reference is not None else datetime.now(UTC)
-        today = now.date()
+        today = self._local_date(now)
         pinned_reference = self._pinned_reference
         is_pinned = pinned_reference is not None and pinned_reference <= today
         anchor = pinned_reference if pinned_reference is not None and is_pinned else today
         window_start_date = anchor - timedelta(days=self.window_days - 1)
 
         def _day_start_index(day: date) -> int:
-            return self.index_for(datetime(day.year, day.month, day.day, tzinfo=UTC))
+            return self.index_for(self._local_midnight(day))
 
         window_start_index = _day_start_index(window_start_date)
         window_end_index = _day_start_index(anchor) + SLOTS_PER_DAY - 1

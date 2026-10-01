@@ -213,3 +213,52 @@ class TestExportCsvNoneBecomesNotFound:
         response = _run(view.get(request, entry_id))
 
         assert response.status == 404
+
+
+class TestExportRunsOffTheEventLoop:
+    """ADR-015 §9 (2026-09-29 Amendment): a real Home Assistant install's
+    own asyncio blocking-call detector caught `export_csv` reaching a
+    blocking recorder read directly on the event loop the first time
+    this view ever actually served a signed-path-authenticated request
+    (`sensor.py`'s ADR-015 §8 `export_csv_url`, 2026-09-29, is what made
+    that request reach `get()`'s body at all — every earlier request
+    had 401'd at HA's own auth middleware first). Guards against
+    reintroducing that regression: `get()` must dispatch
+    `mode.export_csv(sensor_id)` via `get_instance(hass).
+    async_add_executor_job`, not call it inline."""
+
+    def test_export_csv_dispatched_through_the_recorder_executor(self) -> None:
+        coordinator, hass = _make_two_string_setup()
+        _activate(coordinator)
+        coordinator._diagnostic_modes["sentinel_mode"] = _SentinelMode()
+        sentinel_mode = coordinator.diagnostic_mode_by_key("sentinel_mode")
+        entry_id = _with_entry_in_hass_data(coordinator, hass)
+
+        calls: list[tuple[Any, tuple[Any, ...]]] = []
+        real_get_instance = _http_export_mod.get_instance
+
+        class _RecordingRecorderInstance:
+            """Real (non-`Mock`) stand-in — records what would have run
+            on the recorder's own executor, then actually runs it (so
+            the response is still exercised end-to-end), rather than a
+            bare spy that never calls through."""
+
+            async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
+                calls.append((func, args))
+                return func(*args)
+
+        def _fake_get_instance(passed_hass: Any) -> Any:
+            assert passed_hass is hass
+            return _RecordingRecorderInstance()
+
+        _http_export_mod.get_instance = _fake_get_instance  # type: ignore[attr-defined]
+        try:
+            view = ShadyExportCsvView()
+            request = _FakeRequest(hass, {"sensor_id": "7", "mode": "sentinel_mode"})
+            response = _run(view.get(request, entry_id))
+        finally:
+            _http_export_mod.get_instance = real_get_instance  # type: ignore[attr-defined]
+
+        assert response.status == 200
+        assert response.text == "sentinel:7"
+        assert calls == [(sentinel_mode.export_csv, ("7",))]

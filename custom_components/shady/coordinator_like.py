@@ -43,7 +43,7 @@ that removes the finding rather than hiding it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -157,6 +157,8 @@ class ShadyCoordinatorLike(Protocol):
     def strings(self) -> list[tuple[int, str]]: ...
 
     def now(self) -> datetime: ...
+
+    def local_date(self, moment: datetime) -> date: ...
 
     def diagnosed_slot(self, now: datetime | None = None) -> DiagnosedSlot: ...
 

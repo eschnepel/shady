@@ -275,6 +275,15 @@ class FakeHomeAssistant:
         self.config_entries = FakeConfigEntries()
         self.services = FakeServices()
         self.http = FakeHttp()
+        # Real HA's `hass.config.time_zone` is a plain IANA zone-name
+        # string (ADR-000 §6-adjacent: not a `Mock`) — `coordinator.py`'s
+        # own `ZoneInfo(hass.config.time_zone)` resolves it (TASK-0039).
+        # `"UTC"` matches this fake's own prior implicit behavior (every
+        # calendar-day boundary used to be `UTC`-anchored unconditionally)
+        # so no existing test needs to set this; a test exercising
+        # TASK-0039's local-timezone fix reassigns `hass.config.time_zone`
+        # before constructing its `ShadyCoordinator`.
+        self.config = SimpleNamespace(time_zone="UTC")
         # ADR-002 §1a's own pivot: True by default (the common case for
         # a config-entry reload/late setup) -- tests that exercise the
         # "Home Assistant is still starting" branch set this False
@@ -446,15 +455,51 @@ def _install_ha_stub() -> None:
 
 def _install_sensor_stub() -> None:
     """Extends the already-installed core stub (call `_install_ha_stub()`
-    first) with `homeassistant.const` (`UnitOfPower`/`UnitOfEnergy`) and
+    first) with `homeassistant.const` (`UnitOfPower`/`UnitOfEnergy`),
     `homeassistant.components.sensor` (`SensorEntity`/`SensorDeviceClass`
-    /`SensorStateClass`) — identical between `test_sensor_aggregates.py`
-    and `test_sensor_forecast.py`, the only two consumers, hence shared
-    here rather than left as a second pair of near-duplicates."""
+    /`SensorStateClass`), and `homeassistant.components.http.auth`
+    (`async_sign_path`, ADR-015 §8) — identical between
+    `test_sensor_aggregates.py` and `test_sensor_forecast.py`, the only
+    two consumers (both load the real `sensor.py`, which now imports
+    `async_sign_path` at module scope for `ShadyDiagnosticsSensor`'s own
+    `export_csv_url` attribute), hence shared here rather than left as a
+    second pair of near-duplicates. Reuses `sys.modules["homeassistant.
+    components.http"]` if `_install_http_stub()` already registered it
+    (no current test file calls both, but this stays safe either way)
+    rather than assuming it must build that module from scratch."""
     ha = sys.modules["homeassistant"]
     ha_components = sys.modules["homeassistant.components"]
     ha_const = ModuleType("homeassistant.const")
     ha_components_sensor = ModuleType("homeassistant.components.sensor")
+    ha_http = sys.modules.get("homeassistant.components.http") or ModuleType(
+        "homeassistant.components.http"
+    )
+    ha_http_auth = ModuleType("homeassistant.components.http.auth")
+
+    def async_sign_path(
+        hass: Any,
+        path: str,
+        expiration: Any,
+        *,
+        refresh_token_id: str | None = None,
+        use_content_user: bool = False,
+    ) -> str:
+        """Real (non-`Mock`) stand-in for `homeassistant.components.
+        http.auth.async_sign_path` — deterministic rather than
+        cryptographic (no real JWT dependency in this project's own
+        dev/test environment, ADR-000 §6): appends a recognizable
+        `authSig` query parameter derived from `path`/`expiration`
+        themselves, so a test can assert the original path survives
+        unchanged and a signature got appended, without needing to
+        decode a real signed token."""
+        separator = "&" if "?" in path else "?"
+        return f"{path}{separator}authSig=signed:{path}:{expiration}"
+
+    ha_http_auth.async_sign_path = async_sign_path  # type: ignore[attr-defined]
+    ha_http.auth = ha_http_auth  # type: ignore[attr-defined]
+    ha_components.http = ha_http  # type: ignore[attr-defined]
+    sys.modules["homeassistant.components.http"] = ha_http
+    sys.modules["homeassistant.components.http.auth"] = ha_http_auth
 
     class SensorEntity:
         """Real (non-Mock) stand-in — nothing beyond a plain base class

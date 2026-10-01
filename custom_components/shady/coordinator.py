@@ -128,8 +128,9 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
@@ -286,8 +287,12 @@ def _slot_of_day(timestamp: datetime) -> int:
 
 def _tomorrow_end(now: datetime) -> datetime:
     """The exclusive end of ADR-002 §3's horizon: start of the day after
-    tomorrow — "remainder of today + all of tomorrow"."""
-    today_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    tomorrow — "remainder of today + all of tomorrow". "Today" is
+    resolved in whatever tzinfo `now` itself carries (mirrors `_slot_of_
+    day`'s own already-generic pattern just above) — every real caller
+    (TASK-0039) passes a `now` already converted to HA's configured
+    local timezone, so this lands on *local* midnight, not `UTC`'s."""
+    today_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     return today_start + timedelta(days=2)
 
 
@@ -443,6 +448,27 @@ class ShadyCoordinator:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
+        # HA's configured local timezone (TASK-0039) — resolved up
+        # front, ahead of `Cache(...)` below (which is constructed with
+        # it) and every other calendar-day computation this class does.
+        # Every "which calendar date/what time of day is this" question
+        # anywhere in this module (`_tomorrow_end`'s forecast horizon,
+        # `fc_day_array`'s "today", the energy-integral midnight reset,
+        # `diagnosed_slot()`'s `slot_of_day`, the diagnostic-slot pin's
+        # own `pinned_reference` date) is answered in *this* timezone,
+        # not `self._now()`'s own `UTC` — a calendar day is inherently a
+        # local-wall-clock concept (a person's midnight, not a fixed
+        # offset from `EPOCH`), unlike the absolute-instant slot-index
+        # arithmetic `cache.py`'s `index_for`/`timestamp_for` do, which
+        # stays timezone-invariant by construction and is unaffected by
+        # this. Falls back to `UTC` (this module's own prior behavior)
+        # if `hass.config.time_zone` is ever missing or not a real IANA
+        # zone name (ADR-000 §8 clamp-over-exception), rather than
+        # failing setup entirely over a malformed/absent local timezone.
+        try:
+            self._local_tz: tzinfo = ZoneInfo(hass.config.time_zone)
+        except (ZoneInfoNotFoundError, AttributeError, ValueError):
+            self._local_tz = UTC
         data = entry.data
 
         self._window_days: int = data[CONF_WINDOW_DAYS]
@@ -551,7 +577,7 @@ class ShadyCoordinator:
                 )
                 self._ensure_temperature_provider(resolution.entity_id, provider_tier)
 
-        self._cache = Cache(self._window_days, self._fetch_fn)
+        self._cache = Cache(self._window_days, self._fetch_fn, local_tz=self._local_tz)
         # ADR-005 §5/§6, ADR-007 §1 — the one restart-persisted cache in
         # this design. Constructing `Store` is synchronous and cheap;
         # actually loading from disk only happens in
@@ -1232,16 +1258,48 @@ class ShadyCoordinator:
         `now`-parameter of their own."""
         return self._now()
 
+    def local_date(self, moment: datetime) -> date:
+        """`moment`'s calendar date in HA's configured local timezone
+        (TASK-0039) — not `moment`'s own (typically `UTC`) tzinfo's
+        date, which is what `.date()` directly on it would give.
+        `diagnostics/compare_regressions.py`'s `_export_window_start_
+        date` reads this rather than reaching into `self._local_tz`
+        directly (a `_`-prefixed coordinator attribute, ADR-000 §3)."""
+        return moment.astimezone(self._local_tz).date()
+
+    def local_day_start(self, day: date) -> datetime:
+        """The absolute instant local midnight starts on `day`, in HA's
+        configured local timezone — the inverse of `local_date`:
+        `self.local_date(self.local_day_start(d)) == d`."""
+        return datetime(day.year, day.month, day.day, tzinfo=self._local_tz)
+
     def diagnosed_slot(self, now: datetime | None = None) -> DiagnosedSlot:
         """Which slot is currently "the diagnosed slot" (ADR-004
         §2/§2a/§2g) — always the one stored, currently-configured slot,
         whether that is a pin or the newest complete slot as of the
         latest tick while following: nothing here re-derives "last
         complete slot" from `now`. `now` (defaults to `self.now()`)
-        only feeds `is_elapsed`."""
+        only feeds `is_elapsed`.
+
+        `slot_of_day` (TASK-0039) is this slot's position since *local*
+        midnight, not `index % SLOTS_PER_DAY` (`index`'s position since
+        the nearest `UTC` midnight, since `Cache`'s `EPOCH` is itself
+        `UTC`-anchored) — the two only coincide when HA's configured
+        local timezone happens to be `UTC` itself. `get_pinned_slot_
+        pool`'s own window anchor (`cache.py`, ADR-007a §6) resolves
+        `day_offset*SLOTS_PER_DAY + slot_of_day` against a *local*-
+        midnight-anchored day start (TASK-0039), so this must agree —
+        pairing a local-midnight day start with a `UTC`-relative
+        `slot_of_day` would silently land on the wrong absolute slot,
+        off by whatever HA's local `UTC` offset happens to be (exactly
+        the bug this task fixes: a person in `UTC+2` needing to pin two
+        hours earlier than they actually meant for the diagnosed slot's
+        own history/pool to line up)."""
         resolved_now = now if now is not None else self._now()
         index = self._diagnostic_slot_index
-        slot_of_day = index % SLOTS_PER_DAY
+        local_timestamp = Cache.timestamp_for(index).astimezone(self._local_tz)
+        local_midnight = self.local_day_start(local_timestamp.date())
+        slot_of_day = int((local_timestamp - local_midnight) / SLOT_DURATION)
         is_elapsed = Cache.timestamp_for(index + 1) <= resolved_now
         return DiagnosedSlot(index=index, slot_of_day=slot_of_day, is_elapsed=is_elapsed)
 
@@ -1252,23 +1310,28 @@ class ShadyCoordinator:
         this whole config entry, affecting every diagnostic sensor at
         once, not one pin per sensor. Rejected (returns `False`, no
         state change) if `timestamp` falls beyond ADR-002 §3's forecast
-        horizon ("remainder of today + all of tomorrow"); accepted
+        horizon ("remainder of *today* + all of tomorrow" — HA's
+        configured local calendar day, TASK-0039, not `UTC`'s); accepted
         (returns `True`) and pinned otherwise, including a `timestamp`
         in the past — a past pin is always accepted (ADR-007a §6: it
         may trigger a real recorder fetch outside the live window, but
         is never rejected for being "too old"). Also switches
         following off (ADR-004 §2g) — a pin the next tick immediately
-        overwrote would be no pin.
+        overwrote would be no pin. `cache.pin_reference` stores `index`'s
+        own *local* calendar date (`local_date`, TASK-0039), matching
+        `diagnosed_slot()`'s own local-midnight-relative `slot_of_day` —
+        both must agree for `get_pinned_slot_pool`'s window anchor to
+        resolve to the right absolute slots.
         """
         resolved_now = now if now is not None else self._now()
-        if timestamp >= _tomorrow_end(resolved_now):
+        if timestamp >= _tomorrow_end(resolved_now.astimezone(self._local_tz)):
             return False
         index = Cache.index_for(timestamp)
         # Pinning switches following off (ADR-004 §2g): a chosen slot
         # that the next tick immediately overwrote would be no pin.
         self._follow_latest_diagnostic_slot = False
         self._diagnostic_slot_index = index
-        self.cache.pin_reference(Cache.timestamp_for(index).date())
+        self.cache.pin_reference(self.local_date(Cache.timestamp_for(index)))
         # A pin changes what the diagnosed slot *is* (§2a), so a
         # `compute()` result cached against the previous diagnosed slot
         # is stale the instant this returns (ADR-004 §5, 2026-09-03
@@ -1298,7 +1361,9 @@ class ShadyCoordinator:
             self.cache.clear_reference()
         else:
             self._follow_latest_diagnostic_slot = False
-            self.cache.pin_reference(Cache.timestamp_for(self._diagnostic_slot_index).date())
+            self.cache.pin_reference(
+                self.local_date(Cache.timestamp_for(self._diagnostic_slot_index))
+            )
         self._diagnostic_result_cache = None
 
     def is_following_latest_diagnostic_slot(self) -> bool:
@@ -1603,9 +1668,13 @@ class ShadyCoordinator:
         directly (ADR-007a §5). `ShadyFcDaySumSensor`'s own state
         (`fc_day_energy_total`) and `ShadyFcRemainingTodaySensor`
         (`fc_remaining_energy`) both build on this same array — no
-        second data-retention mechanism (ADR-005 §4)."""
+        second data-retention mechanism (ADR-005 §4). "Today" (TASK-0039)
+        is HA's configured local calendar day, not `UTC`'s — otherwise a
+        person east of `UTC` (e.g. `UTC+2`) would see this array start
+        and end partway through their own local day, off by however far
+        their local midnight sits from `UTC`'s own."""
         resolved_now = now if now is not None else self._now()
-        today_start = datetime(resolved_now.year, resolved_now.month, resolved_now.day, tzinfo=UTC)
+        today_start = self.local_day_start(self.local_date(resolved_now))
         slot_timestamps = [today_start + i * SLOT_DURATION for i in range(SLOTS_PER_DAY)]
 
         sensor_ids = [self.forecast_sensor_id(index) for index, _name in self.strings()]
@@ -1645,7 +1714,10 @@ class ShadyCoordinator:
         """Idempotent day-boundary guard (ADR-005 §5/§6's own
         "Restart-during-the-reset-window idempotency" note) — resets
         both energy-integral totals iff `cache.py`'s `last_reset_date`
-        is not already `now`'s calendar date, and reports whether a
+        is not already `now`'s calendar date (HA's configured local
+        timezone, TASK-0039 — ADR-005 §5/§6's own text already called
+        for this; `now.date()` used `UTC`'s date instead, resetting up
+        to several hours off real local midnight), and reports whether a
         reset actually happened. Called from three places: every
         `_accumulate_energy` call (so a delayed/missed midnight trigger
         can never leave a stale total to accumulate onto), the midnight
@@ -1653,7 +1725,7 @@ class ShadyCoordinator:
         check performs the reset regardless of which of the three
         triggers it fires from, including the pathological case where
         more than one lands in the same narrow window."""
-        today = now.date()
+        today = self.local_date(now)
         if self.cache.last_reset_date() == today:
             return False
         self.cache.reset_energy_totals(today)
@@ -1694,7 +1766,7 @@ class ShadyCoordinator:
         synchronous `@callback`s) schedule it via
         `hass.async_create_task` instead, never from inside
         `_accumulate_energy`'s hass-free body itself."""
-        last_reset = self.cache.last_reset_date() or self._now().date()
+        last_reset = self.cache.last_reset_date() or self.local_date(self._now())
         await self._energy_store.async_save(
             {
                 "pv_total": self.cache.energy_total("pv"),
@@ -1828,7 +1900,7 @@ class ShadyCoordinator:
             )
             return
 
-        horizon_end = _tomorrow_end(now)
+        horizon_end = _tomorrow_end(now.astimezone(self._local_tz))
         series = [(ts, value) for ts, value in raw_series if ts < horizon_end]
         if not series:
             _LOGGER.info(
@@ -2309,10 +2381,13 @@ class ShadyCoordinator:
         shows the plain new value, unadjusted, until the next 5-minute
         tick begins ramping it in; Blending freezes whatever basis
         existed *from earlier today* (if any) as the crossfade's old
-        side — a basis left over from a previous calendar day is never
-        frozen against, since that is exactly ADR-006 §1b's "first
-        activation of the day" case, where Ramping and Blending must
-        behave identically (nothing yet to blend against).
+        side — a basis left over from a previous calendar day (HA's
+        configured local calendar day, TASK-0039, not `UTC`'s — the
+        same "which day is today" ADR-005 §5/§6's own text already
+        establishes) is never frozen against, since that is exactly
+        ADR-006 §1b's "first activation of the day" case, where Ramping
+        and Blending must behave identically (nothing yet to blend
+        against).
         """
         previous = self.cache.intraday_state(string.index)
         basis = IntradayBasis(values=values, fc=fc, inverter_limit=string.converter_limit_w)
@@ -2322,7 +2397,7 @@ class ShadyCoordinator:
         if (
             self._intraday_correction_mode == "blending"
             and previous is not None
-            and previous.reset_at.date() == now.date()
+            and self.local_date(previous.reset_at) == self.local_date(now)
         ):
             frozen_basis = previous.basis
             frozen_effective_factor = previous.effective_factor
@@ -2682,7 +2757,7 @@ class ShadyCoordinator:
         if not series:
             _LOGGER.info("Provider %s returned no forward series to push", entity_id)
             return
-        by_day = _forward_fill_by_day(series, now, _tomorrow_end(now))
+        by_day = _forward_fill_by_day(series, now, _tomorrow_end(now.astimezone(self._local_tz)))
         values = {
             Cache.index_for(datetime(day.year, day.month, day.day, tzinfo=UTC)) + slot: value
             for day, slot_values in by_day.items()

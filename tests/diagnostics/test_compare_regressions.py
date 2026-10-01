@@ -33,7 +33,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -1130,6 +1130,13 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
 
         def now(self) -> datetime:
             return diagnosed_at
+
+        def local_date(self, moment: datetime) -> date:
+            # No real `hass`/timezone in a CSV replay — every fixture's
+            # timestamps are already `UTC`, so `UTC`'s own calendar date
+            # doubles as "local" here (mirrors `ShadyCoordinator.local_
+            # date` exactly when `local_tz is UTC`, TASK-0039).
+            return moment.date()
 
         def target_cell_temperature_for_slot(self, index: int, slot_index: int) -> float | None:
             return target_cell_temperature

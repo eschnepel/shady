@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+from zoneinfo import ZoneInfo
 
 from tests.support import _load
 
@@ -507,3 +508,88 @@ class TestPinnedReferenceExtendsTrimFloor:
 
         result_after = cache.get_pinned_slot_pool(["fc"], 0)
         assert result_after["fc"] == result_before["fc"]
+
+
+# -- local timezone (TASK-0039) ----------------------------------------------
+
+
+class TestGetPinnedSlotPoolUsesTheConfiguredLocalTimezone:
+    """Given a `Cache` constructed with a non-`UTC` `local_tz` (`Zone
+    Info("Europe/Berlin")`, `UTC+2` in summer — mirrors `coordinator.py`'s
+    own `ZoneInfo(hass.config.time_zone)`), every "which calendar day is
+    this" question `get_pinned_slot_pool` asks is answered in *that*
+    timezone, not `UTC` — the reported bug: a person in `UTC+2` needed
+    to pin two hours earlier than they meant for the diagnosed slot's
+    own history/pool to line up, because the window anchor was silently
+    `UTC`-relative regardless of `Cache`'s caller."""
+
+    def test_pinned_window_anchors_on_the_local_calendar_date(self) -> None:
+        window_days = 3
+        slot_of_day = 100  # 08:20 local time-of-day (100 * 5 minutes).
+        berlin = ZoneInfo("Europe/Berlin")
+        cache = cache_mod.Cache(
+            window_days=window_days, fetch_fn=_index_valued_fetch_fn, local_tz=berlin
+        )
+        pinned = date(2026, 6, 10)  # deep summer -- unambiguous CEST, no DST edge.
+        cache.pin_reference(pinned)
+
+        result = cache.get_pinned_slot_pool(["fc"], slot_of_day)
+
+        local_midnight = datetime(pinned.year, pinned.month, pinned.day, tzinfo=berlin)
+        window_start_index = cache_mod.Cache.index_for(
+            local_midnight - timedelta(days=window_days - 1)
+        )
+        expected = [
+            float(window_start_index + day_offset * cache_mod.SLOTS_PER_DAY + slot_of_day)
+            for day_offset in range(window_days)
+        ]
+        assert result["fc"] == expected
+        # Not a no-op: a `UTC`-anchored window (this method's own
+        # pre-fix behavior) would be off by exactly `Europe/Berlin`'s
+        # `UTC+2` offset — 24 five-minute slots — from every value above.
+        assert result["fc"] != _expected_window_values(pinned, window_days, slot_of_day)
+
+    def test_local_date_near_midnight_differs_from_the_utc_date(self) -> None:
+        """Local `2026-06-15 01:00` `CEST` is `UTC 2026-06-14 23:00` —
+        the exact boundary a `UTC`-relative `.date()` extraction gets
+        wrong (it would anchor on June 14, not the local June 15 the
+        pin actually named)."""
+        window_days = 2
+        slot_of_day = 12  # 01:00 local time-of-day.
+        berlin = ZoneInfo("Europe/Berlin")
+        cache = cache_mod.Cache(
+            window_days=window_days, fetch_fn=_index_valued_fetch_fn, local_tz=berlin
+        )
+        # 30 minutes past the target slot's own start, so its "today"
+        # row has already elapsed (ADR-007a §6 Amendment's own
+        # not-yet-elapsed cap would otherwise drop it, unrelated to the
+        # date-boundary question this test is actually about).
+        reference = datetime(2026, 6, 14, 23, 30, tzinfo=UTC)  # == 2026-06-15 01:30 CEST
+
+        result = cache.get_pinned_slot_pool(["fc"], slot_of_day, reference=reference)
+
+        local_today = date(2026, 6, 15)
+        local_midnight = datetime(
+            local_today.year, local_today.month, local_today.day, tzinfo=berlin
+        )
+        window_start_index = cache_mod.Cache.index_for(
+            local_midnight - timedelta(days=window_days - 1)
+        )
+        expected = [
+            float(window_start_index + day_offset * cache_mod.SLOTS_PER_DAY + slot_of_day)
+            for day_offset in range(window_days)
+        ]
+        assert result["fc"] == expected
+
+    def test_default_local_tz_is_utc_unchanged_from_prior_behavior(self) -> None:
+        """No `local_tz` given (every pre-TASK-0039 caller/test) still
+        anchors on `UTC`'s own calendar date exactly as before."""
+        window_days = 3
+        slot_of_day = 100
+        cache = cache_mod.Cache(window_days=window_days, fetch_fn=_index_valued_fetch_fn)
+        pinned = date(2026, 6, 10)
+        cache.pin_reference(pinned)
+
+        result = cache.get_pinned_slot_pool(["fc"], slot_of_day)
+
+        assert result["fc"] == _expected_window_values(pinned, window_days, slot_of_day)

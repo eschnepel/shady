@@ -1,11 +1,14 @@
 # ADR-000 – Code Quality Standards, Programming Style & Core Concepts
 
-**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-26 — §3's
-`http_export.py` bullet revised (no standalone `diagnostics/export.py` module —
-draft ADR-015 now places CSV export on `DiagnosticMode` itself, `TASK-0038`, not
-yet implemented); also 2026-09-24 — §2/§3 gained `datetime.py`/`switch.py`
-(`TASK-0037-patch-4`, follow-latest-diagnostic-slot toggle); before that,
-2026-09-24 — §3 gained `http_export.py`; before that, 2026-09-19
+**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-29 — §3's
+`http_export.py` bullet revised again (dispatches `export_csv` via
+`get_instance(hass).async_add_executor_job`, ADR-015 §9 — a blocking-call fix);
+before that, 2026-09-26 — §3's `http_export.py` bullet revised (no standalone
+`diagnostics/export.py` module — draft ADR-015 now places CSV export on
+`DiagnosticMode` itself, `TASK-0038`, not yet implemented); also 2026-09-24 —
+§2/§3 gained `datetime.py`/`switch.py` (`TASK-0037-patch-4`,
+follow-latest-diagnostic-slot toggle); before that, 2026-09-24 — §3 gained
+`http_export.py`; before that, 2026-09-19
 
 This ADR is kept current in place: each section below reflects the project's
 present conventions directly, rather than a separate change log. Notable
@@ -333,7 +336,12 @@ flowchart BT
   and calls that mode's own `export_csv(sensor_id)` — mode-agnostic itself, no
   knowledge of which mode is active or what its export contains. Not entity glue
   — no entity involved — hence its own node rather than folded into
-  `entity_glue` above.
+  `entity_glue` above. Dispatches that one call via
+  `get_instance(hass).async_add_executor_job` (ADR-015 §9, 2026-09-29
+  Amendment), the same recorder-executor pattern `coordinator.py`'s own module
+  docstring establishes — `export_csv` can reach the identical blocking recorder
+  read `_fetch_actual_yield_statistics` warns about, and `get()` itself always
+  runs on the event loop, unlike every other caller in that chain.
 - **`__init__.py`** — wires platforms + coordinator into `hass.data`.
 
 Dependencies point upward only. The pure-tier modules (§6's canonical list)

@@ -39,7 +39,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import UnitOfEnergy, UnitOfPower
 
@@ -56,6 +58,21 @@ if TYPE_CHECKING:
 
 _ONE_DAY = timedelta(days=1)
 _LAST_SLOT_OF_DAY = timedelta(hours=23, minutes=55)
+
+# ADR-015 §8 (2026-09-29 Amendment): a plain browser navigation to
+# `http_export.py`'s view carries no `Authorization` header at all --
+# being logged into the frontend does not help, since HA's own auth
+# middleware never accepts a session cookie there, only a bearer token
+# or a signed path (`homeassistant.components.http.auth`'s own
+# `async_validate_auth_header`/`async_validate_signed_request`, the only
+# two branches besides the Supervisor Unix socket). Expiration is a
+# balance, not a hard requirement: long enough to survive a human
+# noticing the attribute and clicking it, short enough that a leaked
+# link (a dashboard screenshot, a shared automation log) goes stale
+# soon -- and it is refreshed every coordinator tick regardless (five
+# minutes, `coordinator.py`'s own `_handle_intraday_tick`), so thirty
+# minutes' slack past that is generous, not tight.
+_EXPORT_CSV_URL_EXPIRATION = timedelta(minutes=30)
 
 
 async def async_setup_entry(
@@ -345,6 +362,22 @@ class ShadyDiagnosticsSensor(SensorEntity):  # type: ignore[misc]
     inactive mode's id (every registered mode's ids get an entity up
     front, per `diagnostic_sensor_ids()`'s own docstring), or a
     genuinely missing entry from the active mode itself.
+
+    Also carries an `export_csv_url` attribute (ADR-015 §8, 2026-09-29
+    Amendment) whenever a result exists at all — a signed path
+    (`homeassistant.components.http.auth.async_sign_path`) for
+    `http_export.py`'s own view, so a plain `<a href="{{ state_attr(...,
+    'export_csv_url') }}">` link in a dashboard card actually works
+    without a hand-supplied long-lived token: `requires_auth = True`
+    there accepts a bearer token or a signed path, never a session
+    cookie, so being logged into the frontend elsewhere never helps a
+    plain navigation on its own. Present regardless of whether the
+    active mode actually overrides `export_csv` (`http_export.py`'s own
+    `HTTPStatus.NOT_FOUND` already covers "nothing to export" once
+    clicked) — `sensor.py` stays mode-agnostic rather than calling
+    `export_csv` itself just to decide whether to include the link,
+    which would make this a second real caller of that method besides
+    `http_export.py` (`diagnostics/base.py`'s own docstring).
     """
 
     def __init__(
@@ -356,6 +389,7 @@ class ShadyDiagnosticsSensor(SensorEntity):  # type: ignore[misc]
     ) -> None:
         self._coordinator = coordinator
         self._sensor_id = sensor_id
+        self._entry_id = entry.entry_id
         self._attr_unique_id = f"{DOMAIN}_diagnostics_{sensor_id}_{entry.entry_id}"
         self._attr_name = name
         self._attr_device_info = device_info(entry)
@@ -378,12 +412,40 @@ class ShadyDiagnosticsSensor(SensorEntity):  # type: ignore[misc]
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        # ADR-004 §5, 2026-09-21 Amendment: no reshaping of any kind —
-        # `entity`/`type`/`mode` in every `series` entry (§2d) are
-        # constants `diagnostics/` bakes in itself, so unlike the
-        # short-lived §2c predecessor (self-`entity_id` injection),
-        # `sensor.py` has nothing left to add here.
+        # ADR-004 §5, 2026-09-21 Amendment: no reshaping of `result.
+        # attributes`'s own keys — `entity`/`type`/`mode` in every
+        # `series` entry (§2d) are constants `diagnostics/` bakes in
+        # itself, so unlike the short-lived §2c predecessor (self-
+        # `entity_id` injection), `sensor.py` has nothing to add there.
+        # `export_csv_url` (ADR-015 §8) is a genuinely new key, not a
+        # reshape of an existing one — copied out first so the signed
+        # link never gets written back into `coordinator.py`'s own
+        # cached `DiagnosticSensorResult.attributes`, which every other
+        # entity reading the same tick's cached result also holds a
+        # reference to.
         result = self._result()
         if result is None:
             return {}
-        return result.attributes
+        attributes = dict(result.attributes)
+        attributes["export_csv_url"] = self._export_csv_url()
+        return attributes
+
+    def _export_csv_url(self) -> str:
+        """A signed path (ADR-015 §8) for `http_export.py`'s view,
+        pinned to this sensor's own `sensor_id` and the mode that
+        produced `self._result()`'s current, non-`None` value — the
+        currently active mode, since `_result()` only ever returns
+        non-`None` when `diagnostic_mode()` does too. Explicit `mode=`
+        (ADR-015 §4a) rather than relying on whichever mode is active
+        *when the link is eventually clicked*, which may no longer be
+        this one."""
+        mode = self._coordinator.diagnostic_mode()
+        assert mode is not None  # See docstring: guaranteed by _result().
+        path = (
+            f"/api/shady/{self._entry_id}/export_csv"
+            f"?sensor_id={quote(self._sensor_id, safe='')}"
+            f"&mode={quote(mode.key, safe='')}"
+        )
+        return async_sign_path(  # type: ignore[no-any-return]
+            self._coordinator.hass, path, _EXPORT_CSV_URL_EXPIRATION
+        )

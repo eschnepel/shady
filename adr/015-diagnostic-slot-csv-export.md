@@ -4,13 +4,18 @@
 alongside three further amendments (§4a/§5/§7 below) requested at confirmation
 time; `TASK-0038` moves `review` -> `todo` the same day (Phase 0's own draft-ADR
 procedure: "Any new ADR starts in a draft state until review confirmed by a
-human" — satisfied). **Last updated:** 2026-09-29 (Amendment at the end:
-fit-reproducibility metadata) / 2026-09-27 -- §4a (mode-override query
-parameter), §5 (fixture-replay's own reader returns a `dict`, not a
-`list[tuple]`), and §7 (test package structure) added at confirmation time.
-Decision 2/3/4/5's 2026-09-26 rewrite (delivery mechanism and `build_pool`'s
-extension, Decision 1/6, unchanged since the original 2026-09-24 text) otherwise
-stands as written.
+human" — satisfied). **Last updated:** 2026-09-29 (§9, new: `export_csv`
+dispatched via `get_instance(hass).async_add_executor_job`, fixing a
+blocking-recorder-call-on-the-event-loop regression §8's own new signed link
+made reachable for the first time) / 2026-09-29 (§8, new: `export_csv_url`
+signed-link sensor attribute, closing the gap where a plain browser click on the
+§1/§2 download link 401s regardless of frontend login state -- also amends §1's
+Consequences bullet) / 2026-09-29 (Amendment at the end: fit-reproducibility
+metadata) / 2026-09-27 -- §4a (mode-override query parameter), §5
+(fixture-replay's own reader returns a `dict`, not a `list[tuple]`), and §7
+(test package structure) added at confirmation time. Decision 2/3/4/5's
+2026-09-26 rewrite (delivery mechanism and `build_pool`'s extension, Decision
+1/6, unchanged since the original 2026-09-24 text) otherwise stands as written.
 
 ______________________________________________________________________
 
@@ -378,6 +383,118 @@ content (fixture-replay support, per-mode by construction), not a mandate to
 split every existing single-file test module that happens to sit next to a
 multi-file production package.
 
+### 8 — Amendment (2026-09-29): `ShadyDiagnosticsSensor` exposes a signed `export_csv_url` attribute
+
+**Reason:** §1's "Auth is HA's own, not reinvented" consequence and §2's
+original "a human drops the link into a Markdown card" delivery picture both
+implicitly assumed that being logged into the HA frontend was enough to
+authenticate a plain `<a href="/api/shady/...">` click. It is not: Home
+Assistant's own `homeassistant.components.http.auth` middleware authenticates a
+request exactly two ways -- an `Authorization: Bearer <token>` header, or a
+`?authSig=...` signed-path query parameter (`async_validate_auth_header`/
+`async_validate_signed_request`; a Supervisor Unix-socket request is the only
+other branch) -- never a session cookie. A plain browser navigation (address
+bar, bookmark, or a dashboard's own `<a href>`) can supply neither on its own,
+so `requires_auth = True` rejects every such request regardless of frontend
+login state, logged by HA core as "Login attempt or request with invalid
+authentication." Confirmed by reading `homeassistant/components/http/auth.py`
+directly (`home-assistant/core`, `dev` branch) rather than assumed.
+
+**Decision:** `sensor.py`'s `ShadyDiagnosticsSensor.extra_state_attributes`
+gains one new key, `export_csv_url` -- present whenever `self._result()` is not
+`None` (i.e. whenever `native_value` is not `"disabled"`/`"unavailable"`), built
+from `homeassistant.components.http.auth.async_sign_path` against
+`http_export.py`'s own URL, with an explicit `mode=` query parameter (§4a) so
+the link keeps pointing at the mode that actually produced it even if the active
+mode changes before it's clicked. A dashboard's own Markdown card can render
+`<a href="{{ state_attr('sensor.xxx', 'export_csv_url') }}">Download CSV</a>`
+and have it actually work, closing the gap §1/§2 left open, still without any
+new frontend technology (a signed path is plain HA API, the same "smallest
+available surface" §1's own Consequences bullet already chose).
+
+- **Thirty-minute expiration** (`_EXPORT_CSV_URL_EXPIRATION`) -- refreshed every
+  coordinator tick regardless (five minutes,
+  `coordinator._handle_intraday_tick`), so this is slack past that, not a tight
+  window; long enough for a human to notice the attribute (e.g. in Developer
+  Tools -> States) and click it, short enough that a copy of the link surviving
+  in a screenshot or log goes stale soon after.
+- **Present for every mode, not only ones that override `export_csv`.**
+  `sensor.py` does not call `mode.export_csv(sensor_id)` itself to decide
+  whether to include the link -- that would make it a second real caller of that
+  method besides `http_export.py` (§2's own docstring contract) and would redo
+  the same CSV-building work every coordinator tick just to answer a yes/no
+  question. A mode that does not support export simply 404s once the link is
+  actually clicked, the same outcome a hand-constructed URL for such a
+  `sensor_id` already produces today (§4: "indistinguishable from each other by
+  design").
+- **No change to `http_export.py` itself, for auth.** Signed-path validation is
+  handled entirely by HA's own auth middleware before the view's `get()` ever
+  runs -- `requires_auth = True` already covers it, unmodified from §1. (§9
+  below does change `get()` itself, but for an unrelated reason -- a blocking-
+  call fix this amendment's own signed link is what first made reachable, not
+  anything about auth.)
+- **Amends §1's Consequences bullet** ("Auth is HA's own, not reinvented" reads
+  "delegates to HA's existing session/long-lived-token auth" -- narrowed by this
+  amendment to "bearer-token or signed-path auth," since no session/cookie path
+  actually exists for this view).
+
+**Decided by:** human (the auth failure report and the choice of the signed-path
+fix over a documentation-only fix or a manually-supplied long-lived-token
+workaround); Lead Agent (expiration value, `mode=` inclusion, and the "present
+regardless of override" decision) -- **to be confirmed by the human at review.**
+
+### 9 — Amendment (2026-09-29): `export_csv` dispatched off the event loop, on the recorder's own executor
+
+**Reason:** §8's signed link let a request reach this view's `get()` body for
+the first time (every earlier request had 401'd at HA's own auth middleware
+first, per §8's own Reason) -- and the first real one, against a real Home
+Assistant install with a diagnosed slot whose cached pool still had a gap to
+fill, tripped HA's own asyncio blocking-call detector
+(`homeassistant.util.loop.raise_for_blocking_call`), then failed the recorder
+query outright. `get()` called `mode.export_csv(sensor_id)` directly, on the
+event loop (an aiohttp handler's own body always is) -- and
+`CompareRegressionsMode.export_csv` -> `_gather_pool` ->
+`cache.get_pinned_slot_pool` can reach `_validate_range`'s `_fetch_and_store` ->
+`coordinator._fetch_fn` -> `_fetch_actual_yield_statistics` -> the recorder's
+own `statistics_during_period` -- exactly the blocking recorder read
+`coordinator.py`'s own module docstring already documents and dispatches,
+everywhere else it can be reached (`_refit_sync`/`_async_intraday_tick` via
+`get_instance(hass). async_add_executor_job`; `diagnostic_result()`'s lazy
+cache-miss `compute()` call via the same pattern,
+`_async_recompute_diagnostic_result`, when reached on the event loop).
+`http_export.py`'s own `get()` was the one caller of anything in this same
+dependency chain that never went through that pattern at all -- not a gap this
+ADR's original §1/§4 decision considered, since neither mentions
+`coordinator.py`'s recorder-executor invariant.
+
+**Decision:** `get()` dispatches `mode.export_csv(sensor_id)` via
+`get_instance(hass).async_add_executor_job(mode.export_csv, sensor_id)` --
+`homeassistant.components.recorder.get_instance`, the exact same import and call
+shape `coordinator.py` already uses -- and awaits the result, rather than
+calling it inline. Unlike `diagnostic_result()`'s cache-miss handling (which can
+return `None`/stale-cached and let a later poll pick up the fresh result), a
+`GET` request has no "later poll" to defer to, so this always dispatches,
+whether or not the pool happens to be fully cached already -- simpler than
+`diagnostic_result()`'s own `_running_on_the_event_loop()` branch, and correct
+either way: `get_instance(hass).async_add_executor_job` on an already-cached,
+non-blocking `export_csv` call costs one thread hop, not a blocking read.
+
+- **No change to `DiagnosticMode.export_csv`'s own contract or signature** (§2)
+  -- still a plain synchronous method, callable directly in tests/fixture replay
+  (§5/§7) exactly as before; only its one real caller's own dispatch changed.
+- **Test coverage:** `tests/test_http_export.py`'s
+  `TestExportRunsOffTheEventLoop` monkeypatches `http_export.py`'s own
+  `get_instance` with a recording stand-in (still calling through, so the
+  response itself stays exercised end-to-end) and asserts `get()` reaches
+  `mode.export_csv` only via that dispatch, not directly -- this hand-rolled
+  test harness has no way to detect an actual blocking call the way a real HA
+  install's own detector does (ADR-000 §6), so the regression this amendment
+  fixes could not have been caught by asserting on the CSV content alone.
+
+**Decided by:** human (reported the production traceback); Lead Agent (root
+cause and the dispatch fix, mirroring `coordinator.py`'s own established
+pattern) -- **to be confirmed by the human at review.**
+
 ______________________________________________________________________
 
 ## Amendments to Existing ADRs
@@ -431,7 +548,9 @@ ______________________________________________________________________
   `diagnostics/base.py`'s shared helper, the fixture parser, the dispatcher, or
   the comparator, for any mode added after this one.
 - **Auth is HA's own, not reinvented.** `requires_auth = True` delegates to HA's
-  existing session/long-lived-token auth -- no new credential surface this
+  own bearer-token or signed-path auth (§8's 2026-09-29 Amendment narrows this
+  from the original "session/long-lived-token auth" wording -- no session/
+  cookie path actually exists for this view) -- no new credential surface this
   integration itself has to manage.
 - **Not addressed here, left to `TASK-0038`'s own Acceptance Criteria:** the
   exact URL shape, filename convention, and `CompareRegressionsMode`'s own CSV
