@@ -790,6 +790,140 @@ class TestGenericPushForwardFillsCoarserGrid:
         assert coordinator.cache._read(_BASELINE_ENTITY, at_second_sample) == 0.0
 
 
+class TestForwardFillEmitsZeroForGaps:
+    """`_forward_fill_by_day` (ADR-012 §4 Amendment 2026-10-02,
+    `TASK-0040`, live bug report): a provider that reports daylight
+    samples only used to have its last evening sample held across the
+    whole night (the \"flat nightly plateau\"). Each sample is now held for
+    at most one cadence (the series' median spacing); the rest of a longer
+    gap is an explicit `0.0`.
+    """
+
+    @staticmethod
+    def _slot(by_day: dict[Any, dict[int, float]], moment: datetime) -> float | None:
+        day_slots = by_day.get(moment.date(), {})
+        return day_slots.get(
+            int((moment - moment.replace(hour=0, minute=0)).total_seconds() // 300)
+        )
+
+    def _daylight_only_series(self) -> list[tuple[datetime, float]]:
+        # Hourly daylight samples 07:00-18:00, today and tomorrow; the last
+        # evening sample (18:00) is a non-zero 14 W, nothing overnight.
+        values = [5, 20, 40, 70, 90, 100, 95, 80, 60, 40, 22, 14]
+        return [
+            (datetime(2026, 10, day, 7 + offset, tzinfo=UTC), float(value))
+            for day in (1, 2)
+            for offset, value in enumerate(values)
+        ]
+
+    def test_gap_between_last_evening_and_first_morning_sample_is_zero(self) -> None:
+        series = self._daylight_only_series()
+        now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        end = datetime(2026, 10, 3, 0, 0, tzinfo=UTC)
+        by_day = _coordinator_mod._forward_fill_by_day(
+            [(ts, v) for ts, v in series if ts >= now], now, end
+        )
+
+        # 18:00 sample (14 W) is held for its own hour only ...
+        assert self._slot(by_day, datetime(2026, 10, 1, 18, 55, tzinfo=UTC)) == 14.0
+        # ... then every night slot up to the next morning's sample is 0.
+        for hour, minute in ((19, 0), (23, 55), (3, 40), (6, 55)):
+            day = 1 if hour >= 19 else 2
+            assert self._slot(by_day, datetime(2026, 10, day, hour, minute, tzinfo=UTC)) == 0.0
+        # The next morning's first sample is intact.
+        assert self._slot(by_day, datetime(2026, 10, 2, 7, 0, tzinfo=UTC)) == 5.0
+
+    def test_leading_stretch_before_a_distant_first_sample_is_zero(self) -> None:
+        series = self._daylight_only_series()
+        now = datetime(2026, 10, 1, 23, 0, tzinfo=UTC)
+        end = datetime(2026, 10, 3, 0, 0, tzinfo=UTC)
+        by_day = _coordinator_mod._forward_fill_by_day(
+            [(ts, v) for ts, v in series if ts >= now], now, end
+        )
+
+        assert self._slot(by_day, datetime(2026, 10, 1, 23, 0, tzinfo=UTC)) == 0.0
+        assert self._slot(by_day, datetime(2026, 10, 2, 6, 55, tzinfo=UTC)) == 0.0
+
+    def test_leading_stretch_within_one_cadence_is_left_unfilled(self) -> None:
+        """Mid-day, the first future sample is at most an hour away — that
+        is the current hour's own (already-dropped) sample, not a gap."""
+        series = self._daylight_only_series()
+        now = datetime(2026, 10, 1, 12, 20, tzinfo=UTC)
+        end = datetime(2026, 10, 3, 0, 0, tzinfo=UTC)
+        by_day = _coordinator_mod._forward_fill_by_day(
+            [(ts, v) for ts, v in series if ts >= now], now, end
+        )
+
+        assert self._slot(by_day, datetime(2026, 10, 1, 12, 25, tzinfo=UTC)) is None
+        assert self._slot(by_day, datetime(2026, 10, 1, 13, 0, tzinfo=UTC)) == 95.0
+
+    def test_after_the_last_sample_holds_one_cadence_then_stops(self) -> None:
+        """The provider's horizon is unknown past its last sample, so no
+        zeros are invented there (they could blank real daylight)."""
+        series = self._daylight_only_series()
+        now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        end = datetime(2026, 10, 3, 0, 0, tzinfo=UTC)
+        by_day = _coordinator_mod._forward_fill_by_day(
+            [(ts, v) for ts, v in series if ts >= now], now, end
+        )
+
+        assert self._slot(by_day, datetime(2026, 10, 2, 18, 55, tzinfo=UTC)) == 14.0
+        assert self._slot(by_day, datetime(2026, 10, 2, 19, 0, tzinfo=UTC)) is None
+
+    def test_explicit_zero_samples_are_unchanged(self) -> None:
+        """A provider that already emits night zeros behaves exactly as before."""
+        now = datetime(2026, 10, 1, 17, 0, tzinfo=UTC)
+        series = [(now + timedelta(hours=h), 14.0 if h == 0 else 0.0) for h in range(6)]
+        by_day = _coordinator_mod._forward_fill_by_day(
+            series, now, datetime(2026, 10, 3, 0, 0, tzinfo=UTC)
+        )
+
+        assert self._slot(by_day, datetime(2026, 10, 1, 17, 30, tzinfo=UTC)) == 14.0
+        assert self._slot(by_day, datetime(2026, 10, 1, 18, 30, tzinfo=UTC)) == 0.0
+
+    def test_single_sample_keeps_legacy_hold_through_end(self) -> None:
+        now = datetime(2026, 10, 1, 17, 0, tzinfo=UTC)
+        by_day = _coordinator_mod._forward_fill_by_day(
+            [(now, 7.0)], now, datetime(2026, 10, 2, 0, 0, tzinfo=UTC)
+        )
+
+        assert self._slot(by_day, datetime(2026, 10, 1, 23, 55, tzinfo=UTC)) == 7.0
+
+    def test_two_samples_straddling_a_night_cap_the_hold_at_three_hours(self) -> None:
+        """With only two samples the median spacing *is* the overnight gap;
+        `_MAX_SAMPLE_HOLD` keeps that from reintroducing the plateau."""
+        first = datetime(2026, 10, 1, 18, 0, tzinfo=UTC)
+        second = datetime(2026, 10, 2, 7, 0, tzinfo=UTC)
+        by_day = _coordinator_mod._forward_fill_by_day(
+            [(first, 14.0), (second, 5.0)], first, datetime(2026, 10, 3, 0, 0, tzinfo=UTC)
+        )
+
+        assert self._slot(by_day, datetime(2026, 10, 1, 20, 55, tzinfo=UTC)) == 14.0
+        assert self._slot(by_day, datetime(2026, 10, 1, 21, 0, tzinfo=UTC)) == 0.0
+        assert self._slot(by_day, datetime(2026, 10, 2, 3, 0, tzinfo=UTC)) == 0.0
+
+
+class TestPushedNightSlotsAreZero:
+    """End to end through `_push_provider_series`: the raw pushed baseline
+    series (what the diagnostics and the shading model's cold-start
+    passthrough read) is 0 overnight, not the last evening value."""
+
+    def test_overnight_slots_are_zero_in_the_cache(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        provider = coordinator._entity_providers[_BASELINE_ENTITY]
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+        daylight = [(now + timedelta(hours=h), 100.0 - 10 * h) for h in range(7)]
+        tomorrow = [(now + timedelta(hours=19 + h), 5.0 + h) for h in range(7)]
+        provider.forward = lambda _now: daylight + tomorrow
+
+        coordinator._push_provider_series(_BASELINE_ENTITY, now)
+
+        night = Cache.index_for(now + timedelta(hours=12))  # 00:00 next day
+        assert coordinator.cache._read(_BASELINE_ENTITY, night) == 0.0
+        morning = Cache.index_for(now + timedelta(hours=19))
+        assert coordinator.cache._read(_BASELINE_ENTITY, morning) == 5.0
+
+
 class TestStringEnumeration:
     """Given a config entry with N configured strings, When
     `coordinator.strings()` is called, Then it returns exactly N

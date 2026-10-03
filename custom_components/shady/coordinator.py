@@ -129,6 +129,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -317,36 +318,91 @@ def _running_on_the_event_loop() -> bool:
     return True
 
 
+# TASK-0040 (ADR-012 §4 Amendment 2026-10-02): the longest a single raw
+# baseline sample's value may be held forward, regardless of how coarse
+# the series' own median spacing looks. Bounds the damage when a series is
+# so short (two samples straddling a night) that its median spacing is
+# itself the overnight gap.
+_MAX_SAMPLE_HOLD = timedelta(hours=3)
+
+
+def _sample_cadence(ordered: list[tuple[datetime, float]]) -> timedelta | None:
+    """The series' typical sample spacing: the median of its positive
+    consecutive timestamp deltas, capped at `_MAX_SAMPLE_HOLD`. `None` for
+    fewer than two distinct timestamps — a lone sample has no spacing to
+    infer, so callers fall back to holding it through the whole horizon
+    (this module's pre-TASK-0040 behavior).
+    """
+    deltas = sorted(
+        later[0] - earlier[0] for earlier, later in pairwise(ordered) if later[0] > earlier[0]
+    )
+    if not deltas:
+        return None
+    median = deltas[len(deltas) // 2]
+    return min(median, _MAX_SAMPLE_HOLD)
+
+
 def _forward_fill_by_day(
     series: list[tuple[datetime, float]], start: datetime, end: datetime
 ) -> dict[date, dict[int, float]]:
     """Hold each raw baseline sample's value forward across every
-    5-minute slot from its own timestamp up to (not including) the next
-    sample's timestamp — a step function, since a baseline provider
-    commonly reports on a coarser grid than `FC`'s own 5-minute slot grid
-    (ADR-009 §1a: "always hourly", "coarser than baseline FC's own
-    5-minute slot grid"). Without this, only the exact slot each raw
-    sample happens to land on would ever be filled, leaving every other
-    slot in between permanently `None` — including a legitimate `0`
-    raw reading, which must fill its whole span the same as any other
-    value, not be mistaken for "nothing pushed yet".
+    5-minute slot from its own timestamp — a step function, since a
+    baseline provider commonly reports on a coarser grid than `FC`'s own
+    5-minute slot grid (ADR-009 §1a: \"always hourly\", \"coarser than
+    baseline FC's own 5-minute slot grid\"). Without this, only the exact
+    slot each raw sample happens to land on would ever be filled, leaving
+    every other slot in between permanently `None` — including a
+    legitimate `0` raw reading, which must fill its whole span the same
+    as any other value, not be mistaken for \"nothing pushed yet\".
+
+    **Bounded hold, explicit zeros (TASK-0040, ADR-012 §4 Amendment
+    2026-10-02).** A sample is held for at most one *cadence* — the
+    series' own median sample spacing (`_sample_cadence`). Where the next
+    sample is further away than that, the rest of the gap is filled with
+    an explicit `0.0`, not the held value: a provider that only reports
+    daylight samples (omitting night entirely, rather than emitting
+    zeros) otherwise had its last evening value held across the whole
+    night, which the shading model's cold-start passthrough
+    (`regression/base.py`'s `passthrough_where_no_confidence`) then
+    displayed unmodified — the \"flat nightly plateau\" bug. The same
+    rule zero-fills the leading stretch from `start` up to the first
+    sample when that stretch is longer than one cadence (a series
+    starting hours after `now`). After the *last* sample the hold stops
+    at one cadence and nothing further is written: the provider's own
+    horizon is unknown there, so inventing zeros could blank real
+    daylight. A series with fewer than two distinct timestamps has no
+    cadence and keeps the original hold-through-`end` behavior.
 
     `series` need not be sorted or pre-restricted to `[start, end)` —
     only samples whose own resulting span overlaps `[start, end)`
-    actually contribute any slot. The last sample's span runs through
-    `end` itself.
+    actually contribute any slot.
     """
     ordered = sorted(series, key=lambda pair: pair[0])
+    cadence = _sample_cadence(ordered)
     by_day: dict[date, dict[int, float]] = {}
-    for position, (timestamp, value) in enumerate(ordered):
-        span_start = max(timestamp, start)
-        next_timestamp = ordered[position + 1][0] if position + 1 < len(ordered) else end
-        span_end = min(next_timestamp, end)
+
+    def _fill(span_start: datetime, span_end: datetime, value: float) -> None:
+        span_start = max(span_start, start)
+        span_end = min(span_end, end)
         if span_end <= span_start:
-            continue
+            return
         for index in range(Cache.index_for(span_start), Cache.index_for(span_end)):
             slot_timestamp = Cache.timestamp_for(index)
             by_day.setdefault(slot_timestamp.date(), {})[_slot_of_day(slot_timestamp)] = value
+
+    if cadence is not None and ordered and ordered[0][0] - start > cadence:
+        _fill(start, ordered[0][0], 0.0)
+
+    for position, (timestamp, value) in enumerate(ordered):
+        is_last = position + 1 >= len(ordered)
+        next_timestamp = end if is_last else ordered[position + 1][0]
+        if cadence is None:
+            _fill(timestamp, next_timestamp, value)
+            continue
+        hold_end = min(next_timestamp, timestamp + cadence)
+        _fill(timestamp, hold_end, value)
+        if not is_last and hold_end < next_timestamp:
+            _fill(hold_end, next_timestamp, 0.0)
     return by_day
 
 

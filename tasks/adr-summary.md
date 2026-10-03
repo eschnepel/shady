@@ -428,10 +428,14 @@ each raw sample's span through `_tomorrow_end(now)` (`_forward_fill_by_day`,
 ADR-012 §4 Amendment/`TASK-0037-patch-3`, mirroring ADR-009 §1a's identical
 `_recompute_string` handling — `forward()`'s own series commonly reports on a
 grid coarser than `FC`'s 5-minute cache grid, e.g. hourly for every
-`_PUSH_SOURCED_SHAPES` member), converts to cache's index scheme, and
-`push(...)`. Two concrete providers today: baseline (discovery+normalize) and
-temperature; PV (actual yield) needs **no provider** — it's a plain
-user-selected `entity_id` wired directly into `cache.py`'s `fetch_fn`.
+`_PUSH_SOURCED_SHAPES` member; each sample is held for at most one cadence — the
+series' median spacing, capped at 3 h — and the rest of a longer gap, including
+the overnight stretch of a daylight-only provider, is filled with explicit
+`0.0`, ADR-012 §4 Amendment 2026-10-02/`TASK-0040`), converts to cache's index
+scheme, and `push(...)`. Two concrete providers today: baseline
+(discovery+normalize) and temperature; PV (actual yield) needs **no provider** —
+it's a plain user-selected `entity_id` wired directly into `cache.py`'s
+`fetch_fn`.
 
 ## 6 — Sensors & entities
 

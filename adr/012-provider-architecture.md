@@ -1,7 +1,10 @@
 # ADR-012 – Provider Architecture: Shared Base Class and Cache Reuse for External Series
 
-**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-09-23 — §4
-amended (the generic push loop's raw-series conversion now forward-fills a
+**Date:** 2026-08-18 **Status:** Accepted **Last updated:** 2026-10-02 — §4
+amended again (the forward-fill now holds a sample for at most one cadence and
+emits explicit `0.0` for the rest of a gap, instead of holding the last daylight
+value across the whole night, `TASK-0040`); previously 2026-09-23 — §4 amended
+(the generic push loop's raw-series conversion now forward-fills a
 coarser-than-5-minute sample across every slot in its span, mirroring ADR-009
 §1a's own `_recompute_string` handling, `TASK-0037-patch-3`); previously updated
 2026-09-19 — §4b amended (last-good-response fallback via `cache.py`'s new
@@ -363,6 +366,41 @@ in anything downstream of it. The forward-fill's own `start`/`end` bounds mirror
 — nothing legitimately reads a pushed slot beyond that horizon either
 (`pin_diagnostic_slot` itself already rejects any pin at or past it), so capping
 the push there is a tightening, not a behavior loss.
+
+**Amendment (2026-10-02, `TASK-0040`):** the forward-fill above is now
+*bounded*, and emits explicit zeros for gaps.
+
+- **Reason:** a baseline provider that reports daylight samples only (no night
+  entries, and no explicit zeros) had its last evening sample held forward to
+  the next morning's first sample — or, for the final sample, through the whole
+  horizon. That held value is a nonzero `FC` at night, which the per-slot
+  shading model has no evidence about (every historical night sample has
+  `FC == 0`, hence zero magnitude weight), so its cold-start passthrough
+  (`regression/base.py`'s `passthrough_where_no_confidence`, ADR-001 §2) shows
+  it unmodified and the `[0, FC]` clamp cannot reduce it. Observed live as a
+  flat nightly plateau (50 W, 22 W, 14 W on consecutive nights, ~10 h each) in
+  `ShadyForecastSensor`, with a diagnostic export showing `fc_raw = 14.0` at
+  05:40 against 27 days of `0.0`. It appeared after switching the baseline back
+  from a weather provider (which reports every hour, night included) to a PV
+  forecast provider that omits night.
+- **Decision:** `_forward_fill_by_day` holds each raw sample for at most one
+  *cadence* — the median of the series' positive consecutive sample spacings,
+  capped at 3 hours (`_MAX_SAMPLE_HOLD`, so a two-sample series straddling a
+  night cannot make the overnight gap its own cadence). The remainder of any
+  longer gap is filled with an explicit `0.0`. The stretch from `start` to the
+  first sample is zero-filled when it is longer than one cadence (a series that
+  starts hours after `now`); within one cadence it is left unfilled, as before.
+  After the *last* sample the hold stops after one cadence and nothing further
+  is written, because the provider's horizon is unknown there and zeros could
+  blank real daylight. A series with fewer than two distinct timestamps has no
+  cadence and keeps the original hold-through-the-horizon behavior. A provider
+  that already emits night zeros is unaffected.
+- **Decided by:** human ("emit 0", chosen over a sun-elevation guard and over
+  capping the hold without emitting zeros).
+- **Scope:** `_recompute_string` and `_push_provider_series` share this one
+  helper, so the corrected forecast and the raw pushed series are fixed
+  together. Values already pushed before the fix are overwritten at the next
+  provider push; no migration is needed.
 
 **Two provider-backed predictors exist today** — baseline `FC` (ADR-002 §4) and
 temperature (ADR-003c §7) — each documenting its own concrete `sensor_id` and
