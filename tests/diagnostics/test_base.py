@@ -29,6 +29,7 @@ one.
 
 from __future__ import annotations
 
+import ast
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any
 
@@ -492,3 +493,77 @@ class TestWriteCsvSections:
         # Insertion order preserved (z before a), not alphabetized.
         header_line = text.splitlines()[1]
         assert header_line == "z,a"
+
+
+class TestXySeriesEntry:
+    """`DiagnosticMode._xy_series_entry` (ADR-004 §2d/§2e; ADR-004 §2h,
+    `TASK-0015b-patch-4`): the one shared `plotly-graph` trace builder —
+    its keys, one-decimal rounding of `x`/`y`, and the `marker` it always
+    carries."""
+
+    def test_keys_are_exactly_the_documented_shape(self) -> None:
+        entry = DiagnosticMode._xy_series_entry("0", [[1.0, 2.0]])
+
+        assert list(entry) == ["entity", "name", "type", "mode", "x", "y", "marker"]
+        assert entry["entity"] == ""
+        assert entry["type"] == "scatter"
+        assert entry["mode"] == "markers"
+
+    def test_values_are_rounded_to_at_most_one_decimal(self) -> None:
+        entry = DiagnosticMode._xy_series_entry(
+            "0", [[16.44, 5.46], [21.75, 2.0], [0.04, 1234.5678]]
+        )
+
+        assert entry["x"] == [16.4, 21.8, 0.0]
+        assert entry["y"] == [5.5, 2.0, 1234.6]
+
+    def test_rounding_never_yields_negative_zero(self) -> None:
+        entry = DiagnosticMode._xy_series_entry("0", [[-0.04, -0.01]])
+
+        # `-0.0 == 0.0`, so check the sign bit via repr as well.
+        assert entry["x"] == [0.0] and entry["y"] == [0.0]
+        assert repr(entry["x"][0]) == "0.0" and repr(entry["y"][0]) == "0.0"
+
+    def test_default_marker_is_a_circle_with_no_size_key(self) -> None:
+        entry = DiagnosticMode._xy_series_entry("0", [[1.0, 2.0]])
+
+        assert entry["marker"] == {"symbol": "circle"}
+
+    def test_symbol_and_sizes_land_in_marker(self) -> None:
+        entry = DiagnosticMode._xy_series_entry(
+            "-1", [[1.0, 2.0], [3.0, 4.0]], symbol="line-ns", sizes=[4, 1]
+        )
+
+        assert entry["marker"] == {"symbol": "line-ns", "size": [4, 1]}
+
+    def test_empty_series_keeps_an_empty_size_list(self) -> None:
+        entry = DiagnosticMode._xy_series_entry("1", [], symbol="circle", sizes=[])
+
+        assert entry["x"] == [] and entry["y"] == []
+        assert entry["marker"] == {"symbol": "circle", "size": []}
+
+    def test_sizes_must_match_points_one_to_one(self) -> None:
+        with pytest.raises(AssertionError):
+            DiagnosticMode._xy_series_entry("0", [[1.0, 2.0]], sizes=[1, 2])
+
+    def test_entry_only_uses_types_that_survive_str_into_yaml_flow_syntax(self) -> None:
+        """ADR-004 §2h's consumption note: the `plotly-graph` card template
+        feeds `series | string` straight back into YAML. Python's `repr` and
+        YAML flow syntax only overlap for plain strings, numbers, lists and
+        mappings -- a `bool` or `None` (which YAML would read differently)
+        must never appear anywhere in an entry, the nested `marker`
+        included -- and `str()` must round-trip losslessly."""
+        entry = DiagnosticMode._xy_series_entry("-1", [[1.0, 2.0]], symbol="line-ns", sizes=[3])
+
+        def _assert_yaml_safe(value: Any) -> None:
+            assert type(value) in (str, int, float, list, dict), repr(value)
+            if isinstance(value, list):
+                for item in value:
+                    _assert_yaml_safe(item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    assert isinstance(key, str)
+                    _assert_yaml_safe(item)
+
+        _assert_yaml_safe(entry)
+        assert ast.literal_eval(str(entry)) == entry

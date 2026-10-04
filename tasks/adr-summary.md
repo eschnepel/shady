@@ -463,7 +463,14 @@ it's a plain user-selected `entity_id` wired directly into `cache.py`'s
   `x`/`y` the same points as two parallel flat arrays rather than `[x, y]` pairs
   — supersedes a same-day, short-lived `apexcharts-card`/`data_generator`
   attempt, §2c, abandoned because that card cannot render a numeric x-axis at
-  all) and plain-float `accuracy` dict (untouched throughout), set from
+  all; **as of 2026-10-04, ADR-004 §2h:** every entry also carries
+  `marker: {symbol, size?}` and `x`/`y` are rounded to one decimal — slot-pool
+  points use `symbol: circle` with a per-point integer `size` of
+  `round(4 × fit weight)` (floor 1; weight from `build_pool`'s
+  `WeightBreakdown`), an ADR-011 §2-excluded neighbor series uses
+  `symbol: line-ns` (sized by its pre-exclusion weight), `selected ...` series
+  use `symbol: x`; display-only — `accuracy` and the CSV export keep full
+  precision) and plain-float `accuracy` dict (untouched throughout), set from
   `coordinator.diagnostic_result()` — a cached accessor over the active
   `DiagnosticMode`'s `compute()` output (today, always
   `CompareRegressionsMode`), refreshed once per tick; entities never call

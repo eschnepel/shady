@@ -94,6 +94,12 @@ mode's `series` output should look identical in shape, and a shared
 inherited method is what keeps that true by construction rather than by
 convention two independently-written `compute()` bodies would have to
 maintain by hand.
+
+As of 2026-10-04 (`TASK-0015b-patch-4`, ADR-004 §2h), `_xy_series_entry()`
+also rounds every `x`/`y` value to one decimal place and emits a `marker`
+key (`symbol`, plus an optional per-point `size` list) — see its own
+docstring. Still the one shared builder: a mode chooses *which* symbol and
+sizes an entry gets, never the entry's shape.
 """
 
 from __future__ import annotations
@@ -126,6 +132,18 @@ what `CompareRegressionsMode` (TASK-0015b) declares — it fits/computes
 for exactly one diagnosed 5-minute slot, reusing TASK-0013's existing
 5-minute trigger.
 """
+
+SERIES_VALUE_DIGITS = 1
+"""Decimal places every `series` entry's `x`/`y` value is rounded to
+(ADR-004 §2h, 2026-10-04) — display-only; nothing fitted or exported
+ever reads a rounded value back."""
+
+
+def _round_value(value: float) -> float:
+    """`value` rounded to `SERIES_VALUE_DIGITS` places, with a `-0.0`
+    result normalised to `0.0` (a tiny negative value would otherwise
+    render as `-0.0` in a dashboard's hover label)."""
+    return round(value, SERIES_VALUE_DIGITS) + 0.0
 
 
 @dataclass(frozen=True)
@@ -317,12 +335,19 @@ class DiagnosticMode(ABC):
         return buffer.getvalue()
 
     @staticmethod
-    def _xy_series_entry(name: str, points: list[list[float]]) -> dict[str, Any]:
+    def _xy_series_entry(
+        name: str,
+        points: list[list[float]],
+        *,
+        symbol: str = "circle",
+        sizes: Sequence[int] | None = None,
+    ) -> dict[str, Any]:
         """`points` (`[[x_i, y_i], ...]`) -> one `series`-attribute entry
         in `custom:plotly-graph`'s own trace shape (ADR-004 §2d,
         2026-09-21 Amendment, `TASK-0015b-patch-3`) — `{"entity": "",
         "name": name, "type": "scatter", "mode": "markers", "x": [...],
-        "y": [...]}`, `entity`/`type`/`mode` constant on every entry.
+        "y": [...], "marker": {...}}`, `entity`/`type`/`mode` constant on
+        every entry.
         Lives here rather than in any one concrete mode's own module
         because it's the one shared building block ADR-004 §2/§5 expects
         *every* `DiagnosticMode` to use for its own `series` output —
@@ -335,12 +360,29 @@ class DiagnosticMode(ABC):
         it's inherited automatically — a new mode subclassing
         `DiagnosticMode` gets it via `self._xy_series_entry(...)` with no
         import of `compare_regressions.py` (or anything else
-        `CompareRegressionsMode`-specific) needed at all."""
+        `CompareRegressionsMode`-specific) needed at all.
+
+        ADR-004 §2h (2026-10-04, `TASK-0015b-patch-4`): every `x`/`y`
+        value is rounded to `SERIES_VALUE_DIGITS` decimal places here, so
+        no mode can forget to (display-only — callers keep full-precision
+        values for everything else), and `marker` is always present:
+        `{"symbol": symbol}`, plus `"size": [...]` (one integer per
+        point) when `sizes` is given. `symbol` is a Plotly marker symbol
+        name; which one an entry gets is the calling mode's decision
+        (`CompareRegressionsMode` documents its own), not this shape's.
+        """
+        assert sizes is None or len(sizes) == len(points), (
+            "sizes must hold exactly one entry per point"
+        )
+        marker: dict[str, Any] = {"symbol": symbol}
+        if sizes is not None:
+            marker["size"] = list(sizes)
         return {
             "entity": "",
             "name": name,
             "type": "scatter",
             "mode": "markers",
-            "x": [p[0] for p in points],
-            "y": [p[1] for p in points],
+            "x": [_round_value(p[0]) for p in points],
+            "y": [_round_value(p[1]) for p in points],
+            "marker": marker,
         }

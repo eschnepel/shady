@@ -36,6 +36,7 @@ rule.
 | TASK-0015b-patch-1-apexcharts-card-series-format | `series` Entries Reshaped for Direct `apexcharts-card` Use | done | TASK-0015b-diagnostics-select-and-scatter-sensors | Lead Agent (inline) |
 | TASK-0015b-patch-2-plotly-graph-xy-series-format | `series` Entries Reshaped Again — `custom:plotly-graph` x/y Arrays, Not `apexcharts-card` | done | TASK-0015b-patch-1-apexcharts-card-series-format | Lead Agent (inline) |
 | TASK-0015b-patch-3-xy-series-entry-on-base-class | `_xy_series_entry` Moved to `DiagnosticMode` — Shared by Every Diagnostic Mode | done | TASK-0015b-patch-2-plotly-graph-xy-series-format | Lead Agent (inline) |
+| TASK-0015b-patch-4-diagnostic-chart-marker-styling | Diagnostic Chart Marker Styling — One-Decimal Values, Weight-Sized Points, Stroke for Excluded Neighbors, Cross for Selected | done | TASK-0015b-patch-3-xy-series-entry-on-base-class | Lead Agent (inline) |
 | TASK-0038-diagnostic-slot-raw-data-csv-export | Raw-Data CSV Export for a Diagnosed Slot (Debugging/Analysis Aid) | done | — | Lead Agent (inline) |
 | TASK-0038-patch-1-export-fit-reproducibility-metadata | Patch — Make the CSV Export Sufficient to Recompute the Fit (Close the Replay Blind Spot) | done | TASK-0038-diagnostic-slot-raw-data-csv-export | Lead Agent (inline) |
 | TASK-0039-local-timezone-diagnostic-slot-fix | Diagnostic Slot/Calendar-Day Math Silently `UTC`-Anchored Instead of HA's Configured Local Timezone (Pinned Slot Off By The Local `UTC` Offset) | done | TASK-0015b-diagnostics-select-and-scatter-sensors, TASK-0037-pinned-slot-pool-not-yet-elapsed-freeze | Lead Agent (inline) |
@@ -92,4 +93,43 @@ one task in this cycle so far, a dedicated audit batch is not warranted on its
 own; folding this change into whatever group `providers/discovery.py`/
 `coordinator.py` land in during a future round-3 audit (should one be requested)
 is the more proportionate path, consistent with how round 2 scoped itself to
-only the files that actually changed since round 1.
+only the files that actually changed since round 1. | 2026-10-04 |
+TASK-0015b-patch-3-xy-series-entry-on-base-class | Created and implemented
+`TASK-0015b-patch-4` (Phase 6 Scenario C, chained off patch-3 — the task that
+owns `_xy_series_entry`, the one builder every `series` entry goes through).
+Direct human request to restyle the diagnostic chart: values shown with at most
+one decimal; slot-pool point sizes following the fit weight (weight 1 → size 4,
+integer sizes); ADR-011-excluded ("invalid") neighbor series drawn as a stroke;
+selected series drawn as a cross. Amended ADR-004 *before* implementation, per
+Phase 0: new §2h (Reason/Decision/Decided-by), §2's example updated in place,
+§5's pass-through phrase extended with `marker`, header running-amendments
+summary and `adr/INDEX.md` extended; `tasks/adr-summary.md` updated.
+Interpretation decisions made by the Lead Agent without a round-trip (cosmetic,
+one-line constants each, all recorded in §2h and flagged for human
+confirmation): Plotly symbols `line-ns` (stroke) and `x` (cross; `cross` would
+be a plus sign); sizes floored at 1, because `round(4 × weight)` is 0 below
+weight 0.125 and a size-0 marker is not drawn; an excluded series is sized by
+its *pre-exclusion* weight, because its real combined weight is 0 by
+construction and every stroke would otherwise be invisible; the `"sum"` entry
+derives weights/exclusion from its own summed pool. Implementation (Lead Agent
+inline; Worker then Reviewer) — **PASS**: `diagnostics/base.py`
+`_xy_series_entry` gained one-decimal rounding (`-0.0` normalised) and a
+`marker` key via `symbol=`/`sizes=` keyword parameters;
+`diagnostics/compare_regressions.py` `_pool_series` now takes weights and
+exclusion straight from `build_pool`'s `WeightBreakdown` (the fit's own
+computation, so the chart cannot drift from it), `_append_selected_series` emits
+crosses. `sensor.py`, `accuracy` and the CSV export untouched (full precision).
+Cross-checks: expected sizes in the three rebuilt exact-shape tests were derived
+by hand from the recency ramp, not copied from output; a test asserts displayed
+sizes equal `max(1, round(4 × combined_weight))` from an independent
+`build_pool` call; emitted traces were validated against Plotly's own schema
+(throwaway `uv run --with plotly`, nothing added to the project). Full suite
+green: `pytest` 819 passed (790 + 29 new), `mypy` clean (70 files),
+`ruff check`/`ruff format --check` clean (207 files), `mdformat --check` clean
+on every edited/created `.md` file. No new external dependency (a first-draft
+test importing `yaml`, only a transitive dev dependency, was replaced with a
+pure-Python invariant check); `tasks/DEPENDENCIES.md` unchanged. `Status` →
+`done`. | A `done` task's interface (the `series` entry builder) found
+insufficient by the human after the fact — Phase 6 Scenario C's own trigger,
+same lineage as patch-1/2/3. Original `TASK-0015b` and patch-3 left `done` and
+unedited. |

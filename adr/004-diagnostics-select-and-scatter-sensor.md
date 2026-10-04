@@ -47,8 +47,13 @@ one always-set value that every diagnostic computation reads unconditionally —
 `datetime.py`'s entity now shows it in both modes instead of `unknown` while
 auto-tracking; `clear_diagnostic_slot()` and `ShadyClearDiagnosticSlotButton`
 are gone. §2a/§5 below are updated to match; §2f is left as written and marked
-superseded in part. See ADR-013 for two sketched future modes that validate
-§1a's interface shape against needs beyond this ADR's own scope.
+superseded in part. As of 2026-10-04, §2h restyles every `series` entry's
+markers (`TASK-0015b-patch-4`) — values rounded to one decimal, slot-pool point
+sizes scaled by fit weight, ADR-011 §2-excluded neighbor series drawn as a
+stroke, `selected ...` series drawn as a cross — by adding one `marker` key to
+§2d's entry shape; §2's example below is updated to match. See ADR-013 for two
+sketched future modes that validate §1a's interface shape against needs beyond
+this ADR's own scope.
 
 ______________________________________________________________________
 
@@ -394,6 +399,7 @@ series:
     mode: markers
     x: [16.4, 21.7, 25.4]
     "y": [5.4, 2, 3]
+    marker: { symbol: circle, size: [2, 3, 4] } # size = fit weight x 4 (§2h)
     # ...one point per day in the rolling window (ADR-001 §4);
     # shown here with 3 instead of window_days points for brevity
   - entity: ""
@@ -402,42 +408,49 @@ series:
     mode: markers
     x: [] # same shape, this slot's -1 neighbor (ADR-011 §1)
     "y": []
+    marker: { symbol: line-ns, size: [] } # excluded neighbor (ADR-011 §2) -> stroke
   - entity: ""
     name: "1"
     type: scatter
     mode: markers
     x: [] # same shape, this slot's +1 neighbor
     "y": []
+    marker: { symbol: circle, size: [] }
   - entity: ""
     name: selected linear (94%)
     type: scatter
     mode: markers
     x: [21.7]
     "y": [3.1]
+    marker: { symbol: x }
   - entity: ""
     name: selected wls2 (96%)
     type: scatter
     mode: markers
     x: [21.7]
     "y": [3.2]
+    marker: { symbol: x }
   - entity: ""
     name: selected wls3 (89%)
     type: scatter
     mode: markers
     x: [21.7]
     "y": [3.3]
+    marker: { symbol: x }
   - entity: ""
     name: selected kernel (91%)
     type: scatter
     mode: markers
     x: [21.7]
     "y": [3.4]
+    marker: { symbol: x }
   - entity: ""
     name: selected actual
     type: scatter
     mode: markers
     x: [21.7]
     "y": [3.15]
+    marker: { symbol: x }
 ```
 
 **`"y"` must stay an explicitly-quoted string key, in any YAML rendering of this
@@ -964,6 +977,63 @@ human's confirmation in the session summary; implementation, Phase 6 Scenario C
 — `TASK-0037-patch-3` stays `done`, unedited; see
 `tasks/TASK-0037-patch-4-follow-latest-diagnostic-slot-toggle.md`).
 
+### 2h — Amendment (2026-10-04, `TASK-0015b-patch-4`): chart marker styling — one-decimal values, weight-sized points, stroke for excluded neighbors, cross for selected
+
+**Reason:** every trace in §2d's shape was drawn identically — same marker, same
+size, full float precision in the hover labels. A person looking at the chart
+could not tell how much each training point actually counts in the fit (ADR-001
+§2/§4a, ADR-011 §1), which neighbor series ADR-011 §2 threw out of the pool
+altogether, or which points are the diagnosed slot's predictions rather than
+training data.
+
+**Decision:** each `series` entry gains exactly one new key, `marker`, and its
+`x`/`y` values are rounded; nothing else about §2d's shape changes.
+
+- **Values: at most one decimal.** Every `x`/`y` value is rounded to one decimal
+  place (`round(v, 1)`, normalising a resulting `-0.0` to `0.0`) in
+  `DiagnosticMode._xy_series_entry` (§2e), so every mode and every series —
+  slot-pool and `selected ...` alike — gets it. Display-only: `accuracy` (§2),
+  the CSV export (ADR-015) and everything fitted keep full precision.
+- **Slot-pool points: size follows weight.** `marker.size` is a per-point list,
+  `round(4 × weight)` as an integer, i.e. weight `1.0` → size `4` and no decimal
+  sizes. `weight` is `regression.base.build_pool`'s own per-point weight
+  (`magnitude_weight × time_weight × recency_weight × is_valid`, a value in
+  `[0, 1]` — ADR-001 §2, §4a, ADR-011 §1), taken from its `WeightBreakdown`
+  (ADR-015 §6) so the chart can never drift from what the fit actually used.
+  Sizes have a **floor of 1**: a literal `round(4 × weight)` is `0` for any
+  weight below `0.125`, and a size-`0` marker is not drawn — which would make
+  low-weight points, the very thing this chart exists to show, vanish.
+- **Excluded neighbor series: a stroke.** A neighbor offset ADR-011 §2 excludes
+  from the pool (`neighbor_excluded`) is drawn with `marker.symbol` `line-ns`
+  instead of `circle`. Its pool weight is `0` by construction, so its sizes use
+  the weight it *would* have had without the exclusion
+  (`magnitude × time × recency × is_valid`; identical to the real weight for
+  every series that is not excluded) — otherwise every stroke would be size `0`
+  and invisible. `circle` is stated explicitly on all other pool series rather
+  than left to Plotly's default. With `neighbor_fitting_cutoff = -1%` (ADR-011
+  §3, rescale instead of exclude) nothing is ever excluded, so no stroke
+  appears.
+- **Selected series: a cross.** `selected {method}` and `selected actual` use
+  `marker.symbol` `x`, no `size` (Plotly's default applies).
+- **The `"sum"` entry (§2b)** follows the identical rules, computed from the
+  same pointwise-summed pool its points already come from — weights and
+  exclusion are evaluated on the summed arrays, exactly as if the sum were one
+  more string.
+- **Consumption pattern unchanged.** `marker` is a nested mapping holding a
+  list, which §2's "flat dicts" guidance did not anticipate; it still
+  round-trips through `str()` into valid YAML flow syntax (strings, numbers,
+  lists and mappings only — no booleans or `None`, §2d), so the
+  `entities: "{{ ... | string }}"` template works unmodified.
+
+**Decided by:** human (the four requested changes: one-decimal values, weight-
+sized points with weight `1` → size `4` and no decimals, a stroke for invalid
+neighbor series, a cross for selected series), Lead Agent (details — flagged for
+the human's confirmation in the session summary: Plotly symbols `line-ns` for
+the stroke and `x` for the cross; the size floor of `1`; pre-exclusion weight
+sizing for excluded series; the sum entry weighting from its summed pool;
+implementation, Phase 6 Scenario C — `TASK-0015b-patch-3` stays `done`,
+unedited; see `tasks/TASK-0015b-patch-4-diagnostic-chart-marker-styling.md`).
+
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 
 Re-querying the recorder for a slot's full rolling-window history (`window_days`
@@ -1090,12 +1160,12 @@ and sets `state`/`attributes` straight from the matching entry (the `"sum"`
 entry included: built by the mode itself now, not reassembled here from sibling
 sensors' output); if no mode is active, it reports `disabled` as §1 specifies.
 `sensor.py` performs **no reshaping of any kind** on what `diagnostics/` returns
-— every `series` entry's `entity`/`name`/`type`/`mode`/`x`/`y` (§2c/§2d) comes
-straight from `compute()` unchanged. (**2026-09-21, briefly:** between
-`TASK-0015b-patch-1` and `TASK-0015b-patch-2`, the same day, `sensor.py` did add
-one narrow reshaping step — injecting its own `entity_id` into each `series`
-entry, since `entity` was then meant as a self-reference and `compute()` has no
-notion of the HA entity registry at all (§1a's whole point).
+— every `series` entry's `entity`/`name`/`type`/`mode`/`x`/`y`/`marker`
+(§2c/§2d/§2h) comes straight from `compute()` unchanged. (**2026-09-21,
+briefly:** between `TASK-0015b-patch-1` and `TASK-0015b-patch-2`, the same day,
+`sensor.py` did add one narrow reshaping step — injecting its own `entity_id`
+into each `series` entry, since `entity` was then meant as a self-reference and
+`compute()` has no notion of the HA entity registry at all (§1a's whole point).
 `TASK-0015b-patch-2` made `entity` a constant empty string instead (§2d),
 removing any reason for `sensor.py` to touch `series` at all, and the injection
 was removed along with it — mentioned here only because it happened and because

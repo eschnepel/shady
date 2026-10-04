@@ -129,6 +129,7 @@ class _SeriesDiagnosticMode(DiagnosticMode):
                                 "mode": "markers",
                                 "x": [1.0],
                                 "y": [2.0],
+                                "marker": {"symbol": "circle", "size": [3]},
                             }
                         ],
                         "accuracy": {"method_x": 0.5},
@@ -250,8 +251,8 @@ class TestDiagnosticsSensorStateWithoutTriggeringCompute:
 class TestDiagnosticsSensorSeriesPassesThroughUnchanged:
     """ADR-004 §5, 2026-09-21 Amendment: `extra_state_attributes` performs
     no reshaping at all — every `series` entry (`entity`/`type`/`mode`
-    constants included, ADR-004 §2d) and `accuracy` come straight out of
-    `result.attributes`, byte-for-byte. (Contrast the short-lived
+    constants and the `marker` of ADR-004 §2h included) and `accuracy`
+    come straight out of `result.attributes`, byte-for-byte. (Contrast the short-lived
     `TASK-0015b-patch-1` version of this test, which asserted the
     opposite: that `sensor.py` *did* rewrite each entry to inject its own
     `entity_id` — superseded the same day once `entity` became a
@@ -278,6 +279,7 @@ class TestDiagnosticsSensorSeriesPassesThroughUnchanged:
                 "mode": "markers",
                 "x": [1.0],
                 "y": [2.0],
+                "marker": {"symbol": "circle", "size": [3]},
             }
         ]
         assert attrs["accuracy"] == {"method_x": 0.5}

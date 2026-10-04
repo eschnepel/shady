@@ -40,11 +40,18 @@ added to `coordinator.py` for everything else (`diagnosed_slot`,
 `regression_settings`, `string_computation_config`,
 `target_cell_temperature_for_slot`) — never a `_`-prefixed coordinator
 attribute.
+
+As of 2026-10-04 (ADR-004 §2h, `TASK-0015b-patch-4`), every `series` entry
+also carries a `marker` (slot-pool points sized by fit weight, an
+ADR-011 §2-excluded neighbor series drawn as a stroke, `selected ...`
+series drawn as a cross) and one-decimal `x`/`y` values — see
+`_pool_series` and the `_SYMBOL_*` constants below.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -74,6 +81,20 @@ _LOGGER = logging.getLogger(__name__)
 # the "selected ..." series-missing report is root-caused for real.
 _DIAGNOSTIC_LOG = False
 
+# ADR-004 §2h (2026-10-04, `TASK-0015b-patch-4`): how a `series` entry is
+# drawn. Plotly marker-symbol names; the values are a presentation
+# choice, deliberately named in one place so changing a symbol is a
+# one-line edit.
+_SYMBOL_POOL = "circle"
+_SYMBOL_EXCLUDED_NEIGHBOR = "line-ns"  # ADR-011 §2 exclusion -> a stroke
+_SYMBOL_SELECTED = "x"  # `selected {method}` / `selected actual` -> a cross
+# A slot-pool point's marker size is `_WEIGHT_UNIT_SIZE x weight` (weight
+# 1.0 -> size 4), rounded to an integer, never below `_MIN_MARKER_SIZE`:
+# a size-0 marker is not drawn at all, which would hide exactly the
+# low-weight points the chart exists to show.
+_WEIGHT_UNIT_SIZE = 4
+_MIN_MARKER_SIZE = 1
+
 if TYPE_CHECKING:
     # Same reasoning as base.py's own ShadyCoordinatorLike import: this module
     # never constructs a DiagnosedSlot/RegressionSettings/
@@ -92,6 +113,18 @@ def _to_float_array(values: list[float | None | str]) -> NDArray[np.float64]:
     `string_computation.py`'s functions already treat `NaN` as
     excluded/pad, matching `build_pool`'s own contract."""
     return np.array([v if isinstance(v, float) else np.nan for v in values], dtype=np.float64)
+
+
+def _marker_size(weight: float) -> int:
+    """A slot-pool point's `marker.size` for `weight` (ADR-004 §2h):
+    `_WEIGHT_UNIT_SIZE x weight` rounded half-up to an integer, floored at
+    `_MIN_MARKER_SIZE`. A non-finite `weight` is treated as `0.0` (so it
+    gets the floor) rather than raising — `build_pool` never produces
+    one, but this is display-only code that must not take a sensor down
+    (ADR-000 §8's clamp-over-exception preference)."""
+    if not math.isfinite(weight):
+        weight = 0.0
+    return max(_MIN_MARKER_SIZE, math.floor(weight * _WEIGHT_UNIT_SIZE + 0.5))
 
 
 def _export_float_or_blank(value: float) -> str:
@@ -401,9 +434,15 @@ class CompareRegressionsMode(DiagnosticMode):
                 name = f"selected {method} ({round(method_accuracy * 100)}%)"
             else:
                 name = f"selected {method}"
-            series.append(self._xy_series_entry(name, [[fc_selected, predicted]]))
+            series.append(
+                self._xy_series_entry(name, [[fc_selected, predicted]], symbol=_SYMBOL_SELECTED)
+            )
         if pv_selected is not None:
-            series.append(self._xy_series_entry("selected actual", [[fc_selected, pv_selected]]))
+            series.append(
+                self._xy_series_entry(
+                    "selected actual", [[fc_selected, pv_selected]], symbol=_SYMBOL_SELECTED
+                )
+            )
         return accuracy
 
     def _pool_series(
@@ -417,17 +456,55 @@ class CompareRegressionsMode(DiagnosticMode):
         traces, built via the inherited
         `DiagnosticMode._xy_series_entry` (ADR-004 §2d,
         `TASK-0015b-patch-3`) — `sensor.py` performs no further
-        shaping."""
+        shaping.
+
+        ADR-004 §2h (2026-10-04, `TASK-0015b-patch-4`): each point's
+        `marker.size` follows its fit weight, and a neighbor series
+        ADR-011 §2 excluded is drawn as a stroke. Both come from
+        `build_pool`'s own `WeightBreakdown` — the very computation the
+        fit uses, run on the same arrays — so the chart cannot drift
+        from what the fit did. The weight used is
+        `magnitude x time x recency x valid`: identical to the real
+        `combined_weight` for every series that is not excluded, and for
+        an excluded one (whose real weight is zeroed, which would make
+        every stroke size 0) the weight it would have had otherwise.
+        The `"sum"` entry's summed pool goes through the same call,
+        evaluated as if it were one more string.
+        """
+        _sample_pool, breakdown = build_pool(
+            pool.fc_by_offset,
+            pool.corrected_pv_by_offset,
+            settings.smoothing_radius,
+            settings.neighbor_fitting_cutoff,
+            settings.recency_decay_max,
+            return_weight_breakdown=True,
+        )
         series: list[dict[str, Any]] = []
         for offset in range(-settings.smoothing_radius, settings.smoothing_radius + 1):
             fc_row = pool.fc_by_offset[offset][0]
             pv_row = pool.corrected_pv_by_offset[offset][0]
-            data = [
-                [float(fc), float(pv)]
-                for fc, pv in zip(fc_row, pv_row, strict=True)
-                if not (np.isnan(fc) or np.isnan(pv))
-            ]
-            series.append(self._xy_series_entry(str(offset), data))
+            weight_row = (
+                breakdown.magnitude_weight[offset][0]
+                * breakdown.time_weight[offset]
+                * breakdown.recency_weight
+                * breakdown.valid_mask[offset][0]
+            )
+            data: list[list[float]] = []
+            sizes: list[int] = []
+            for day_index, (fc, pv) in enumerate(zip(fc_row, pv_row, strict=True)):
+                if np.isnan(fc) or np.isnan(pv):
+                    continue
+                data.append([float(fc), float(pv)])
+                sizes.append(_marker_size(float(weight_row[day_index])))
+            excluded = bool(breakdown.neighbor_excluded[offset][0])
+            series.append(
+                self._xy_series_entry(
+                    str(offset),
+                    data,
+                    symbol=_SYMBOL_EXCLUDED_NEIGHBOR if excluded else _SYMBOL_POOL,
+                    sizes=sizes,
+                )
+            )
         return series
 
     # -- shared pool gathering ------------------------------------------------

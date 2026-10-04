@@ -36,6 +36,7 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import numpy as np
 import pytest
 
 from tests import test_coordinator as tc
@@ -165,16 +166,28 @@ class TestSumEntryDayAlignment:
         result = coordinator.diagnostic_result()
         assert result is not None
 
+        # Marker sizes (ADR-004 §2h): FC is a constant 500, so every
+        # magnitude weight is 1.0 and time_weight (offset 0) is 1.0 — the
+        # only varying factor is recency_weight, a linear ramp over the
+        # 3-day window from `1 - recency_decay_max` (0.5) at the oldest
+        # day to 1.0 at the newest: [0.5, 0.75, 1.0] -> x4 -> [2, 3, 4].
         string_0 = _sensor(result, "0")
         assert string_0.attributes["series"] == [
-            _xy_series_entry("0", [[500.0, 500.0], [500.0, 500.0], [500.0, 500.0]])
+            _xy_series_entry(
+                "0",
+                [[500.0, 500.0], [500.0, 500.0], [500.0, 500.0]],
+                symbol="circle",
+                sizes=[2, 3, 4],
+            )
         ]
 
         string_1 = _sensor(result, "1")
         # Day 0 is filtered out of string 1's own display series — it has
         # nothing that day — leaving only the two days it actually has.
+        # ... and its sizes are the *surviving* days' own weights (days 1
+        # and 2: 0.75 and 1.0 -> [3, 4]), not the first two of the ramp.
         assert string_1.attributes["series"] == [
-            _xy_series_entry("0", [[500.0, 300.0], [500.0, 300.0]])
+            _xy_series_entry("0", [[500.0, 300.0], [500.0, 300.0]], symbol="circle", sizes=[3, 4])
         ]
 
         summed = _sensor(result, "sum")
@@ -191,6 +204,10 @@ class TestSumEntryDayAlignment:
                     [1000.0, 800.0],  # day 1: both strings present
                     [1000.0, 800.0],  # day 2 (== _PIN's own day): both strings present
                 ],
+                # Weights are evaluated on the *summed* pool (FC 1000 on
+                # all three days -> magnitude 1.0): same ramp as string 0.
+                symbol="circle",
+                sizes=[2, 3, 4],
             )
         ]
 
@@ -210,7 +227,7 @@ class TestSumEntryDayAlignment:
         assert result is not None
         summed = _sensor(result, "sum")
         assert summed.attributes["series"] == [
-            _xy_series_entry("0", [[1000.0, 800.0], [1000.0, 800.0]])
+            _xy_series_entry("0", [[1000.0, 800.0], [1000.0, 800.0]], symbol="circle", sizes=[3, 4])
         ]
 
 
@@ -289,11 +306,12 @@ class TestSelectedAggregatesSummedIndependently:
         selected_series = [
             entry for entry in summed.attributes["series"] if entry["name"].startswith("selected")
         ]
-        assert _xy_series_entry("selected actual", [[1000.0, 530.0]]) in selected_series
+        assert _xy_series_entry("selected actual", [[1000.0, 530.0]], symbol="x") in selected_series
         assert any(
             entry["name"].startswith("selected method_x")
             and entry["x"] == [1000.0]
             and entry["y"] == [500.0]
+            and entry["marker"] == {"symbol": "x"}
             for entry in selected_series
         )
         assert summed.attributes["accuracy"] == {"method_x": expected_accuracy}
@@ -1146,3 +1164,249 @@ def _replay_compare_regressions(sections: dict[str, list[dict[str, str]]]) -> st
 
     assert isinstance(result, str)
     return result
+
+
+# -- ADR-004 §2h (2026-10-04, `TASK-0015b-patch-4`): marker styling ----------
+
+_GatheredPool = sys.modules["shady.diagnostics.compare_regressions"]._GatheredPool
+_marker_size = sys.modules["shady.diagnostics.compare_regressions"]._marker_size
+_regression_base: Any = sys.modules["shady.regression.base"]
+
+
+def _row(values: list[float]) -> Any:
+    """A one-slot `(1, window_days)` float row, `float("nan")` = missing day."""
+    return np.array([values], dtype=np.float64)
+
+
+def _styling_settings(
+    *, smoothing_radius: int = 0, cutoff: float = 0.5, recency_decay_max: float = 0.0
+) -> Any:
+    return _coordinator_like_mod.RegressionSettings(
+        smoothing_radius=smoothing_radius,
+        neighbor_fitting_cutoff=cutoff,
+        recency_decay_max=recency_decay_max,
+        clipping_threshold=0.0,
+        max_uplift_c=0.0,
+    )
+
+
+def _styling_pool(fc: dict[int, list[float]], pv: dict[int, list[float]]) -> Any:
+    return _GatheredPool(
+        fc_by_offset={o: _row(v) for o, v in fc.items()},
+        corrected_pv_by_offset={o: _row(v) for o, v in pv.items()},
+        # Raw PV / temperature only matter to `export_csv` (ADR-015), never
+        # to the displayed `series` -- left unpopulated, like the "sum" pool.
+        pv_by_offset={},
+        temperature_by_offset=None,
+    )
+
+
+class TestMarkerSizeFromWeight:
+    """`_marker_size`: `round(4 x weight)` as an integer, floor 1."""
+
+    @pytest.mark.parametrize(
+        ("weight", "size"),
+        [
+            (1.0, 4),  # the spec's anchor point: weight 1 -> size 4
+            (0.75, 3),
+            (0.5, 2),
+            (0.2, 1),  # 0.8 rounds up to 1
+            (0.125, 1),  # 0.5 rounds half-up to 1
+            (0.1, 1),  # 0.4 would round to 0 -> floored at 1
+            (0.0, 1),  # a size-0 marker is not drawn at all
+            (float("nan"), 1),  # never raises
+        ],
+    )
+    def test_size(self, weight: float, size: int) -> None:
+        assert _marker_size(weight) == size
+
+    def test_size_is_always_an_int(self) -> None:
+        assert isinstance(_marker_size(0.6), int)
+
+
+class TestPoolSeriesMarkerSizes:
+    """Slot-pool points: `marker.size` = `max(1, round(4 x weight))`, where
+    weight is `build_pool`'s own per-point weight (ADR-004 §2h)."""
+
+    def _mode(self) -> Any:
+        return _CompareRegressionsMode(None)
+
+    def test_weight_one_is_size_four_and_low_weights_floor_at_one(self) -> None:
+        # No recency decay, offset 0 only: weight == magnitude_weight ==
+        # FC / row-max FC == [1.0, 0.5, 0.2, 0.01] -> x4 -> 4, 2, 0.8, 0.04
+        # -> rounded 4, 2, 1, 0 -> floored 4, 2, 1, 1.
+        fc = [100.0, 50.0, 20.0, 1.0]
+        pv = [90.0, 45.0, 18.0, 1.0]
+        pool = _styling_pool({0: fc}, {0: pv})
+
+        series = self._mode()._pool_series(_styling_settings(), pool)
+
+        assert series == [
+            _xy_series_entry(
+                "0",
+                [[100.0, 90.0], [50.0, 45.0], [20.0, 18.0], [1.0, 1.0]],
+                symbol="circle",
+                sizes=[4, 2, 1, 1],
+            )
+        ]
+
+    def test_sizes_follow_recency_and_time_weight_too(self) -> None:
+        # Constant FC (magnitude 1.0); decay 0.5 over 3 days -> recency
+        # [0.5, 0.75, 1.0]; radius 1 -> neighbor time_weight 1 - 1/2 = 0.5,
+        # center 1.0. Offset 0: x4 -> [2, 3, 4]. Offsets +-1: 0.25, 0.375,
+        # 0.5 -> x4 -> 1.0, 1.5, 2.0 -> [1, 2, 2] (1.5 rounds half-up).
+        fc = {o: [100.0] * 3 for o in (-1, 0, 1)}
+        pv = {o: [80.0] * 3 for o in (-1, 0, 1)}  # equal medians: nothing excluded
+        pool = _styling_pool(fc, pv)
+
+        series = self._mode()._pool_series(
+            _styling_settings(smoothing_radius=1, recency_decay_max=0.5), pool
+        )
+
+        sizes = {entry["name"]: entry["marker"]["size"] for entry in series}
+        assert sizes == {"-1": [1, 2, 2], "0": [2, 3, 4], "1": [1, 2, 2]}
+
+    def test_sizes_equal_the_fits_own_combined_weight_for_a_non_excluded_series(self) -> None:
+        """The cross-check that the chart cannot drift from the fit: for
+        every series that is not excluded, the displayed size is exactly
+        `max(1, round(4 x combined_weight))` from the production
+        `build_pool` run on the same arrays."""
+        fc = {
+            -1: [80.0, 120.0, 60.0, 10.0],
+            0: [100.0, 90.0, 40.0, 5.0],
+            1: [70.0, 110.0, 50.0, 20.0],
+        }
+        pv = {
+            -1: [70.0, 100.0, 50.0, 8.0],
+            0: [90.0, 80.0, 35.0, 4.0],
+            1: [60.0, 95.0, 45.0, 17.0],
+        }
+        settings = _styling_settings(smoothing_radius=1, cutoff=0.9, recency_decay_max=0.4)
+        pool = _styling_pool(fc, pv)
+
+        series = self._mode()._pool_series(settings, pool)
+        _sample, breakdown = _regression_base.build_pool(
+            pool.fc_by_offset,
+            pool.corrected_pv_by_offset,
+            1,
+            0.9,
+            0.4,
+            return_weight_breakdown=True,
+        )
+
+        assert not any(breakdown.neighbor_excluded[o][0] for o in (-1, 0, 1))
+        for entry in series:
+            offset = int(entry["name"])
+            expected = [
+                max(1, math.floor(4 * float(w) + 0.5)) for w in breakdown.combined_weight[offset][0]
+            ]
+            assert entry["marker"]["size"] == expected
+            assert entry["marker"]["symbol"] == "circle"
+
+    def test_sizes_stay_aligned_with_the_surviving_days_when_a_day_is_missing(self) -> None:
+        # Middle day has no FC -> dropped from the points; the sizes must be
+        # the *surviving* days' own weights: oldest 0.5 -> 2, newest 1.0 -> 4.
+        pool = _styling_pool({0: [100.0, float("nan"), 100.0]}, {0: [80.0, 80.0, 80.0]})
+
+        (entry,) = self._mode()._pool_series(_styling_settings(recency_decay_max=0.5), pool)
+
+        assert entry["x"] == [100.0, 100.0]
+        assert entry["marker"]["size"] == [2, 4]
+
+    def test_values_are_rounded_to_one_decimal(self) -> None:
+        pool = _styling_pool({0: [100.04, 99.96]}, {0: [90.14, 89.96]})
+
+        (entry,) = self._mode()._pool_series(_styling_settings(), pool)
+
+        assert entry["x"] == [100.0, 100.0]
+        assert entry["y"] == [90.1, 90.0]
+
+
+# Center slot: PV/FC = 0.8. +1 neighbor: PV/FC = 0.08 -> deviation 0.9 > cutoff
+# 0.2 -> excluded. -1 neighbor: PV/FC = 0.82 -> deviation 0.025 -> kept.
+# Radius 1 -> neighbor time_weight 0.5; FC constant, no decay.
+_EXCLUSION_FC = {o: [100.0] * 3 for o in (-1, 0, 1)}
+_EXCLUSION_PV = {-1: [82.0] * 3, 0: [80.0] * 3, 1: [8.0] * 3}
+
+
+class TestExcludedNeighborSeriesIsAStroke:
+    """ADR-011 §2-excluded neighbor offsets are drawn `line-ns`, sized by the
+    weight they would have had without the exclusion (ADR-004 §2h)."""
+
+    def _series(self, cutoff: float) -> dict[str, Any]:
+        pool = _styling_pool(_EXCLUSION_FC, _EXCLUSION_PV)
+        series = _CompareRegressionsMode(None)._pool_series(
+            _styling_settings(smoothing_radius=1, cutoff=cutoff), pool
+        )
+        return {entry["name"]: entry for entry in series}
+
+    def test_excluded_neighbor_is_a_stroke_and_others_are_circles(self) -> None:
+        by_name = self._series(cutoff=0.2)
+
+        assert by_name["1"]["marker"]["symbol"] == "line-ns"
+        assert by_name["-1"]["marker"]["symbol"] == "circle"
+        assert by_name["0"]["marker"]["symbol"] == "circle"
+
+    def test_excluded_neighbor_is_sized_by_its_pre_exclusion_weight(self) -> None:
+        by_name = self._series(cutoff=0.2)
+
+        # time_weight 0.5 x magnitude 1.0 x recency 1.0 = 0.5 -> size 2 --
+        # the same as the kept -1 neighbor, not the floor.
+        assert by_name["1"]["marker"]["size"] == [2, 2, 2]
+        assert by_name["-1"]["marker"]["size"] == [2, 2, 2]
+        assert by_name["0"]["marker"]["size"] == [4, 4, 4]
+
+    def test_the_real_combined_weight_of_the_excluded_series_is_zero(self) -> None:
+        """Why the pre-exclusion weight is used: the fit's own weight for this
+        series is 0 -- sizing by it would make every stroke the floor size,
+        indistinguishable from any other negligible point."""
+        pool = _styling_pool(_EXCLUSION_FC, _EXCLUSION_PV)
+        _sample, breakdown = _regression_base.build_pool(
+            pool.fc_by_offset, pool.corrected_pv_by_offset, 1, 0.2, 0.0,
+            return_weight_breakdown=True,
+        )  # fmt: skip
+
+        assert bool(breakdown.neighbor_excluded[1][0])
+        assert float(breakdown.combined_weight[1].sum()) == 0.0
+
+    def test_rescale_sentinel_never_excludes_so_no_stroke_appears(self) -> None:
+        by_name = self._series(cutoff=_regression_base.RESCALE_SENTINEL)
+
+        assert {entry["marker"]["symbol"] for entry in by_name.values()} == {"circle"}
+
+
+class TestSelectedSeriesAreCrosses:
+    """`selected {method}` / `selected actual`: `marker == {"symbol": "x"}`,
+    values rounded to one decimal, `accuracy` left at full precision."""
+
+    def _append(self, predictions: dict[str, float], fc: float, pv: float | None) -> Any:
+        series: list[dict[str, Any]] = []
+        accuracy = _CompareRegressionsMode(None)._append_selected_series(
+            series, predictions, fc, pv
+        )
+        return series, accuracy
+
+    def test_every_selected_series_is_a_cross_with_no_size(self) -> None:
+        series, _accuracy = self._append({"linear": 3.14159, "kernel": 2.96}, 21.74, 3.0)
+
+        assert [entry["name"] for entry in series] == [
+            "selected linear (95%)",
+            "selected kernel (99%)",
+            "selected actual",
+        ]
+        assert all(entry["marker"] == {"symbol": "x"} for entry in series)
+
+    def test_values_are_rounded_but_accuracy_is_not(self) -> None:
+        series, accuracy = self._append({"linear": 3.14159}, 21.74, 3.0)
+
+        assert (series[0]["x"], series[0]["y"]) == ([21.7], [3.1])
+        assert (series[1]["x"], series[1]["y"]) == ([21.7], [3.0])
+        assert accuracy == {"linear": diagnostic_accuracy(3.14159, 3.0)}
+        assert accuracy["linear"] != round(accuracy["linear"], 1)
+
+    def test_a_future_pinned_slot_still_gets_crosses_just_no_actual(self) -> None:
+        series, accuracy = self._append({"linear": 3.14159}, 21.74, None)
+
+        assert [entry["name"] for entry in series] == ["selected linear"]
+        assert series[0]["marker"] == {"symbol": "x"}
+        assert accuracy == {}
