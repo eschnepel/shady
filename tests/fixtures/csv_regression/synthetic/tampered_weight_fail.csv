@@ -1,0 +1,26 @@
+# diagnostic_mode
+diagnostic_mode,expected
+compare_regressions,FAIL
+
+# metadata
+string_index,string_name,diagnosed_at,diagnosed_index,slot_of_day,is_pinned,is_elapsed,regression_method_configured,temperature_tier,window_days,smoothing_radius,neighbor_fitting_cutoff,recency_decay_max,clipping_threshold,max_uplift_c,converter_limit_w,coefficient_per_c,provider_already_corrects,rated_dc_capacity_wp
+0,Dach Süd,2026-06-10T10:00:00+00:00,677496,120,true,true,wls2,,3,0,0.25,0.5,0.98,25.0,,0.0,false,
+
+# training_pool
+offset,day_index,sample_date,day_age,fc_raw,pv_raw,pv_corrected,temperature_raw,is_valid,magnitude_weight,time_weight,recency_weight,neighbor_excluded,neighbor_scale,combined_weight
+0,0,2026-06-08,2,500.0,500.0,500.0,,1,1.0,1.0,0.5,0,1.0,123.0
+0,1,2026-06-09,1,500.0,480.0,480.0,,1,1.0,1.0,0.75,0,1.0,0.75
+0,2,2026-06-10,0,500.0,510.0,510.0,,1,1.0,1.0,1.0,0,1.0,1.0
+
+# predictions
+method,predicted,pv_selected,accuracy
+linear,497.7777752888889,510.0,0.9760348535076253
+kernel,497.77777777777777,510.0,0.9760348583877996
+wls2,497.77777611851855,510.0,0.9760348551343501
+wls3,497.77777653333334,510.0,0.9760348559477124
+
+# prediction_inputs
+key,value
+fc_selected,500.0
+pv_selected,510.0
+

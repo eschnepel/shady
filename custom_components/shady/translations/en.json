@@ -3,22 +3,85 @@
   "name": "Shady",
   "config": {
     "step": {
-      "user": {
-        "title": "Configure Shady",
-        "description": "Placeholder – config flow fields to be defined per ADR-001 §6 (e.g. baseline candidate, training window, regression method).",
-        "data": {}
+      "baseline": {
+        "title": "Shady \u2013 Baseline",
+        "description": "The default baseline forecast every string uses unless it overrides it. This is asked first, before any string is configured.",
+        "data": {
+          "baseline_candidate": "Default baseline forecast",
+          "baseline_manual_entity_id": "Manual baseline entity_id",
+          "baseline_manual_attribute": "Manual baseline attribute (optional)",
+          "baseline_manual_shape": "Manual baseline data shape",
+          "temperature_aware": "Baseline already accounts for temperature effects"
+        }
+      },
+      "strings": {
+        "title": "Shady \u2013 Strings",
+        "description": "Pick every entity that is a PV string. Adding or removing an entity here is the only way a string is added or removed.",
+        "data": {
+          "strings": "PV string sensors"
+        }
+      },
+      "string_settings_hub": {
+        "title": "Shady \u2013 Configure a string",
+        "description": "Pick a string to configure further, or Done to move on.",
+        "data": {
+          "entity_id": "String"
+        }
+      },
+      "string_settings_edit": {
+        "title": "Shady \u2013 String settings",
+        "description": "Settings for this one string. Every field is always shown; leave a field at its default to skip that correction for this string.",
+        "data": {
+          "name": "Name (optional)",
+          "baseline_override": "Baseline override (optional; default uses the global baseline)",
+          "temperature_source_entity_id": "Temperature source override (optional)",
+          "converter_limit_w": "Converter/inverter AC power limit (W, optional)",
+          "temperature_coefficient_pct_per_c": "Temperature coefficient (%/\u00b0C)",
+          "rated_dc_capacity_wp": "Rated DC capacity (Wp, optional)"
+        }
+      },
+      "regression_tuning": {
+        "title": "Shady \u2013 Regression tuning",
+        "description": "Global settings for the shading-model regression. These apply to every configured string.",
+        "data": {
+          "window_days": "Training window (days)",
+          "regression_method": "Regression method",
+          "smoothing_radius": "Smoothing radius (slots)",
+          "neighbor_fitting_cutoff": "Neighbor-fitting cutoff",
+          "recency_decay_max": "Recency decay (max downweight)",
+          "clipping_threshold": "Clipping threshold (% of inverter limit)"
+        }
+      },
+      "advanced_optional": {
+        "title": "Shady \u2013 Advanced & optional settings",
+        "description": "Temperature-derating and intraday-correction settings. Global, applying to every configured string unless a string overrides its temperature source.",
+        "data": {
+          "default_temperature_source": "Default temperature source (optional)",
+          "max_uplift_c": "Ambient-to-cell max uplift (\u00b0C)",
+          "weather_forecast_temperature_entity": "Weather entity for temperature forecast (optional)",
+          "temperature_regression_method": "Temperature regression method",
+          "intraday_correction_mode": "Intraday deviation-correction mode",
+          "intraday_correction_cutoff": "Intraday deviation-correction cutoff",
+          "window_slots": "Intraday rolling window (slots)",
+          "ramp_slots": "Intraday ramp/blend duration (slots)"
+        }
+      },
+      "reconfigure": {
+        "title": "Shady \u2013 Reconfigure",
+        "description": "Pick a section to change, or Save & Finish to apply your changes.",
+        "menu_options": {
+          "baseline": "Baseline",
+          "strings": "Strings",
+          "regression_tuning": "Regression Tuning",
+          "advanced_optional": "Advanced & Optional Settings",
+          "finish": "Save & Finish"
+        }
       }
     },
-    "error": {}
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Shady Options",
-        "data": {}
-      }
-    },
-    "error": {}
+    "error": {},
+    "abort": {
+      "reconfigure_successful": "Reconfiguration successful."
+    }
   },
   "entity": {
     "sensor": {}
