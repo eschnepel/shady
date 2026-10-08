@@ -135,6 +135,47 @@ displayed value is small (scaled by a small `w`), not absent, and grows smoothly
 as more of the window fills with genuine same-day generation. This is a real
 trade, not a strict improvement — see Consequences.
 
+**Amendment (2026-10-07, `TASK-0041`): the slot trigger is the recorder's own
+statistics event, not a wall-clock interval.**
+
+**Reason:** `async_track_time_interval(..., minutes=5)` fires at whatever phase
+Home Assistant happened to start, unrelated to the recorder. The recorder
+compiles each slot's 5-minute statistic at `second=10` after every 5-minute mark
+and fires `EVENT_RECORDER_5MIN_STATISTICS_GENERATED` (`homeassistant.const`)
+from inside that compile — read from HA core's recorder source; the event is
+fired just *before* the compile's session commits and carries no payload. A tick
+whose phase falls within that delay reads the freshest slot before it exists.
+Observed 2026-10-07 on a real system (ADR-007a §4 Amendment): the diagnostic
+chart's "selected actual" was missing for a whole run. The cache fix
+(`TASK-0037-patch-5`) stops the damage from becoming permanent but cannot make a
+tick see a value that does not exist yet at that instant; the followed diagnosed
+slot, this section's window edge and the diagnostics all consume that same
+freshest slot, so the fix belongs in what triggers them. Shady's input *is* the
+short-term statistics table, so a trigger synchronized to its compile is the
+natural one: polling at an arbitrary phase has no benefit.
+
+**Decision:** The slot trigger is that event. Per event the coordinator
+schedules one *slot job*: it probes (on the recorder executor) until the newest
+complete slot of every configured string's actual-yield entity is readable —
+retrying every `PROBE_INTERVAL` (1 s) up to `MAX_PROBES` (5), because the event
+precedes the commit — and then runs, once and serialized with every other
+cache-touching job, what the interval used to run: the followed-slot advance
+(ADR-004 §2g), each string's intraday advance (this section) and the diagnostics
+refresh (ADR-004 §2/§4). A string that never delivers does not block the job:
+after `MAX_PROBES` it runs anyway. A slot already processed is not processed
+again. The interval stays registered as a **watchdog** that runs the same job
+only if none ran for `WATCHDOG` (6 minutes), so a silently missing event cannot
+stop the correction. Midnight recalibration (ADR-002 §1, 00:01), the energy
+reset (ADR-005 §5, 00:00), the Forecast.Solar polls and every state-change
+listener are unchanged. Everywhere else in the ADRs, "the 5-minute poll/tick"
+now means this slot trigger. Whether this section's window should end at the
+last *complete* slot rather than at `now` is a separate open decision
+(`TASK-0041` D2) and is amended here once decided.
+
+**Decided by:** human (event-driven trigger for the whole 5-minute tick, chosen
+in chat 2026-10-07); `PROBE_INTERVAL`, `MAX_PROBES`, `WATCHDOG` and keeping the
+watchdog at all are Lead Agent choices, pending human confirmation at Gate 2.
+
 ### 1b — Provider-update transitions: ramping resets, blending crossfades
 
 A baseline provider revising its forecast mid-day (ADR-002 §2's trigger)

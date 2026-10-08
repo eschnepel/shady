@@ -5,7 +5,7 @@
 because the concrete storage scheme and accessor API are a separable, and
 independently heavily cross-referenced, concern from the *decision to extract
 `cache.py` as its own module* in the first place. No behavior changed by this
-split. **Last updated:** 2026-09-24
+split. **Last updated:** 2026-10-07
 
 This ADR is kept current in place: §2/§3's hybrid push/query handling for
 provider-backed predictor series (baseline `FC`, temperature), and §5's
@@ -25,7 +25,11 @@ keyword-only parameter, default `False`, no existing caller affected unless it
 opts in) and `get_pinned_slot_pool` now always opts in internally: see §4's own
 new note for why a push-sourced (`forecast_solar`-shaped) baseline's
 already-elapsed "today" was never fetched by *any* caller before this,
-`TASK-0037`'s own not-yet-elapsed-slot fix notwithstanding.
+`TASK-0037`'s own not-yet-elapsed-slot fix notwithstanding. As of 2026-10-07
+(`TASK-0037-patch-5`), §4 also records that a trailing `None` in a fetch's
+freshest slots is no longer treated as validated until it is old enough to be a
+genuine gap rather than a recorder that has not caught up yet — see §4's own "A
+`None` in the freshest slots is not yet an answer" Amendment.
 
 ______________________________________________________________________
 
@@ -76,7 +80,8 @@ something like the day-snapshot array), each entry meaning:
 
 - `float` — a known, valid value.
 - `None` — not yet fetched, or explicitly invalidated; must be (re-)queried
-  before use.
+  before use. A `None` inside a *validated* range is therefore a contradiction,
+  except for a settling tail — see §4's 2026-10-07 Amendment.
 - `str` — a known, *stable* non-numeric outcome (e.g. `"unavailable"`): the
   recorder was asked and gave a definite, unusable answer. This is still a valid
   cache entry — querying again would return the same non-answer — it just is not
@@ -239,6 +244,65 @@ reaches "today" (§2, ADR-008 §2). `get_pinned_slot_pool` (§6) always passes i
 internally rather than exposing it as a parameter — that accessor has exactly
 one purpose (diagnostic history) and exactly one caller, so there is nothing to
 default `False` for.
+
+**Amendment (2026-10-07, `TASK-0037-patch-5`): a `None` in the freshest slots is
+not yet an answer.**
+
+**Reason:** `_fetch_and_store` widens a sensor's `validated` range to cover the
+*whole* span it just fetched, including any trailing slots for which `fetch_fn`
+returned `None`. For a recorder-backed sensor that is a real bug, not an
+over-cautious default: the recorder compiles a slot's 5-minute statistic roughly
+10–15 seconds *after* the slot's end, so a fetch that reaches the newest slot —
+or the still-in-progress one — a few seconds too early gets `None` back for it,
+and that `None` was then recorded as *validated* and never re-queried, for the
+rest of the process's life. It contradicts §1's own definition (`None` = "not
+yet fetched … must be (re-)queried before use"): a validated range must not
+contain such an entry. `TASK-0037` (§6) fixed one way of fetching too early
+(validating through the in-progress slot) by capping *one* caller; it did not
+touch the underlying invariant, and the cap cannot protect against a slot that
+has ended but whose statistic is not compiled yet. Observed 2026-10-07 on a real
+system: the diagnostic chart's "selected actual" entry and accuracy were
+missing, and both a followed and a pinned CSV export showed *every* one of
+today's slot-pool rows (offsets −3 to +3) with no PV, while yesterday's were
+intact; after an HA restart every row was present. The 5-minute tick is not
+aligned to the wall clock (its phase is wherever HA happened to start), so a
+phase landing within the recorder's compile delay of a slot boundary makes
+*every* tick fetch the newest slot too early, and the damage accumulates for the
+whole run. `ShadyCoordinator._intraday_energy_window` validates the actual-yield
+sensor through `now`'s own in-progress slot on every tick, which freezes it the
+same way (by code reading; not observed, since intraday correction was off on
+the system above), and `get_pinned_slot_pool`'s pinned branch validates through
+`index_for(now)` inclusive, i.e. the in-progress slot too. More than one caller
+can therefore violate the invariant, which is why the fix belongs in the cache,
+not in any one caller.
+
+**Decision:** After a fetch, a trailing run of `None` values is **excluded**
+from the sensor's validated range when every slot in that run ended less than
+`SETTLE_GRACE` (10 minutes) before the cache's clock — or has not ended yet. The
+next read that reaches those slots simply re-fetches the missing tail, exactly
+as it already does for any other missing tail, and keeps doing so until a real
+value arrives or the slot is older than `SETTLE_GRACE`, at which point a `None`
+is final (a genuine gap) and is validated like any other. Everything else is
+unchanged: a `None` *followed by* a real value (an interior gap) is validated
+immediately; a `str` outcome (§1: a definite, stable non-answer) is always
+validated immediately, however recent; `to_index=None` (pushed) sensors never
+reach this code path's range widening at all (§2). `Cache.__init__` gains an
+optional `clock: Callable[[], datetime]` (default: the real wall clock),
+following the same injection pattern as `fetch_fn` and §6's `reference`, so the
+rule stays testable at zero-mocking cost; `coordinator.py` passes its own
+injectable `now`. The re-query cost is bounded: only the unsettled tail is ever
+re-fetched (in practice the in-progress slot plus the one just ended), only for
+at most `SETTLE_GRACE` after each slot, one `fetch_fn` call per sensor per read.
+§6's caps in `get_pinned_slot_pool` stay as they are — they now save a pointless
+query rather than guard correctness. This amendment does **not** by itself make
+a *followed* diagnostic tick display a value the recorder does not yet have at
+the moment that tick runs; that is resolved by changing what triggers the tick —
+ADR-006 §1a's Amendment and ADR-004 §2i (`TASK-0041`) — not by anything in the
+cache.
+
+**Decided by:** human (option C — cache-level fix — chosen in chat, 2026-10-07);
+`SETTLE_GRACE`'s value and the injected clock are Lead Agent choices, pending
+human confirmation at Gate 2.
 
 ### 5 — Accessor methods
 

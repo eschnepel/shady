@@ -1,9 +1,10 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-09-24 — §5
-cross-references draft ADR-015 (`TASK-0038`, CSV export); also 2026-09-24 — §2g
-added (`TASK-0037-patch-4`, follow-latest-diagnostic-slot toggle); previously
-2026-09-23
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-10-07 — §2i
+added (`TASK-0041`, recorder-synchronized slot trigger); previously 2026-09-24 —
+§5 cross-references draft ADR-015 (`TASK-0038`, CSV export); also 2026-09-24 —
+§2g added (`TASK-0037-patch-4`, follow-latest-diagnostic-slot toggle);
+previously 2026-09-23
 
 This ADR is kept current in place: §1/§1a describe the current
 `ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
@@ -1033,6 +1034,46 @@ the stroke and `x` for the cross; the size floor of `1`; pre-exclusion weight
 sizing for excluded series; the sum entry weighting from its summed pool;
 implementation, Phase 6 Scenario C — `TASK-0015b-patch-3` stays `done`,
 unedited; see `tasks/TASK-0015b-patch-4-diagnostic-chart-marker-styling.md`).
+
+### 2i — Amendment (2026-10-07, `TASK-0041`): "the 5-minute tick" is the recorder-synchronized slot trigger
+
+**Reason:** This ADR repeatedly refers to "the 5-minute tick" (§2's refresh
+cadence, §2a, §2b, §2g's tick-first advance, §3, §4). That tick was a wall-clock
+interval at an arbitrary phase, so while following it could read the just-ended
+slot before the recorder had compiled its statistic: the followed slot's
+"selected actual" and every accuracy value were missing, for a whole run, on a
+real system (ADR-007a §4 Amendment 2026-10-07; both a followed and a pinned CSV
+export showed no PV for any of today's pool rows). Option C in the cache stops
+that becoming permanent; it cannot make a tick display a value that does not
+exist at that instant.
+
+**Decision:** Every "5-minute tick" in this ADR now means the **slot trigger**
+defined by ADR-006 §1a's Amendment of the same date: one slot job per
+`EVENT_RECORDER_5MIN_STATISTICS_GENERATED`, which first probes until the newest
+complete slot's actual yield is readable (bounded, 1 s retries), and only then
+does, once, in this order: advance the followed slot (§2g — still *first*, still
+independent of whether a mode is active, still an integer assignment), refresh
+the active mode's fit/compute per its cadences (§2/§4), and publish the result.
+Consequences, all following from "only the with-PV compute exists":
+
+- The followed slot and the chart it feeds advance together, in the same job, so
+  the `datetime` entity's "as of" timestamp always matches the chart. While no
+  mode is active the advance still runs on every job.
+- No result without the newest actual is ever computed *and published* first and
+  then replaced: until the job's compute completes, readers keep the previous
+  result (a few seconds at most). If a string never delivers, the job publishes
+  without it after the bounded retries (§2's existing behavior for a missing
+  actual).
+- Pinned slots keep their existing semantics (§2a): the job still runs every
+  slot, so a future-pinned or in-progress slot's prediction and a just-elapsed
+  slot's actual and accuracy appear on the first job after they exist.
+- The wall-clock interval remains registered as a watchdog (ADR-006 §1a
+  Amendment); it runs the same job only when no event-driven job ran for six
+  minutes.
+- §3's "not refreshed on the tick" for the slot-pool series is unchanged.
+
+**Decided by:** human (chosen in chat 2026-10-07); retry/watchdog parameters are
+Lead Agent choices pending human confirmation at Gate 2.
 
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 

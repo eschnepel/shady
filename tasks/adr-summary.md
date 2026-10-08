@@ -377,6 +377,18 @@ first 5 only ever called by `coordinator.py`:
    discovery runs before any config entry (and so any coordinator/per-entry
    `Cache`) exists.
 
+**Slot trigger (ADR-006 §1a Amendment, ADR-004 §2i, 2026-10-07, `TASK-0041`):**
+everything this summary calls "the 5-minute tick" (followed-slot advance,
+per-string intraday correction, diagnostics refresh) is driven by
+`EVENT_RECORDER_5MIN_STATISTICS_GENERATED` (fired once per recorder 5-minute
+compile, ~10 s after each 5-minute mark, just before the commit), not a
+wall-clock interval. Per event, one *slot job*: probe (recorder executor) until
+the newest complete slot's actual yield is readable — 1 s retries, at most 5 —
+then advance/intraday/diagnostics once, serialized with every other
+cache-touching job; the interval stays as a 6-minute watchdog. Midnight
+recalibration (00:01), energy reset (00:00), Forecast.Solar polls and
+state-change listeners are unchanged.
+
 **Time-series storage (ADR-007a §1):**
 `values: dict[sensor_id, list[float | None | str]]` — three-state
 (`float`=known, `None`=not-yet-fetched/invalidated, `str`=stable "unavailable").
@@ -398,7 +410,13 @@ already-elapsed indices — freezes history. `invalidate(...)` resets a range to
 **Fetch injection (§4):** `cache.py` takes
 `fetch_fn: Callable[[sensor_id, start, end], list[float|None|str]]` as a
 constructor param — never imports the recorder API itself. Validation batches
-sensors sharing an identical missing range into one `fetch_fn` call.
+sensors sharing an identical missing range into one `fetch_fn` call. A trailing
+run of `None` from a fetch whose slots ended less than `SETTLE_GRACE` (10 min)
+ago — or have not ended — is *not* added to the validated range, so it is
+re-fetched on the next read instead of frozen (recorder statistics lag a slot's
+end by ~10-15 s); older `None`s and `str` outcomes are final. `Cache` takes an
+injectable `clock` for this (`TASK-0037-patch-5`, ADR-007a §4 Amendment
+2026-10-07).
 
 **Three accessors, each sized to its one caller (ADR-008 §3):**
 
@@ -485,7 +503,7 @@ it's a plain user-selected `entity_id` wired directly into `cache.py`'s
   diagnosed slot is one **always-set** stored value per **config entry**
   (ADR-004 §2g), read unconditionally by every diagnostic computation: while
   `switch.py`'s `ShadyFollowDiagnosticSlotSwitch` is on (default) it is *set* to
-  the last complete slot on every 5-minute tick; setting `datetime.py`'s
+  the last complete slot on every slot trigger (below); setting `datetime.py`'s
   `ShadyDiagnosticSlotDateTime` (which shows the value in both modes, never
   `unknown`) pins it and switches following off; switching following off pins
   the slot as currently shown. `cache.py`'s `pinned_reference` is set only while
