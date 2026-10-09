@@ -1,6 +1,6 @@
 # Task: A `None` in the Freshest Slots Was Frozen as "Validated" (Diagnostic "selected actual" Missing for a Whole Run)
 
-- **Status:** review
+- **Status:** done
 - **Related ADRs:** [ADR-007a §4 (Amendment 2026-10-07), ADR-007a §1/§6]
 - **Dependencies:** \[TASK-0037-pinned-slot-pool-not-yet-elapsed-freeze,
   TASK-0037-patch-4-follow-latest-diagnostic-slot-toggle\]
@@ -149,4 +149,36 @@ the pinned branch). Ship order: this task first, then `TASK-0041`.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. -->
+- `custom_components/shady/cache.py` →
+  - constant `SETTLE_GRACE: timedelta = timedelta(minutes=10)`
+  - `Cache.__init__(self, window_days: int, fetch_fn: FetchFn, local_tz: _tzinfo = UTC, clock: Callable[[], datetime] | None = None) -> None`
+    — `clock=None` means the real wall clock (private helper `_wall_clock`)
+  - `Cache._settled_end(self, fetched: list[float | None | str], start: int, end: int) -> int`
+    (new, private) — last index of the span a fetch may validate; `start - 1`
+    when nothing is settled
+  - `Cache._fetch_and_store(self, sensor_id: str, start: int, end: int) -> None`
+    — same signature; now validates only through `_settled_end` where the fetch
+    extends the validated range's right edge (never for a head fetch, never for
+    `to_index=None`)
+  - Behavioral contract: a trailing `None` for a slot that ended less than
+    `SETTLE_GRACE` before `clock()` (or has not ended) is not validated and is
+    re-fetched on the next read; `validated_range(sensor_id)` may be the empty
+    range `(start, start - 1)`.
+- `custom_components/shady/coordinator.py` → `Cache(...)` is constructed with
+  `clock=lambda: self._now()` (late-bound; tests replacing `_now` afterwards are
+  honoured). No other change.
+- Tests: `tests/test_cache_core.py` → `_RecorderSim`,
+  `TestUnsettledTailIsNotFrozen` (10 tests), `TestTickPhaseReplay` (7 tests:
+  phases +3 s / +40 s × pool / intraday / both, plus the
+  in-progress-slot-next-tick test); `tests/test_coordinator.py` →
+  `TestCacheReceivesCoordinatorClock`.
+- `adr/007a-cache-storage-and-accessor-design.md` §4 Amendment: Gate 2
+  confirmation recorded; three implementation precisions added (unsettled
+  *suffix* only, right-edge-only, beyond-fetch counts as `None`).
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged).
+- Verification: `pytest` 837 passed (819 + 18 new); `mypy` clean (70 files);
+  `ruff check` / `ruff format --check` clean (210 files); coverage `cache.py` 96
+  % → 97 %, `coordinator.py` 99 % → 99 %. New behavioral tests shown failing
+  against the freeze (rule disabled): the +3 s pool replay, both intraday
+  replays, the in-progress-slot test, and the unit tests for re-fetch, tail-only
+  re-fetch, first-fetch and empty range.

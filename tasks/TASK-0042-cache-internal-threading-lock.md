@@ -1,6 +1,6 @@
 # Task: Cache-Owned Threading Lock for Loop-Thread Readers (Former TASK-0041 D4)
 
-- **Status:** review
+- **Status:** todo
 - **Related ADRs:** [ADR-007a §4 and §5, ADR-000 §6 (zero-mocking tier)] — an
   ADR-007a amendment (a threading contract for `Cache`) is **not written yet**:
   the Lead Agent writes it, with `Decided by: human`, once the human approves
@@ -100,7 +100,15 @@ All in `tests/test_cache_core.py` (zero-mocking; threads synchronized with
   `Cache.trim`, `Cache.validated_range` from `custom_components/shady/cache.py`
   (→ task: TASK-0037-patch-5-no-freeze-of-unsettled-tail, which adds `clock` and
   the settling-tail rule)
+
 - Loop-thread callers for context only (not edited): `sensor.py` cache reads
+
+- **Refreshed from TASK-0037-patch-5's Delivered Artifacts (2026-10-08):**
+  `Cache.__init__(self, window_days: int, fetch_fn: FetchFn, local_tz: _tzinfo = UTC, clock: Callable[[], datetime] | None = None)`,
+  module constant `SETTLE_GRACE`, and `Cache._settled_end` from
+  `custom_components/shady/cache.py` (→ task:
+  TASK-0037-patch-5-no-freeze-of-unsettled-tail, `done` 2026-10-08; the
+  coordinator already passes `clock=lambda: self._now()`).
 
 ## Delivered Artifacts
 

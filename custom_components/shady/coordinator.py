@@ -633,7 +633,16 @@ class ShadyCoordinator:
                 )
                 self._ensure_temperature_provider(resolution.entity_id, provider_tier)
 
-        self._cache = Cache(self._window_days, self._fetch_fn, local_tz=self._local_tz)
+        # `clock` is late-bound (`self._now` is assigned further down and
+        # tests replace it afterwards): the cache's `SETTLE_GRACE` rule
+        # (ADR-007a §4 Amendment 2026-10-07) must see the same injectable
+        # "now" the rest of this class uses.
+        self._cache = Cache(
+            self._window_days,
+            self._fetch_fn,
+            local_tz=self._local_tz,
+            clock=lambda: self._now(),
+        )
         # ADR-005 §5/§6, ADR-007 §1 — the one restart-persisted cache in
         # this design. Constructing `Store` is synchronous and cheap;
         # actually loading from disk only happens in

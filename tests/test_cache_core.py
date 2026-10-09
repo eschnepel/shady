@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from tests.support import _load
@@ -596,3 +598,253 @@ class TestFittedModelCacheInvalidation:
         cache = cache_mod.Cache(window_days=1, fetch_fn=lambda *a: [])
         cache.invalidate_models()  # must not raise
         assert cache.get_model("shading", 0) is None
+
+
+# -- TASK-0037-patch-5: a `None` in the freshest slots is not yet an answer ----
+
+
+class _RecorderSim:
+    """A fake recorder plus an injectable clock (ADR-007a §4 Amendment
+    2026-10-07). Slot `i` becomes readable `COMPILE_DELAY` after it ended,
+    exactly like the recorder's own `second=10` statistics compile;
+    before that `fetch_fn` answers `None` for it. `gaps` lists slots that
+    never become readable, `strings` slots that answer a `str` outcome."""
+
+    COMPILE_DELAY = timedelta(seconds=10)
+
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+        self.gaps: set[int] = set()
+        self.strings: dict[int, str] = {}
+        self.calls: list[tuple[str, int, int]] = []
+
+    def clock(self) -> datetime:
+        return self.now
+
+    def fetch_fn(self, sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+        first = cache_mod.Cache.index_for(start)
+        count = round((end - start) / cache_mod.SLOT_DURATION)
+        self.calls.append((sensor_id, first, first + count - 1))
+        out: list[float | None | str] = []
+        for index in range(first, first + count):
+            readable_at = cache_mod.Cache.timestamp_for(index + 1) + self.COMPILE_DELAY
+            if index in self.strings:
+                out.append(self.strings[index])
+            elif index in self.gaps or self.now < readable_at:
+                out.append(None)
+            else:
+                out.append(float(index))
+        return out
+
+    def cache(self, window_days: int = 1) -> Any:
+        return cache_mod.Cache(window_days=window_days, fetch_fn=self.fetch_fn, clock=self.clock)
+
+
+def _slot_start(index: int) -> datetime:
+    start: datetime = cache_mod.Cache.timestamp_for(index)
+    return start
+
+
+_BASE = datetime(2026, 10, 7, 13, 50, tzinfo=UTC)  # an exact slot boundary
+
+
+class TestUnsettledTailIsNotFrozen:
+    """Given a trailing `None` for a slot that ended less than
+    `SETTLE_GRACE` ago, or has not ended, then it is not validated and the
+    next read re-fetches it (ADR-007a §4 Amendment 2026-10-07)."""
+
+    def test_settle_grace_is_ten_minutes(self) -> None:
+        assert cache_mod.SETTLE_GRACE == timedelta(minutes=10)
+
+    def test_just_ended_slot_is_refetched_once_the_recorder_has_it(self) -> None:
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + cache_mod.SLOT_DURATION + timedelta(seconds=3))
+        cache = sim.cache()
+
+        first = cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+        assert first == {"pv": [None]}
+
+        sim.now += timedelta(seconds=30)  # the recorder has compiled it by now
+        second = cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+        assert second == {"pv": [float(index)]}
+
+    def test_a_slot_older_than_settle_grace_is_a_final_none(self) -> None:
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + cache_mod.SLOT_DURATION + timedelta(minutes=11))
+        sim.gaps.add(index)
+        cache = sim.cache()
+
+        cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+        cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+
+        # One whole-window fetch; the second read is served from `validated`.
+        assert len(sim.calls) == 1
+        validated = cache.validated_range("pv")
+        assert validated is not None and validated[1] == index
+
+    def test_in_progress_slot_is_never_validated_and_only_the_tail_is_refetched(self) -> None:
+        in_progress = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + timedelta(minutes=2))
+        cache = sim.cache()
+
+        cache.get_time_range(["pv"], _slot_start(in_progress - 3), _slot_start(in_progress), "raw")
+        assert len(sim.calls) == 1
+        validated = cache.validated_range("pv")
+        assert validated is not None and validated[1] == in_progress - 1
+
+        cache.get_time_range(["pv"], _slot_start(in_progress - 3), _slot_start(in_progress), "raw")
+        assert len(sim.calls) == 2
+        assert sim.calls[1] == ("pv", in_progress, in_progress)  # the tail only
+        validated = cache.validated_range("pv")
+        assert validated is not None and validated[1] == in_progress - 1
+
+    def test_interior_gap_is_validated_immediately(self) -> None:
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + 2 * cache_mod.SLOT_DURATION + timedelta(seconds=30))
+        sim.gaps.add(index)  # a hole, followed by a real value at index + 1
+        cache = sim.cache()
+
+        out = cache.get_time_range(["pv"], _slot_start(index), _slot_start(index + 1), "raw")
+        assert out == {"pv": [None, float(index + 1)]}
+        validated = cache.validated_range("pv")
+        assert validated is not None and validated[1] == index + 1
+
+        cache.get_time_range(["pv"], _slot_start(index), _slot_start(index + 1), "raw")
+        assert len(sim.calls) == 1
+
+    def test_str_outcome_is_validated_immediately_however_recent(self) -> None:
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + cache_mod.SLOT_DURATION + timedelta(seconds=1))
+        sim.strings[index] = "unavailable"
+        cache = sim.cache()
+
+        out = cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+        assert out == {"pv": ["unavailable"]}
+        validated = cache.validated_range("pv")
+        assert validated is not None and validated[1] == index
+        cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+        assert len(sim.calls) == 1
+
+    def test_fully_settled_fetch_validates_exactly_as_before(self) -> None:
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + timedelta(hours=1))
+        cache = sim.cache()
+
+        cache.get_time_range(["pv"], _slot_start(index - 2), _slot_start(index + 1), "raw")
+        cache.get_time_range(["pv"], _slot_start(index - 2), _slot_start(index + 1), "raw")
+        assert len(sim.calls) == 1
+        validated = cache.validated_range("pv")
+        assert validated is not None and validated[1] == index + 1
+
+    def test_first_fetch_with_unsettled_tail_ends_validated_at_last_settled_slot(self) -> None:
+        in_progress = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + timedelta(minutes=4))
+        cache = sim.cache()
+
+        cache.get_time_range(["pv"], _slot_start(in_progress), _slot_start(in_progress), "raw")
+        validated = cache.validated_range("pv")
+        assert validated is not None
+        assert validated[1] == in_progress - 1
+        assert validated[0] == in_progress - 287  # the whole window, as before
+
+    def test_degenerate_empty_validated_range_is_handled_everywhere(self) -> None:
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + timedelta(minutes=2))
+        cache = sim.cache()
+
+        # Every slot of this first fetch is unsettled: validated is empty.
+        cache._fetch_and_store("pv", index, index + 1)
+        assert cache.validated_range("pv") == (index, index - 1)
+
+        # The next read fetches from the start of that empty range.
+        cache.get_time_range(["pv"], _slot_start(index), _slot_start(index), "raw")
+        assert sim.calls[-1] == ("pv", index, index)
+
+        # `invalidate()` and `trim()` accept the empty range.
+        cache._validated["pv"] = (index, index - 1)
+        cache.invalidate("pv", index, index)
+        assert cache.validated_range("pv") is None
+        cache._validated["pv"] = (index, index - 1)
+        cache.trim(sim.now)
+        assert cache.validated_range("pv") is None
+
+    def test_head_backfill_ending_in_a_recent_none_is_not_trimmed(self) -> None:
+        """A head fetch ends right before an already-validated range, so a
+        trailing `None` in it is interior to the combined range."""
+        index = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + timedelta(hours=1))
+        cache = sim.cache()
+        cache.get_time_range(["pv"], _slot_start(index), _slot_start(index + 1), "raw")
+        validated = cache.validated_range("pv")
+        assert validated is not None
+        from_index = validated[0]
+
+        sim.gaps.add(from_index - 1)
+        sim.now = _slot_start(from_index) + timedelta(seconds=5)  # that slot "just ended"
+        cache.get_time_range(["pv"], _slot_start(from_index - 2), _slot_start(index + 1), "raw")
+        validated = cache.validated_range("pv")
+        assert validated is not None
+        assert validated == (from_index - 2, index + 1)
+
+
+class TestTickPhaseReplay:
+    """Replay of the 2026-10-07 incident (`TASK-0037-patch-5`): a tick every
+    5 minutes whose phase is wherever Home Assistant happened to start,
+    reading the cache the way the coordinator does — `get_pinned_slot_pool`
+    for the diagnosed slot's offsets -3..+3 (auto-tracking) and, with
+    intraday correction on, `get_time_range` through `now`
+    (`_intraday_energy_window`). A phase within the recorder's compile
+    delay of a slot boundary used to freeze every slot at `None`."""
+
+    WINDOW_DAYS = 2
+    FIRST_TICK = datetime(2026, 10, 7, 6, 30, tzinfo=UTC)
+    LAST_TICK = datetime(2026, 10, 7, 13, 55, tzinfo=UTC)
+
+    def _run(self, phase_seconds: int, *, pool: bool, intraday: bool) -> tuple[Any, _RecorderSim]:
+        phase = timedelta(seconds=phase_seconds)
+        sim = _RecorderSim(self.FIRST_TICK + phase)
+        cache = sim.cache(self.WINDOW_DAYS)
+        tick = self.FIRST_TICK + phase
+        while tick <= self.LAST_TICK + phase:
+            sim.now = tick
+            now_index = cache_mod.Cache.index_for(tick)
+            if pool:
+                diagnosed = now_index - 1
+                local_midnight = datetime(tick.year, tick.month, tick.day, tzinfo=UTC)
+                day_start = cache_mod.Cache.index_for(local_midnight)
+                for offset in range(-3, 4):
+                    slot_of_day = diagnosed + offset - day_start
+                    cache.get_pinned_slot_pool(["pv"], slot_of_day, "raw", reference=tick)
+            if intraday:
+                cache.get_time_range(["pv"], tick - 24 * cache_mod.SLOT_DURATION, tick, "raw")
+            tick += cache_mod.SLOT_DURATION
+        # The recorder has long compiled everything by the time anyone looks.
+        sim.now = self.LAST_TICK + phase + timedelta(minutes=1)
+        return cache, sim
+
+    @pytest.mark.parametrize("phase_seconds", [3, 40])
+    @pytest.mark.parametrize(
+        ("pool", "intraday"), [(True, False), (False, True), (True, True)], ids=lambda v: str(v)
+    )
+    def test_every_elapsed_slot_reads_its_real_value(
+        self, phase_seconds: int, pool: bool, intraday: bool
+    ) -> None:
+        cache, sim = self._run(phase_seconds, pool=pool, intraday=intraday)
+        first = cache_mod.Cache.index_for(self.FIRST_TICK)
+        last_complete = cache_mod.Cache.index_for(sim.now) - 1
+        out = cache.get_time_range(["pv"], _slot_start(first), _slot_start(last_complete), "raw")
+        assert out == {"pv": [float(i) for i in range(first, last_complete + 1)]}
+
+    def test_slot_in_progress_at_one_tick_holds_its_value_at_the_next(self) -> None:
+        in_progress = cache_mod.Cache.index_for(_BASE)
+        sim = _RecorderSim(_BASE + timedelta(minutes=2))
+        cache = sim.cache()
+        window = 24 * cache_mod.SLOT_DURATION
+
+        cache.get_time_range(["pv"], sim.now - window, sim.now, "raw")  # tick N
+        sim.now = _BASE + timedelta(minutes=7)
+        out = cache.get_time_range(["pv"], sim.now - window, sim.now, "raw")  # tick N+1
+
+        values = out["pv"]
+        # `values[-2]` is the slot that was in progress one tick earlier.
+        assert values[-2] == float(in_progress)

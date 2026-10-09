@@ -293,16 +293,22 @@ rule stays testable at zero-mocking cost; `coordinator.py` passes its own
 injectable `now`. The re-query cost is bounded: only the unsettled tail is ever
 re-fetched (in practice the in-progress slot plus the one just ended), only for
 at most `SETTLE_GRACE` after each slot, one `fetch_fn` call per sensor per read.
-§6's caps in `get_pinned_slot_pool` stay as they are — they now save a pointless
-query rather than guard correctness. This amendment does **not** by itself make
-a *followed* diagnostic tick display a value the recorder does not yet have at
-the moment that tick runs; that is resolved by changing what triggers the tick —
-ADR-006 §1a's Amendment and ADR-004 §2i (`TASK-0041`) — not by anything in the
-cache.
+Two precisions fixed at implementation: only the *unsettled suffix* of a
+trailing `None` run is left out (older `None`s in the same run are settled and
+validated), and the rule applies only where a fetch extends the validated
+range's right edge — a head fetch ends right before an already-validated slot,
+so its trailing `None` is interior. A slot beyond what `fetch_fn` returned
+counts as `None`. If nothing in a first fetch is settled, `validated` is the
+empty range `(start, start - 1)`. §6's caps in `get_pinned_slot_pool` stay as
+they are — they now save a pointless query rather than guard correctness. This
+amendment does **not** by itself make a *followed* diagnostic tick display a
+value the recorder does not yet have at the moment that tick runs; that is
+resolved by changing what triggers the tick — ADR-006 §1a's Amendment and
+ADR-004 §2i (`TASK-0041`) — not by anything in the cache.
 
 **Decided by:** human (option C — cache-level fix — chosen in chat, 2026-10-07);
-`SETTLE_GRACE`'s value and the injected clock are Lead Agent choices, pending
-human confirmation at Gate 2.
+`SETTLE_GRACE`'s value and the injected clock are Lead Agent choices, confirmed
+by the human at Gate 2 (2026-10-08).
 
 ### 5 — Accessor methods
 

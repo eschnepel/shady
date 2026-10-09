@@ -273,6 +273,22 @@ def _set_state(
     _run(_drive())
 
 
+class TestCacheReceivesCoordinatorClock:
+    """Given the coordinator constructs its `Cache` (ADR-007a §4 Amendment
+    2026-10-07, TASK-0037-patch-5), then the cache's `SETTLE_GRACE` rule
+    reads the coordinator's own injectable `_now` — late-bound, so a test
+    (or any caller) replacing `_now` after construction is still honoured.
+    """
+
+    def test_cache_clock_follows_the_coordinator_now(self) -> None:
+        coordinator, _hass = _make_coordinator()
+        assert coordinator.cache._clock() == _NOW
+
+        later = _NOW + timedelta(hours=3)
+        coordinator._now = lambda: later  # replaced *after* construction
+        assert coordinator.cache._clock() == later
+
+
 class TestCacheAttributeIsReadOnly:
     """Given `ShadyCoordinator.cache` (ADR-000 §3-Amendment, TASK-0023),
     when code attempts `coordinator.cache = ...`, then it raises

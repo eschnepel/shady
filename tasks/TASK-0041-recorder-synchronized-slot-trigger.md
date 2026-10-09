@@ -1,6 +1,6 @@
 # Task: Recorder-Synchronized Slot Trigger (Replace the 5-Minute Wall-Clock Tick With the Recorder's Statistics Event)
 
-- **Status:** review
+- **Status:** todo
 - **Related ADRs:** \[ADR-006 §1a (Amendment 2026-10-07), ADR-004 §2i (and §2g,
   §4), ADR-007a §4 (Amendment 2026-10-07)\]
 - **Dependencies:** [TASK-0037-patch-5-no-freeze-of-unsettled-tail]
@@ -45,13 +45,14 @@ hourly polls, all state-change listeners.
   lock; `Cache` never sees the lock.
 - Loop-thread readers of the cache are a separate task (`TASK-0042`).
 
-**Open — confirm in one message before any code (Gate 2):**
+**Decided by the human at Gate 2 (chat, 2026-10-08):**
 
-- **D2** intraday window end (recommended: D2-b, end both windows at the last
-  complete slot) — below.
-- **D3** keep the interval as a 6-minute watchdog (recommended: keep).
-- Parameters `PROBE_INTERVAL` 1 s, `MAX_PROBES` 5, `WATCHDOG` 6 min
-  (recommended: accept).
+- **D2** deferred: the intraday window end stays **as is (D2-a)** in this task —
+  no forecast-output change, no ADR-006 §1a window amendment. The human will
+  decide on D2-b after testing the finished work on the live system; if D2-b is
+  chosen later it becomes its own patch task.
+- **D3** keep the interval as a 6-minute watchdog.
+- Parameters `PROBE_INTERVAL` 1 s, `MAX_PROBES` 5, `WATCHDOG` 6 min accepted.
 - Gate 2 approval of `TASK-0037-patch-5`, this task and `TASK-0042` as written.
 
 ## Acceptance Criteria
@@ -126,7 +127,7 @@ Regression and end-to-end (coordinator tier, existing harness):
   friends), then they are unchanged and green — only registration and
   orchestration move.
 
-## Open Decisions (resolve at Gate 2)
+## Decisions Resolved at Gate 2 (2026-10-08)
 
 **D2 — intraday window end (pre-existing bias, found while reading the code; by
 code reading only, not measured on a live system — the reporter's intraday
@@ -140,18 +141,22 @@ at the default `window_slots=24` — independently of tick phase, and the
 effective factor is clamped to `1 ± intraday_correction_cutoff` (default 0.10),
 so the bias moves forecasts at all times while intraday correction is active.
 
-- **D2-a:** leave it (no forecast-output change in this task).
-- **D2-b (recommended):** end both windows at the last complete slot (`now - 1`
-  slot) so PV and forecast cover the same complete slots. Changes forecast
-  output and needs an ADR-006 §1a amendment (the window definition `end=now`).
+- **D2-a (chosen for now):** leave it (no forecast-output change in this task).
+  The human revisits after live-system tests; D2-b would then be a separate
+  patch task.
+- **D2-b (deferred, not part of this task):** end both windows at the last
+  complete slot (`now - 1` slot) so PV and forecast cover the same complete
+  slots. Changes forecast output and needs an ADR-006 §1a amendment (the window
+  definition `end=now`).
 
-**D3 — watchdog.** Keep the interval as a 6-minute watchdog (default, about 15
-lines; protects against the event alone going missing while the recorder still
-works, e.g. a failing compile or a future HA change) or drop it (the recorder is
-a practical requirement anyway, since actual yield is read from it).
+**D3 — watchdog.** **Decided: keep.** Keep the interval as a 6-minute watchdog
+(default, about 15 lines; protects against the event alone going missing while
+the recorder still works, e.g. a failing compile or a future HA change) or drop
+it (the recorder is a practical requirement anyway, since actual yield is read
+from it).
 
-Parameters `PROBE_INTERVAL` (1 s), `MAX_PROBES` (5), `WATCHDOG` (6 min) are Lead
-Agent defaults, to be confirmed or changed at Gate 2.
+Parameters `PROBE_INTERVAL` (1 s), `MAX_PROBES` (5), `WATCHDOG` (6 min):
+**confirmed** by the human at Gate 2.
 
 ## Estimated File / Module Footprint (hint, not a commitment)
 
@@ -196,22 +201,34 @@ Agent defaults, to be confirmed or changed at Gate 2.
   `_intraday_tick_sync(self, now: datetime) -> None` from
   `custom_components/shady/coordinator.py` (→ task:
   TASK-0037-patch-4-follow-latest-diagnostic-slot-toggle)
+
 - `ShadyCoordinator._advance_followed_diagnostic_slot(self, now: datetime) -> None`,
   `_diagnostics_tick_sync(self, now: datetime) -> None`,
   `_advance_intraday_string(self, string, now: datetime) -> None`,
   `_intraday_energy_window(self, string, start: datetime, now: datetime) -> tuple[float, float]`,
   `diagnostic_result(self)`,
   `async _async_recompute_diagnostic_result(self) -> None`
+
 - `ShadyCoordinator.shutdown(self) -> None` and
   `self._unsub: list[Callable[[], None]]`
+
 - `ShadyCoordinator.async_refit(self, now: datetime | None = None)` and the
   `_backfill_elapsed_today_slots` executor dispatch
+
 - `cache.Cache.get_time_range(...)`, `Cache.index_for(...)`,
   `Cache.timestamp_for(...)`, and `Cache.__init__(..., clock=...)` from
   `custom_components/shady/cache.py` (→ task:
   TASK-0037-patch-5-no-freeze-of-unsettled-tail)
+
 - `homeassistant.const.EVENT_RECORDER_5MIN_STATISTICS_GENERATED`,
   `hass.bus.async_listen`
+
+- **Refreshed from TASK-0037-patch-5's Delivered Artifacts (2026-10-08):**
+  `Cache.__init__(self, window_days: int, fetch_fn: FetchFn, local_tz: _tzinfo = UTC, clock: Callable[[], datetime] | None = None)`,
+  module constant `SETTLE_GRACE`, and `Cache._settled_end` from
+  `custom_components/shady/cache.py` (→ task:
+  TASK-0037-patch-5-no-freeze-of-unsettled-tail, `done` 2026-10-08; the
+  coordinator already passes `clock=lambda: self._now()`).
 
 ## Delivered Artifacts
 

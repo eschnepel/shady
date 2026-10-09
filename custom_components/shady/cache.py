@@ -277,17 +277,39 @@ def _shadow_value(value: float | None | str) -> float:
     return float("nan")
 
 
+# How long after a slot ended a trailing `None` for it may still turn into
+# a real value (ADR-007a §4 Amendment 2026-10-07, TASK-0037-patch-5). The
+# recorder compiles a slot's 5-minute statistic roughly 10-15 s after the
+# slot's end; ten minutes is generous against a slow compile, and short
+# enough that a slot which genuinely has no data stops being re-queried.
+SETTLE_GRACE = timedelta(minutes=10)
+
+
+def _wall_clock() -> datetime:
+    return datetime.now(UTC)
+
+
 class Cache:
     """Index-addressable time-series store, generic over any `sensor_id`.
 
     Constructed with `window_days` (a setup parameter, not re-supplied
     per call, mirroring the global config-flow setting it tracks) and
-    `fetch_fn` (injected, never imported directly).
+    `fetch_fn` (injected, never imported directly). `clock` (optional,
+    default the real wall clock) is the same kind of injection: the one
+    place this class asks "what time is it" is `_settled_end`'s
+    `SETTLE_GRACE` rule (ADR-007a §4 Amendment 2026-10-07).
     """
 
-    def __init__(self, window_days: int, fetch_fn: FetchFn, local_tz: _tzinfo = UTC) -> None:
+    def __init__(
+        self,
+        window_days: int,
+        fetch_fn: FetchFn,
+        local_tz: _tzinfo = UTC,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.window_days = window_days
         self._fetch_fn = fetch_fn
+        self._clock: Callable[[], datetime] = clock if clock is not None else _wall_clock
         # HA's configured local timezone (`coordinator.py`'s own
         # `ZoneInfo(hass.config.time_zone)`), defaulting to `UTC` for
         # every caller — chiefly this module's own tests — that doesn't
@@ -455,9 +477,40 @@ class Cache:
 
     # -- validation / fetch injection (ADR-007a §4) --------------------------
 
+    def _settled_end(self, fetched: list[float | None | str], start: int, end: int) -> int:
+        """The last index of `[start, end]` that a fetch may validate
+        (ADR-007a §4 Amendment 2026-10-07): the trailing run of `None`
+        values, as far as those slots ended less than `SETTLE_GRACE`
+        before `self._clock()` (or have not ended at all), is *not yet an
+        answer* — the recorder may simply not have compiled them. Returns
+        `start - 1` when the whole span is such a run.
+
+        Only a trailing `None` is affected: a `None` followed by any real
+        value, or a `str` outcome (ADR-007a §1: a definite, stable
+        non-answer), is a settled answer however recent. A slot beyond
+        what `fetch_fn` returned counts as `None`.
+        """
+        threshold = self._clock() - SETTLE_GRACE
+        index = end
+        while index >= start:
+            position = index - start
+            value = fetched[position] if position < len(fetched) else None
+            if value is not None:
+                break
+            if self.timestamp_for(index + 1) <= threshold:
+                break  # settled: a genuine gap, final like any interior one
+            index -= 1
+        return index
+
     def _fetch_and_store(self, sensor_id: str, start: int, end: int) -> None:
         """Fetch `[start, end]` (inclusive) for `sensor_id` and store it,
-        then widen `validated` to cover it."""
+        then widen `validated` to cover it — except for an unsettled
+        trailing `None` run (`_settled_end`), which stays unvalidated so
+        the next read re-fetches it. That rule only applies where this
+        fetch extends the validated range's right edge: a head fetch ends
+        right before an already-validated slot, so its trailing `None`
+        is interior to the combined range.
+        """
         start_ts = self.timestamp_for(start)
         end_ts = self.timestamp_for(end + 1)  # fetch_fn's end is exclusive
         fetched = self._fetch_fn(sensor_id, start_ts, end_ts)
@@ -465,8 +518,10 @@ class Cache:
             self._write(sensor_id, start + offset_i, value)
 
         current = self._validated.get(sensor_id)
+        extends_right_edge = current is None or (current[1] is not None and end > current[1])
+        validated_end = self._settled_end(fetched, start, end) if extends_right_edge else end
         if current is None:
-            self._validated[sensor_id] = (start, end)
+            self._validated[sensor_id] = (start, validated_end)
             return
         from_index, to_index = current
         new_from = min(from_index, start)
@@ -478,7 +533,7 @@ class Cache:
         # filling in the *past* says nothing about the *future* no
         # longer being kept current by `push()` — the very thing
         # `to_index=None` promises to every other reader.
-        new_to = to_index if to_index is None else max(to_index, end)
+        new_to = to_index if to_index is None else max(to_index, validated_end)
         self._validated[sensor_id] = (new_from, new_to)
 
     def _validate_range(
