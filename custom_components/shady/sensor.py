@@ -70,7 +70,7 @@ _LAST_SLOT_OF_DAY = timedelta(hours=23, minutes=55)
 # noticing the attribute and clicking it, short enough that a leaked
 # link (a dashboard screenshot, a shared automation log) goes stale
 # soon -- and it is refreshed every coordinator tick regardless (five
-# minutes, `coordinator.py`'s own `_handle_intraday_tick`), so thirty
+# minutes, `coordinator.py`'s own slot job, `_async_slot_job`), so thirty
 # minutes' slack past that is generous, not tight.
 _EXPORT_CSV_URL_EXPIRATION = timedelta(minutes=30)
 

@@ -413,11 +413,11 @@ new frontend technology (a signed path is plain HA API, the same "smallest
 available surface" §1's own Consequences bullet already chose).
 
 - **Thirty-minute expiration** (`_EXPORT_CSV_URL_EXPIRATION`) -- refreshed every
-  coordinator tick regardless (five minutes,
-  `coordinator._handle_intraday_tick`), so this is slack past that, not a tight
-  window; long enough for a human to notice the attribute (e.g. in Developer
-  Tools -> States) and click it, short enough that a copy of the link surviving
-  in a screenshot or log goes stale soon after.
+  coordinator tick regardless (five minutes, `coordinator._async_slot_job`, the
+  slot trigger), so this is slack past that, not a tight window; long enough for
+  a human to notice the attribute (e.g. in Developer Tools -> States) and click
+  it, short enough that a copy of the link surviving in a screenshot or log goes
+  stale soon after.
 - **Present for every mode, not only ones that override `export_csv`.**
   `sensor.py` does not call `mode.export_csv(sensor_id)` itself to decide
   whether to include the link -- that would make it a second real caller of that
@@ -458,9 +458,9 @@ event loop (an aiohttp handler's own body always is) -- and
 `coordinator._fetch_fn` -> `_fetch_actual_yield_statistics` -> the recorder's
 own `statistics_during_period` -- exactly the blocking recorder read
 `coordinator.py`'s own module docstring already documents and dispatches,
-everywhere else it can be reached (`_refit_sync`/`_async_intraday_tick` via
-`get_instance(hass). async_add_executor_job`; `diagnostic_result()`'s lazy
-cache-miss `compute()` call via the same pattern,
+everywhere else it can be reached (`_refit_sync`/`_async_slot_job` via
+`ShadyCoordinator.async_run_cache_job`, `TASK-0041`; `diagnostic_result()`'s
+lazy cache-miss `compute()` call via the same pattern,
 `_async_recompute_diagnostic_result`, when reached on the event loop).
 `http_export.py`'s own `get()` was the one caller of anything in this same
 dependency chain that never went through that pattern at all -- not a gap this

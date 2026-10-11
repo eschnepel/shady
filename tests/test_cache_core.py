@@ -9,8 +9,12 @@ is never pulled in just to test this dependency-free module.
 
 from __future__ import annotations
 
+import ast
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -848,3 +852,214 @@ class TestTickPhaseReplay:
         values = out["pv"]
         # `values[-2]` is the slot that was in progress one tick earlier.
         assert values[-2] == float(in_progress)
+
+
+# -- TASK-0042: a threading contract for loop-thread readers ------------------
+
+
+class _GatedList(list[float | None | str]):
+    """A real `list` that pauses its mutator right *after* a slice
+    assignment or slice deletion — i.e. between `Cache._write`'s /
+    `Cache.trim`'s list mutation and the `_list_offset` update that must
+    follow it. The only instrumentation: no behavior of the list changes."""
+
+    hook: Callable[[], None] | None = None
+
+    def _fire(self) -> None:
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook()
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        super().__setitem__(key, value)
+        if isinstance(key, slice):
+            self._fire()
+
+    def __delitem__(self, key: Any) -> None:
+        super().__delitem__(key)
+        if isinstance(key, slice):
+            self._fire()
+
+
+def _pause_writer_mid_mutation(
+    cache: Any, sensor_id: str, mutate: Callable[[], None]
+) -> tuple[threading.Thread, threading.Event]:
+    """Start `mutate` on thread A and return once A sits between the list
+    mutation and the offset update (list changed, offset not yet)."""
+    entered = threading.Event()
+    gate = threading.Event()
+
+    def _hook() -> None:
+        entered.set()
+        gate.wait(5)
+
+    gated = _GatedList(cache._values[sensor_id])
+    gated.hook = _hook
+    cache._values[sensor_id] = gated
+    writer = threading.Thread(target=mutate, daemon=True)
+    writer.start()
+    assert entered.wait(5), "the writer never reached the mutation"
+    return writer, gate
+
+
+def _call_on_thread(fn: Callable[[], Any]) -> tuple[threading.Thread, threading.Event, list[Any]]:
+    box: list[Any] = []
+    done = threading.Event()
+
+    def _run_it() -> None:
+        box.append(fn())
+        done.set()
+
+    thread = threading.Thread(target=_run_it, daemon=True)
+    thread.start()
+    return thread, done, box
+
+
+def _never_fetch(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+    raise AssertionError("a pushed series must never be fetched")
+
+
+class TestThreadingContract:
+    """ADR-007a §4 Amendment 2026-10-09 (`TASK-0042`): `Cache` guards its
+    in-memory state with its own `threading.RLock`, never held across
+    `fetch_fn`, so a loop-thread reader (`sensor.py`) can never pair a
+    list with the wrong `_list_offset` while an executor job mutates it."""
+
+    def test_reader_never_sees_a_prepend_halfway_through(self) -> None:
+        """Reproducer 1: `_write` extending the list at the front (a
+        backfill of already-elapsed slots after the forecast was pushed)
+        updates the list first and `_list_offset` second."""
+        cache = cache_mod.Cache(window_days=1, fetch_fn=_never_fetch)
+        cache.push("s", {100: 1.0, 101: 2.0}, 0)
+        writer, gate = _pause_writer_mid_mutation(cache, "s", lambda: cache.push("s", {98: 9.0}, 0))
+        reader, done, box = _call_on_thread(
+            lambda: cache.get_time_range(
+                ["s"], cache_mod.Cache.timestamp_for(100), cache_mod.Cache.timestamp_for(100), "raw"
+            )
+        )
+        done.wait(0.3)  # unlocked: returns at once, with the wrong slot's value
+        gate.set()
+        writer.join(5)
+        reader.join(5)
+
+        assert box == [{"s": [1.0]}]  # slot 100's own value, never slot 98's `None`
+
+    def test_reader_never_sees_a_trim_halfway_through(self) -> None:
+        """Reproducer 2: `trim` deletes the head of the list first and
+        advances `_list_offset` second (nothing in production calls
+        `trim` yet — ADR-007a §1 says midnight — but it must be safe when
+        something does)."""
+        cache = cache_mod.Cache(window_days=1, fetch_fn=_never_fetch)
+        cache.push("s", {100: 1.0, 101: 2.0, 102: 3.0, 103: 4.0, 104: 5.0}, 0)
+        # floor = index_for(reference) - 288 + 1 = 102: drops slots 100 and 101.
+        reference = cache_mod.Cache.timestamp_for(102 + 287)
+        writer, gate = _pause_writer_mid_mutation(cache, "s", lambda: cache.trim(reference))
+        reader, done, box = _call_on_thread(
+            lambda: cache.get_time_range(
+                ["s"], cache_mod.Cache.timestamp_for(102), cache_mod.Cache.timestamp_for(102), "raw"
+            )
+        )
+        done.wait(0.3)
+        gate.set()
+        writer.join(5)
+        reader.join(5)
+
+        assert box == [{"s": [3.0]}]  # slot 102's own value, never slot 104's
+
+    def test_a_single_slot_read_is_guarded_on_its_own(self) -> None:
+        """`_read` is the single-slot primitive every range reader builds
+        on; it holds the lock itself, not only through its callers."""
+        cache = cache_mod.Cache(window_days=1, fetch_fn=_never_fetch)
+        cache.push("s", {100: 1.0, 101: 2.0}, 0)
+        writer, gate = _pause_writer_mid_mutation(cache, "s", lambda: cache.push("s", {98: 9.0}, 0))
+        reader, done, box = _call_on_thread(lambda: cache._read("s", 100))
+        done.wait(0.3)
+        gate.set()
+        writer.join(5)
+        reader.join(5)
+
+        assert box == [1.0]
+
+    def test_a_reader_is_not_blocked_while_another_thread_is_inside_fetch_fn(self) -> None:
+        inside = threading.Event()
+        release = threading.Event()
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            count = round((end - start) / cache_mod.SLOT_DURATION)
+            if sensor_id == "slow":
+                inside.set()
+                release.wait(5)
+            first = cache_mod.Cache.index_for(start)
+            return [float(first + i) for i in range(count)]
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        slot = cache_mod.Cache.timestamp_for(500)
+        cache.push("pushed", {500: 7.0}, 0)
+        cache.get_time_range(["warm"], slot, slot, "raw")  # validated before anything races
+
+        fetcher, _done, _box = _call_on_thread(lambda: cache.get_time_range(["slow"], slot, slot))
+        assert inside.wait(5)
+        reader, done, box = _call_on_thread(
+            lambda: cache.get_time_range(["pushed", "warm"], slot, slot, "raw")
+        )
+        finished = done.wait(2)  # the lock must not be held across `fetch_fn`
+        release.set()
+        fetcher.join(5)
+        reader.join(5)
+
+        assert finished
+        assert box == [{"pushed": [7.0], "warm": [500.0]}]
+
+    def test_a_stale_overlapping_fetch_never_overwrites_a_newer_one(self) -> None:
+        """Thread A is paused inside `fetch_fn` (its data already read from
+        the 'recorder'); thread B fetches an overlapping range to completion
+        with newer data. When A resumes, the cache keeps B's values and
+        `validated` is the union — it never shrinks."""
+        lock = threading.Lock()
+        calls = 0
+        a_inside = threading.Event()
+        release_a = threading.Event()
+
+        def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
+            nonlocal calls
+            with lock:
+                calls += 1
+                version = calls
+            first = cache_mod.Cache.index_for(start)
+            count = round((end - start) / cache_mod.SLOT_DURATION)
+            data: list[float | None | str] = [version * 1000.0 + first + i for i in range(count)]
+            if version == 1:  # thread A: holds already-read, soon stale data
+                a_inside.set()
+                release_a.wait(5)
+            return data
+
+        cache = cache_mod.Cache(window_days=1, fetch_fn=fetch_fn)
+        ts = cache_mod.Cache.timestamp_for
+        thread_a, _done_a, _box_a = _call_on_thread(
+            lambda: cache.get_time_range(["p"], ts(100), ts(110), "raw")
+        )
+        assert a_inside.wait(5)
+        cache.get_time_range(["p"], ts(105), ts(120), "raw")  # B, on this thread, completes
+        b_validated = cache.validated_range("p")
+        release_a.set()
+        thread_a.join(5)
+
+        assert b_validated is not None
+        validated = cache.validated_range("p")
+        assert validated is not None
+        assert validated[0] <= b_validated[0] and validated[1] == b_validated[1]  # a union
+        out = cache.get_time_range(["p"], ts(105), ts(120), "raw")
+        assert out == {"p": [2000.0 + i for i in range(105, 121)]}  # B's newer data won
+
+    def test_cache_module_still_imports_nothing_from_home_assistant_or_the_coordinator(
+        self,
+    ) -> None:
+        path = Path(__file__).resolve().parents[1] / "custom_components/shady/cache.py"
+        imported: list[str] = []
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                imported += [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                imported.append(("." * node.level) + (node.module or ""))
+        assert not [name for name in imported if name.startswith("homeassistant")]
+        assert ".coordinator" not in imported

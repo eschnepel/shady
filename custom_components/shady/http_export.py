@@ -26,12 +26,14 @@ get_pinned_slot_pool`'s same blocking recorder read
 `coordinator.py`'s own module docstring already warns
 `_fetch_actual_yield_statistics`/`diagnostic_result()` about, if the
 diagnosed slot's own cached pool has any gap left to fill. Dispatched
-via `homeassistant.components.recorder.get_instance(hass)
-.async_add_executor_job` -- the exact same recorder-executor pattern
-`coordinator.py`'s own `_async_recompute_diagnostic_result`/
-`async_refit`/`_async_intraday_tick` already use -- rather than calling
-it inline, which is what let a real Home Assistant install's own
-asyncio blocking-call detector (`homeassistant.util.loop.
+via `ShadyCoordinator.async_run_cache_job` -- the one serialized
+recorder-executor dispatch (a lock on the loop around
+`homeassistant.components.recorder.get_instance(hass)
+.async_add_executor_job`) `coordinator.py`'s own
+`_async_recompute_diagnostic_result`/`async_refit`/`_async_slot_job`
+use too, so an export never runs concurrently with the slot job or a
+refit (`TASK-0041`) -- rather than calling it inline, which is what let a
+real Home Assistant install's own asyncio blocking-call detector (`homeassistant.util.loop.
 raise_for_blocking_call`) flag, then fail, the first real (signed-path-
 authenticated) request this view ever actually served.
 
@@ -48,7 +50,6 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.components.recorder import get_instance
 
 from .const import DOMAIN
 
@@ -96,7 +97,7 @@ class ShadyExportCsvView(HomeAssistantView):  # type: ignore[misc]
         # fill a gap in the diagnosed slot's cached pool via the same
         # blocking recorder read `coordinator.py` already dispatches
         # this same way everywhere else it can be reached.
-        csv_text = await get_instance(hass).async_add_executor_job(mode.export_csv, sensor_id)
+        csv_text = await coordinator.async_run_cache_job(mode.export_csv, sensor_id)
         if csv_text is None:
             return web.Response(status=HTTPStatus.NOT_FOUND)
 

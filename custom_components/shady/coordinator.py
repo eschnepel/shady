@@ -12,13 +12,20 @@ executor.** `cache.py`'s `fetch_fn` is a plain synchronous callable
 (ADR-007a §4) — for the actual-yield entity (the only source read via
 the recorder's `statistics_during_period` rather than a `Provider`,
 per `adr-summary.md` §4) that means blocking I/O. `async_refit`/
-`async_startup` (via `async_refit`) and `_async_intraday_tick`
+`async_startup` (via `async_refit`) and the slot job (`_async_slot_job`)
 therefore dispatch their entire cache-touching body via
 `homeassistant.components.recorder.get_instance(hass)
-.async_add_executor_job` — the recorder's own dedicated single-worker
-executor, not the generic `hass.async_add_executor_job` (Home
-Assistant logs a warning for custom integrations that touch the
-recorder from the generic executor) — never awaiting partway through.
+.async_add_executor_job` — the recorder's own dedicated executor, not
+the generic `hass.async_add_executor_job` (Home Assistant logs a warning
+for custom integrations that touch the recorder from the generic
+executor) — never awaiting partway through. That executor runs several
+jobs at once: Home Assistant sizes it `MAX_DB_EXECUTOR_WORKERS =
+POOL_SIZE - 1` with `POOL_SIZE = 5` (`recorder/core.py`, `recorder/pool.py`,
+verified against 2026.3.4), so two jobs dispatched together really can
+run concurrently. Every cache-touching dispatch therefore goes through
+the one method `ShadyCoordinator.async_run_cache_job`, which serializes
+them on a single `asyncio.Lock` held on the event loop (`cache.py` itself
+never sees the lock, ADR-007a §2).
 See the module docstring in `cache.py` and ADR-007a §4 for why
 `fetch_fn` itself has no async awareness at all. Push and
 recompute never touch the recorder — `BaselineProvider`/`TemperatureProvider`
@@ -98,10 +105,20 @@ registers the midnight-reset schedule itself, at the very end (after
 its own idempotency check), so that schedule structurally cannot fire
 before the restore has run.
 
-**Intraday deviation correction (ADR-006, TASK-0013):** a fifth,
-independent schedule — `_register_intraday_schedule`'s 5-minute poll —
-only registered when `intraday_correction_mode` is not `"off"`
-(`__init__`; ADR-006 §1's "nothing computed or retained" when
+**Slot trigger (ADR-006 §1a Amendment 2026-10-07, TASK-0041):** the
+per-slot work — followed diagnosed slot, each string's intraday
+correction, the diagnostics refresh — is driven by the recorder's own
+`EVENT_RECORDER_5MIN_STATISTICS_GENERATED`, not by a wall-clock interval
+at whatever phase Home Assistant happened to start
+(`_register_intraday_schedule`, `_handle_recorder_statistics`,
+`_async_slot_job`). The former 5-minute interval stays only as a
+watchdog (`_handle_slot_watchdog`). Everywhere else in this module
+"the 5-minute tick" means this slot trigger.
+
+**Intraday deviation correction (ADR-006, TASK-0013):** driven by that
+slot trigger — always registered (`__init__`), not only when
+`intraday_correction_mode` is not `"off"`: the tick body itself is a
+genuine no-op then (ADR-006 §1's "nothing computed or retained" when
 Disabled). `_recompute_string` (every baseline-provider update AND
 every recalibration alike — ADR-006 §1b's own "not a special case"
 note) is a *reset point*: `_apply_intraday_reset` establishes a fresh
@@ -116,8 +133,8 @@ Ramping's single multiply or Blending's two-sided crossfade
 (`aggregation.py`'s `intraday_correction_factor`/`crossfade`) ahead of
 the *one* final output clamp (`forecast_adjust.clamp_output`),
 canonically ordered per ADR-006 §1b. Like the energy-integral tick,
-`_async_intraday_tick` dispatches the actual work via
-`get_instance(hass).async_add_executor_job` — `_intraday_energy_window`
+`_async_slot_job` dispatches the actual work via
+`async_run_cache_job` — `_intraday_energy_window`
 reads the actual-yield entity's recorder-backed history, the same
 blocking-I/O concern as `_fetch_actual_yield_statistics`.
 """
@@ -126,17 +143,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_RECORDER_5MIN_STATISTICS_GENERATED
 from homeassistant.core import callback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
@@ -245,6 +263,20 @@ if TYPE_CHECKING:
     from .providers.normalize import BaselineShape
 
 _STATISTICS_PERIOD = "5minute"
+
+# The recorder-synchronized slot trigger (TASK-0041; ADR-006 §1a and
+# ADR-004 §2i Amendments 2026-10-07). The recorder fires
+# `EVENT_RECORDER_5MIN_STATISTICS_GENERATED` from *inside* its 5-minute
+# compile (second 10 after every 5-minute mark), just before the commit, so
+# a slot job probes — one first read plus up to `MAX_PROBES` retries,
+# `PROBE_INTERVAL` apart, on the event loop — until the newest complete
+# slot is readable. The old wall-clock interval stays as a watchdog: it
+# starts a job only if none was started for `WATCHDOG`.
+PROBE_INTERVAL = timedelta(seconds=1)
+MAX_PROBES = 5
+WATCHDOG = timedelta(minutes=6)
+
+_T = TypeVar("_T")
 
 # ADR-005 §3/§4: the last of today's 288 slots, 23:55 — matching
 # `sensor.py`'s own `_LAST_SLOT_OF_DAY` convention for `ShadyForecastSensor`'s
@@ -689,6 +721,24 @@ class ShadyCoordinator:
         # §2); tests substitute a fixed value the same way `cache.py`'s
         # own `reference` parameter is used elsewhere for determinism.
         self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
+        # Slot-trigger state (TASK-0041). `_sleep` is injectable like
+        # `_now` (the probe back-off must never wait for real in tests);
+        # the three tuning values are read from the module constants
+        # above, per instance, for the same reason.
+        self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+        self._probe_interval: timedelta = PROBE_INTERVAL
+        self._max_probes: int = MAX_PROBES
+        self._watchdog: timedelta = WATCHDOG
+        self._slot_job_task: asyncio.Task[None] | None = None
+        # The newest-complete-slot index the latest job was started for
+        # (the dedupe key) and whether that job is still probing (only a
+        # probing job may be superseded: once its body is dispatched it
+        # owns the cache job lock and simply finishes).
+        self._slot_job_slot: int | None = None
+        self._slot_job_probing: bool = False
+        self._last_slot_job_at: datetime | None = None
+        # One lock per running event loop (`async_run_cache_job`).
+        self._cache_job_lock_state: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
 
         # -- diagnostics (ADR-004, TASK-0015b) --
         # The one currently-configured diagnosed slot (§2a/§2g) — a full
@@ -700,8 +750,8 @@ class ShadyCoordinator:
         # just the `get_pinned_slot_pool` window anchor), which is set
         # only while *genuinely pinned*, never while following.
         # `_follow_latest_diagnostic_slot` (default `True`) says whether
-        # `_advance_followed_diagnostic_slot` — called first thing on
-        # every 5-minute tick — moves the index to the newest complete
+        # `_advance_followed_diagnostic_slot` — called first thing in
+        # every slot job — moves the index to the newest complete
         # slot. `pin_diagnostic_slot`/`set_follow_latest_diagnostic_slot`
         # below are the only mutators besides that advance, and keep
         # the cache's scalar in sync.
@@ -741,7 +791,7 @@ class ShadyCoordinator:
         self._register_actual_yield_listeners()
         # Always registered (unlike pre-ADR-004 TASK-0013, which only
         # registered this when `intraday_correction_mode != "off"`):
-        # ADR-004 §2/§4 reuses this exact same 5-minute trigger for
+        # ADR-004 §2/§4 reuses this exact same slot trigger for
         # diagnostics, and the diagnostic-mode select (`select.py`) can
         # be switched on at any time after setup, independent of
         # `intraday_correction_mode` — so the trigger must always be
@@ -1049,15 +1099,62 @@ class ShadyCoordinator:
         # period` call, genuine blocking recorder I/O, so it must not run
         # directly on the event loop the way it did before that read was
         # ever actually reachable.
-        await get_instance(self.hass).async_add_executor_job(
-            self._backfill_elapsed_today_slots, resolved_now
-        )
+        await self.async_run_cache_job(self._backfill_elapsed_today_slots, resolved_now)
 
     def shutdown(self) -> None:
         """Cancel every registered listener/schedule (TASK-0016's
-        `async_unload_entry`)."""
+        `async_unload_entry`) and any slot job still in flight."""
         while self._unsub:
             self._unsub.pop()()
+        task = self._slot_job_task
+        self._slot_job_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    # -- serialized recorder-executor dispatch (TASK-0041) ----------------
+
+    def _cache_job_lock(self) -> asyncio.Lock:
+        """The one lock `async_run_cache_job` holds, created for the
+        running loop (an `asyncio.Lock` binds to the loop it first has to
+        wait on; a coordinator reused across loops — only tests do that —
+        gets a fresh one rather than a `RuntimeError`)."""
+        loop = asyncio.get_running_loop()
+        state = self._cache_job_lock_state
+        if state is None or state[0] is not loop:
+            state = (loop, asyncio.Lock())
+            self._cache_job_lock_state = state
+        return state[1]
+
+    async def async_run_cache_job(self, fn: Callable[..., _T], *args: Any) -> _T:
+        """The one dispatch to the recorder's executor for every job that
+        touches the cache (startup backfill, `async_refit`, the slot
+        job's probe and body, `_async_recompute_diagnostic_result`,
+        `http_export.py`'s `mode.export_csv`): holds a single
+        `asyncio.Lock` on the loop around it, so two such jobs never run
+        concurrently — the recorder's executor has several workers
+        (module docstring), and `cache.py` cannot await a lock itself
+        (ADR-007a §2). That serializes executor jobs with *each other*
+        only: `Cache` guards its own in-memory structure against any
+        thread, loop-thread readers included, with a private
+        `threading.RLock` of its own (ADR-007a §4 Amendment 2026-10-09,
+        `TASK-0042`) — a different lock with a different job, never
+        held across `fetch_fn`.
+
+        A *method*, not an exposed lock: a caller cannot hold it across
+        other awaits or forget to release it. If the awaiting task is
+        cancelled (a superseded slot job, `shutdown`), the executor
+        thread cannot be stopped — so the lock is kept until that thread
+        has really finished, and only then is the cancellation re-raised.
+        """
+        async with self._cache_job_lock():
+            job = asyncio.ensure_future(get_instance(self.hass).async_add_executor_job(fn, *args))
+            try:
+                return await asyncio.shield(job)
+            except asyncio.CancelledError:
+                await asyncio.wait([job])
+                if not job.cancelled():
+                    job.exception()  # retrieved: nobody is left to consume it
+                raise
 
     # -- recalibration (ADR-002 §1) --------------------------------------
 
@@ -1073,8 +1170,8 @@ class ShadyCoordinator:
     async def async_refit(self, now: datetime | None = None) -> None:
         """The single refit routine both the midnight schedule and the
         manual button (`button.py`, TASK-0011) call (ADR-002 §1/§5).
-        Dispatched via `get_instance(self.hass).async_add_executor_job`
-        — the recorder's own dedicated executor, not the generic
+        Dispatched via `async_run_cache_job` — the serialized dispatch
+        to the recorder's own dedicated executor, not the generic
         `hass.async_add_executor_job` — since this body's recorder read
         (`_fetch_actual_yield_statistics`) is database access; see
         module docstring.
@@ -1085,7 +1182,7 @@ class ShadyCoordinator:
         # docstring) — must run on the event loop, before dispatching to
         # the recorder executor below, since it awaits a service call.
         await self._refresh_forecast_solar_providers()
-        await get_instance(self.hass).async_add_executor_job(self._refit_sync, resolved_now)
+        await self.async_run_cache_job(self._refit_sync, resolved_now)
         # Already a coroutine, already being awaited by every caller
         # (the manual button, `_handle_midnight`'s own
         # `hass.async_create_task(self.async_refit(now))`) — awaited
@@ -1449,7 +1546,7 @@ class ShadyCoordinator:
     def _advance_followed_diagnostic_slot(self, now: datetime) -> None:
         """ADR-004 §2g: while following, *set* the stored diagnosed
         slot to the newest complete one as of `now`. Called first thing
-        on every 5-minute tick (`_intraday_tick_sync`), ahead of any
+        in every slot job (`_intraday_tick_sync`), ahead of any
         `extra_fit()`/`compute()` that reads it, and whether or not a
         diagnostic mode is active — an integer assignment, not fitting
         work, so ADR-004 §1's "no extra cost while off" is unaffected.
@@ -1554,9 +1651,9 @@ class ShadyCoordinator:
     async def _async_recompute_diagnostic_result(self) -> None:
         """Off-event-loop counterpart to `diagnostic_result()`'s lazy
         cache-miss `compute()` call above — dispatched via
-        `get_instance(self.hass).async_add_executor_job`, the exact
-        same recorder-executor pattern `async_refit`/
-        `_async_intraday_tick` already use (module docstring), since
+        `async_run_cache_job`, the exact same serialized
+        recorder-executor dispatch `async_refit`/`_async_slot_job`
+        already use (module docstring), since
         `mode.compute()` may need it too. Whichever of this or another
         write to `self._diagnostic_result_cache` (a fresh tick, another
         mode switch, another pin/clear) finishes last simply wins — no
@@ -1566,7 +1663,7 @@ class ShadyCoordinator:
         mode = self.diagnostic_mode()
         if mode is None:
             return
-        result = await get_instance(self.hass).async_add_executor_job(mode.compute)
+        result = await self.async_run_cache_job(mode.compute)
         self._diagnostic_result_cache = result
 
     def diagnostic_sensor_ids(self) -> list[tuple[str, str]]:
@@ -1862,7 +1959,7 @@ class ShadyCoordinator:
         """ADR-005 §5/§6's fourth, independent schedule — right at the
         day boundary (`hour=0, minute=0, second=0`), deliberately not
         reusing ADR-002 §1's `minute=1`-offset recalibration trigger nor
-        ADR-006 §1a's 5-minute poll (module docstring / ADR-005's own
+        ADR-006 §1a's slot trigger (module docstring / ADR-005's own
         "deliberately not reusing either of those triggers" note)."""
         self._unsub.append(
             async_track_time_change(
@@ -2492,7 +2589,7 @@ class ShadyCoordinator:
         (ADR-006 §1b's canonical ordering: correction, then clamp,
         exactly once, never per crossfade side) — shared by both the
         reset path (`_apply_intraday_reset`, `w == 0`) and the
-        5-minute-tick path (`_advance_intraday_string`, `w` evolving).
+        slot-job path (`_advance_intraday_string`, `w` evolving).
         """
         indices = sorted(state.basis.values)
         if not indices:
@@ -2546,7 +2643,7 @@ class ShadyCoordinator:
         return day_energy_total_wh(pv_values), day_energy_total_wh(fc_values)
 
     def _advance_intraday_string(self, string: _StringConfig, now: datetime) -> None:
-        """The 5-minute tick's per-string body (ADR-006 §1a) — re-derives
+        """The slot job's per-string body (ADR-006 §1a) — re-derives
         `w`/`ratio_string`/`effective_factor` from the *current* trailing
         window and re-applies them against the *unchanged* basis
         established at the string's last reset (`_apply_intraday_reset`);
@@ -2594,32 +2691,103 @@ class ShadyCoordinator:
             self.cache.push(self.forecast_sensor_id(string.index), pushed, now_index + 1)
 
     def _register_intraday_schedule(self) -> None:
-        """ADR-006 §1a's independent 5-minute poll — now always
-        registered (see `__init__`), not gated on
-        `intraday_correction_mode`. ADR-004 §2/§4's diagnostic-slot
-        advance/extra-fit reuses this exact same trigger rather than
-        introducing a third, near-identical schedule."""
+        """The slot trigger (ADR-006 §1a Amendment 2026-10-07,
+        TASK-0041): the recorder's own statistics event, plus the former
+        5-minute interval kept as a watchdog. Always registered (see
+        `__init__`), not gated on `intraday_correction_mode`.
+        ADR-004 §2/§4's diagnostic-slot advance/extra-fit rides the same
+        trigger rather than introducing a second, near-identical one."""
         self._unsub.append(
-            async_track_time_interval(self.hass, self._handle_intraday_tick, timedelta(minutes=5))
+            self.hass.bus.async_listen(
+                EVENT_RECORDER_5MIN_STATISTICS_GENERATED, self._handle_recorder_statistics
+            )
+        )
+        self._unsub.append(
+            async_track_time_interval(self.hass, self._handle_slot_watchdog, self._watchdog)
         )
 
     @callback  # type: ignore[untyped-decorator]
-    def _handle_intraday_tick(self, now: datetime) -> None:
-        self.hass.async_create_task(self._async_intraday_tick(now))
+    def _handle_recorder_statistics(self, _event: Any) -> None:
+        """The recorder compiled (or is committing) a 5-minute slot. Only
+        schedules the slot job — no recorder access, nothing blocking."""
+        self._start_slot_job(self._now())
 
-    async def _async_intraday_tick(self, now: datetime) -> None:
-        """Dispatched off the event loop (module docstring: recorder
-        access via `cache.py`'s injected `fetch_fn` is blocking I/O) —
-        `_intraday_energy_window` reads the actual-yield entity's
-        recorder-backed history, mirroring `async_refit`'s own
-        `get_instance(self.hass).async_add_executor_job` pattern
-        exactly — the recorder's own dedicated executor, not the
-        generic `hass.async_add_executor_job`. `cache.py`'s
-        `get_pinned_slot_pool` (`_diagnostics_tick_sync`, ADR-004 §4)
-        shares the same recorder-backed-fetch concern while
-        auto-tracking a not-yet-cached slot, so it rides this same
-        executor-thread dispatch rather than a second one."""
-        await get_instance(self.hass).async_add_executor_job(self._intraday_tick_sync, now)
+    @callback  # type: ignore[untyped-decorator]
+    def _handle_slot_watchdog(self, now: datetime) -> None:
+        """Watchdog (D3): runs a slot job only if none was started for
+        `WATCHDOG`, so a silently missing event cannot stop the
+        correction. In normal operation it never starts one."""
+        last = self._last_slot_job_at
+        if last is not None and now - last < self._watchdog:
+            return
+        self._start_slot_job(now)
+
+    def _start_slot_job(self, now: datetime) -> None:
+        """Start one slot job for the newest complete slot as of `now`,
+        unless one was already started for that slot (a duplicate event,
+        or the watchdog right after an event). A job still *probing* for
+        an older slot is cancelled first and never runs its body; one that
+        already dispatched its body is left to finish (it holds the cache
+        job lock, the new job queues behind it)."""
+        slot_index = Cache.index_for(now) - 1
+        if slot_index == self._slot_job_slot:
+            return
+        previous = self._slot_job_task
+        if previous is not None and not previous.done() and self._slot_job_probing:
+            previous.cancel()
+        # All state before `async_create_task`: HA may start the task eagerly.
+        self._slot_job_slot = slot_index
+        self._slot_job_probing = True
+        self._last_slot_job_at = now
+        self._slot_job_task = self.hass.async_create_task(self._async_slot_job(now, slot_index))
+
+    async def _async_slot_job(self, now: datetime, slot_index: int) -> None:
+        """One slot job: probe (on the recorder executor, serialized by
+        `async_run_cache_job`) until the newest complete slot is readable
+        for every string that is "pending" — retrying after
+        `PROBE_INTERVAL` with an `await` on the loop, never a sleep inside
+        an executor job, at most `MAX_PROBES` times — then run the former
+        tick body (`_intraday_tick_sync`) exactly once. A string that never
+        delivers does not block it: after the bounded retries the body runs
+        anyway and publishes without that actual (ADR-004 §2i)."""
+        try:
+            try:
+                ready = await self.async_run_cache_job(self._probe_slot_ready_sync, slot_index)
+                retries = 0
+                while not ready and retries < self._max_probes:
+                    await self._sleep(self._probe_interval.total_seconds())
+                    retries += 1
+                    ready = await self.async_run_cache_job(self._probe_slot_ready_sync, slot_index)
+            except asyncio.CancelledError:
+                if self._slot_job_slot != slot_index:
+                    return  # superseded by a newer slot's job: quietly end
+                raise  # shutdown: a real cancellation
+            except Exception:
+                # ADR-000 §8: a failing probe must not stop the correction.
+                _LOGGER.exception("Slot probe failed — running the slot job without waiting")
+            self._slot_job_probing = False
+            await self.async_run_cache_job(self._intraday_tick_sync, now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Slot job failed (slot index %s)", slot_index)
+
+    def _probe_slot_ready_sync(self, slot_index: int) -> bool:
+        """Off the event loop, under `async_run_cache_job`. `False` while
+        any string is *pending*: the slot before the newest complete one
+        has a value and the newest complete one does not — i.e. the
+        recorder is demonstrably still compiling. A string with no data at
+        all, or a definite non-answer, is not pending, so it never delays
+        the job. One two-slot read per distinct actual-yield entity; the
+        cache's settling rule (ADR-007a §4 Amendment) keeps an unsettled
+        `None` re-fetchable, so a later probe really re-queries it."""
+        start = Cache.timestamp_for(slot_index - 1)
+        end = Cache.timestamp_for(slot_index)
+        for entity_id in dict.fromkeys(string.actual_yield_entity_id for string in self._strings):
+            values = self.cache.get_time_range([entity_id], start, end, on_invalid="raw")[entity_id]
+            if len(values) == 2 and values[0] is not None and values[1] is None:
+                return False
+        return True
 
     def _intraday_tick_sync(self, now: datetime) -> None:
         # First, before anything below that could raise or take a while
@@ -2634,7 +2802,7 @@ class ShadyCoordinator:
         """ADR-004 §2/§4: while a diagnostic mode is active, refreshes
         whichever of `extra_fit()`/`compute()` the mode declares a
         `"slot"` cadence for (ADR-004 §5, 2026-09-01 Amendment —
-        "slot" meaning "every slot", i.e. this same 5-minute trigger,
+        "slot" meaning "every slot", i.e. this same slot trigger,
         not the once-daily recalibration trigger §4's own original,
         pre-cadence-getter prose describes) — the two are gated
         independently since a future mode could need one but not the

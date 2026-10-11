@@ -3019,18 +3019,20 @@ class TestAdvanceIntradayStringNoState:
 
 
 class TestIntradayTickFullDispatchPath:
-    """The 5-minute intraday/diagnostics tick's full, real dispatch
-    chain (`_handle_intraday_tick` -> `_async_intraday_tick` ->
-    `_intraday_tick_sync`, ADR-006 §1a/ADR-004 §2/§4) — every other
+    """The slot trigger's full, real dispatch chain (the recorder's
+    statistics event -> `_handle_recorder_statistics` ->
+    `_async_slot_job` -> `_intraday_tick_sync`, ADR-006 §1a/ADR-004
+    §2/§4, TASK-0041; was `_handle_intraday_tick` ->
+    `_async_intraday_tick` before) — every other
     intraday test in this module calls `_advance_intraday_string`
     directly; this is the one test exercising the actual scheduled-
     callback/executor-job path those tests all bypass."""
 
     def test_tick_completes_without_error_when_everything_is_off(self) -> None:
-        coordinator, hass = _make_coordinator()  # default fixture: intraday + diagnostics off
+        _coordinator, hass = _make_coordinator()  # default fixture: intraday + diagnostics off
 
         async def _drive() -> None:
-            coordinator._handle_intraday_tick(_NOW)
+            hass.bus.fire(_coordinator_mod.EVENT_RECORDER_5MIN_STATISTICS_GENERATED)
             await hass.drain()  # let the scheduled task actually run to completion
 
         _run(_drive())

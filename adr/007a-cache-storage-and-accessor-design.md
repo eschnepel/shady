@@ -5,7 +5,7 @@
 because the concrete storage scheme and accessor API are a separable, and
 independently heavily cross-referenced, concern from the *decision to extract
 `cache.py` as its own module* in the first place. No behavior changed by this
-split. **Last updated:** 2026-10-07
+split. **Last updated:** 2026-10-09
 
 This ADR is kept current in place: §2/§3's hybrid push/query handling for
 provider-backed predictor series (baseline `FC`, temperature), and §5's
@@ -29,7 +29,11 @@ already-elapsed "today" was never fetched by *any* caller before this,
 (`TASK-0037-patch-5`), §4 also records that a trailing `None` in a fetch's
 freshest slots is no longer treated as validated until it is old enough to be a
 genuine gap rather than a recorder that has not caught up yet — see §4's own "A
-`None` in the freshest slots is not yet an answer" Amendment.
+`None` in the freshest slots is not yet an answer" Amendment. As of 2026-10-09
+(`TASK-0042`), `Cache` also owns a threading contract of its own (a private
+`threading.RLock`, never held across `fetch_fn`) so that a loop-thread reader
+can never see a value paired with the wrong slot while an executor job mutates
+the same series — see §4's own "Threading contract" Amendment.
 
 ______________________________________________________________________
 
@@ -309,6 +313,55 @@ ADR-004 §2i (`TASK-0041`) — not by anything in the cache.
 **Decided by:** human (option C — cache-level fix — chosen in chat, 2026-10-07);
 `SETTLE_GRACE`'s value and the injected clock are Lead Agent choices, confirmed
 by the human at Gate 2 (2026-10-08).
+
+**Amendment (2026-10-09, `TASK-0042`): threading contract.**
+
+*Reason.* `Cache` is written by executor-thread jobs (`push`,
+`_fetch_and_store`, `invalidate`, and `trim` once something calls it) and read
+both there and on the event loop (`sensor.py`'s `get_time_range`, the energy
+getters). A series is a list plus a separate `_list_offset` entry, and a writer
+that extends the list at the front (a backfill of already-elapsed slots after
+the forecast was pushed) or drops its head (`trim`) changes the list first and
+the offset second. A reader landing between the two steps pairs the new list
+with the old offset and silently returns *another slot's value*. Reproduced
+deterministically before this amendment
+(`tests/test_cache_core.py::TestThreadingContract`): a prepend made slot 100
+read `None` instead of `1.0`; a trim made slot 102 return slot 104's value.
+`TASK-0041`'s `async_run_cache_job` lock serializes executor jobs with each
+other only; it cannot cover a loop-thread reader, and `cache.py` must not depend
+on a lock owned by the coordinator (§2).
+
+*Decision.* `Cache` guards its in-memory state with its own `threading.RLock`,
+private to `cache.py`, never exposed:
+
+- Every method that reads or writes series storage, `_list_offset`, the shadow
+  array or the validated ranges takes it — `_write`, `_read`, `push`,
+  `invalidate`, `trim`, `validated_range`, the read phase of `get_time_range`,
+  `get_regression_pools` and `get_pinned_slot_pool`. Re-entrant, so a method may
+  call another; a range read holds it for its whole read phase, so one read sees
+  one consistent state.
+- It is **never held across `fetch_fn`**. `_validate_range` decides what is
+  missing under the lock, releases it, calls `fetch_fn` (recorder I/O, possibly
+  slow), then re-acquires it, writes **only what is still unvalidated** and
+  widens `validated` from the *current* range, not the pre-fetch snapshot. Two
+  threads may therefore fetch overlapping ranges; the first to store wins, the
+  later one skips the already-validated overlap — stale data never overwrites
+  newer data — and `validated` never shrinks through a fetch.
+- The lock is a leaf: nothing is called out of `Cache` while it is held, so no
+  lock-ordering rule with the coordinator's `async_run_cache_job` lock is
+  needed. The two locks have different jobs (that one serializes recorder-
+  executor jobs; this one makes the in-memory structure safe for any thread).
+- `cache.py` still imports nothing from Home Assistant or the coordinator;
+  `threading` is standard library.
+
+This is a consistency guarantee for a single slot's value and for one range
+read; it is **not** a transaction across several accessor calls (a caller that
+needs two reads to agree still has to arrange that itself).
+
+**Decided by:** human (Gate 2 approval of `TASK-0042` as written, 2026-10-08,
+and the earlier decision that cache-internal threading is its own task); the
+lock scope and the "write only what is still missing" rule are Lead Agent
+wording of that decision.
 
 ### 5 — Accessor methods
 

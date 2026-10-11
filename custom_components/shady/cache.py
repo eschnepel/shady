@@ -77,12 +77,14 @@ ADR-008 §2.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import tzinfo as _tzinfo
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -289,6 +291,20 @@ def _wall_clock() -> datetime:
     return datetime.now(UTC)
 
 
+def _locked[Method: Callable[..., Any]](method: Method) -> Method:
+    """Run a `Cache` method with the cache's own `threading.RLock` held
+    (ADR-007a §4 Amendment 2026-10-09, `TASK-0042`). Only for methods that
+    never call `fetch_fn` or anything else outside the cache — the lock is
+    a leaf. Re-entrant, so locked methods may call each other."""
+
+    @functools.wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return cast(Method, wrapper)
+
+
 class Cache:
     """Index-addressable time-series store, generic over any `sensor_id`.
 
@@ -310,6 +326,16 @@ class Cache:
         self.window_days = window_days
         self._fetch_fn = fetch_fn
         self._clock: Callable[[], datetime] = clock if clock is not None else _wall_clock
+        # The cache's own threading contract (ADR-007a §4 Amendment
+        # 2026-10-09, TASK-0042): guards every in-memory structure below
+        # (series lists, `_list_offset`, the shadow arrays, `_validated`),
+        # so a loop-thread reader can never pair a list with the wrong
+        # offset while an executor job extends/trims it. Private, re-
+        # entrant and **never held across `fetch_fn`** (or any other call
+        # out of this class) — `async_run_cache_job`'s own lock in
+        # `coordinator.py` serializes recorder-executor jobs with each
+        # other and is a different thing.
+        self._lock = threading.RLock()
         # HA's configured local timezone (`coordinator.py`'s own
         # `ZoneInfo(hass.config.time_zone)`), defaulting to `UTC` for
         # every caller — chiefly this module's own tests — that doesn't
@@ -416,6 +442,7 @@ class Cache:
 
     # -- introspection (read-only; mainly for tests/callers to inspect state) --
 
+    @_locked
     def validated_range(self, sensor_id: str) -> tuple[int, int | None] | None:
         """The `(from_index, to_index)` currently valid for `sensor_id`,
         or `None` if this sensor has never been validated at all."""
@@ -426,12 +453,14 @@ class Cache:
     def _window_length(self) -> int:
         return self.window_days * SLOTS_PER_DAY
 
+    @_locked
     def _ensure_sensor(self, sensor_id: str) -> None:
         if sensor_id not in self._values:
             self._values[sensor_id] = []
             self._list_offset[sensor_id] = 0
             self._shadow[sensor_id] = np.empty(0, dtype=np.float64)
 
+    @_locked
     def _write(self, sensor_id: str, index: int, value: float | None | str) -> None:
         self._ensure_sensor(sensor_id)
         lst = self._values[sensor_id]
@@ -465,6 +494,7 @@ class Cache:
 
         self._shadow[sensor_id] = shadow
 
+    @_locked
     def _read(self, sensor_id: str, index: int) -> float | None | str:
         if sensor_id not in self._values:
             return None
@@ -513,28 +543,47 @@ class Cache:
         """
         start_ts = self.timestamp_for(start)
         end_ts = self.timestamp_for(end + 1)  # fetch_fn's end is exclusive
+        # No lock is held here: `fetch_fn` is recorder I/O and may be slow
+        # (ADR-007a §4 Amendment 2026-10-09). The settled end is computed
+        # outside the lock too — it asks the injected clock.
         fetched = self._fetch_fn(sensor_id, start_ts, end_ts)
-        for offset_i, value in enumerate(fetched):
-            self._write(sensor_id, start + offset_i, value)
+        settled_end = self._settled_end(fetched, start, end)
 
-        current = self._validated.get(sensor_id)
-        extends_right_edge = current is None or (current[1] is not None and end > current[1])
-        validated_end = self._settled_end(fetched, start, end) if extends_right_edge else end
-        if current is None:
-            self._validated[sensor_id] = (start, validated_end)
-            return
+        with self._lock:
+            # Re-read the *current* validated range: another thread may
+            # have fetched an overlapping range while this one waited on
+            # `fetch_fn`. Only what is still unvalidated is written, so
+            # stale data never overwrites newer data, and `validated` is
+            # widened from the current state, so it never shrinks.
+            current = self._validated.get(sensor_id)
+            for offset_i, value in enumerate(fetched):
+                index = start + offset_i
+                if current is not None and self._is_validated(current, index):
+                    continue
+                self._write(sensor_id, index, value)
+
+            extends_right_edge = current is None or (current[1] is not None and end > current[1])
+            validated_end = settled_end if extends_right_edge else end
+            if current is None:
+                self._validated[sensor_id] = (start, validated_end)
+                return
+            from_index, to_index = current
+            new_from = min(from_index, start)
+            # `to_index is None` ("actively pushed by Shady", ADR-007a §2)
+            # must stay `None` here, not be widened to `end`: this branch was
+            # unreachable before `allow_historical_backfill` (ADR-012 §2a
+            # Amendment, TASK-0034-patch-2) made it possible to fetch-and-
+            # store for such a sensor at all, and a historical backfill
+            # filling in the *past* says nothing about the *future* no
+            # longer being kept current by `push()` — the very thing
+            # `to_index=None` promises to every other reader.
+            new_to = to_index if to_index is None else max(to_index, validated_end)
+            self._validated[sensor_id] = (new_from, new_to)
+
+    @staticmethod
+    def _is_validated(current: tuple[int, int | None], index: int) -> bool:
         from_index, to_index = current
-        new_from = min(from_index, start)
-        # `to_index is None` ("actively pushed by Shady", ADR-007a §2)
-        # must stay `None` here, not be widened to `end`: this branch was
-        # unreachable before `allow_historical_backfill` (ADR-012 §2a
-        # Amendment, TASK-0034-patch-2) made it possible to fetch-and-
-        # store for such a sensor at all, and a historical backfill
-        # filling in the *past* says nothing about the *future* no
-        # longer being kept current by `push()` — the very thing
-        # `to_index=None` promises to every other reader.
-        new_to = to_index if to_index is None else max(to_index, validated_end)
-        self._validated[sensor_id] = (new_from, new_to)
+        return from_index <= index and (to_index is None or index <= to_index)
 
     def _validate_range(
         self, sensor_id: str, start: int, end: int, *, allow_historical_backfill: bool = False
@@ -559,33 +608,41 @@ class Cache:
         pools`, which needs real calendar history to train on regardless
         of whether the entity is also being pushed to — opts in.
         """
-        self._ensure_sensor(sensor_id)
-        current = self._validated.get(sensor_id)
+        # Decide what is missing under the lock, then fetch with it
+        # released (ADR-007a §4 Amendment 2026-10-09). `_fetch_and_store`
+        # re-checks against the then-current range before writing.
+        spans: list[tuple[int, int]] = []
+        with self._lock:
+            self._ensure_sensor(sensor_id)
+            current = self._validated.get(sensor_id)
 
-        if current is None:
-            # No valid data at all: fetch the *entire* configured window,
-            # not just the requested slice (ADR-007a §4).
-            window_len = self._window_length()
-            fetch_start = min(start, end - window_len + 1)
-            self._fetch_and_store(sensor_id, fetch_start, end)
-            return
+            if current is None:
+                # No valid data at all: fetch the *entire* configured window,
+                # not just the requested slice (ADR-007a §4).
+                window_len = self._window_length()
+                fetch_start = min(start, end - window_len + 1)
+                spans.append((fetch_start, end))
+            else:
+                from_index, to_index = current
+                if to_index is None:
+                    # Actively pushed by Shady — the future is always
+                    # current, never (re-)queried (ADR-007a §2); only an
+                    # opted-in historical backfill fetches anything.
+                    if allow_historical_backfill and start < from_index:
+                        spans.append((start, from_index - 1))
+                else:
+                    # Fetch only the missing head and/or tail, one call each.
+                    if start < from_index:
+                        spans.append((start, from_index - 1))
+                    if end > to_index:
+                        spans.append((to_index + 1, end))
 
-        from_index, to_index = current
-        if to_index is None:
-            if allow_historical_backfill and start < from_index:
-                self._fetch_and_store(sensor_id, start, from_index - 1)
-            # Actively pushed by Shady — the future is always current,
-            # never (re-)queried (ADR-007a §2).
-            return
-
-        # Fetch only the missing head and/or tail, in one call each.
-        if start < from_index:
-            self._fetch_and_store(sensor_id, start, from_index - 1)
-        if end > to_index:
-            self._fetch_and_store(sensor_id, to_index + 1, end)
+        for span_start, span_end in spans:
+            self._fetch_and_store(sensor_id, span_start, span_end)
 
     # -- writing (ADR-007a §3) ------------------------------------------------
 
+    @_locked
     def push(self, sensor_id: str, values: dict[int, float], not_before_index: int) -> None:
         """Write one or more calculated values directly into `sensor_id`'s
         series in a single call. Any index below `not_before_index` is
@@ -609,6 +666,7 @@ class Cache:
         new_from = min(written) if current is None else min(current[0], min(written))
         self._validated[sensor_id] = (new_from, None)
 
+    @_locked
     def invalidate(self, sensor_id: str, start: int, end: int) -> None:
         """Reset `sensor_id`'s values over `[start, end]` (inclusive) back
         to `None`, forcing the next access to re-fetch (or, for a
@@ -637,6 +695,7 @@ class Cache:
 
     # -- trimming (ADR-007a §1) -----------------------------------------------
 
+    @_locked
     def trim(self, reference: datetime | None = None) -> None:
         """Drop each sensor's oldest entries once the rolling window has
         advanced past them, advancing `list_offset`. `validated` ranges
@@ -758,26 +817,27 @@ class Cache:
                 allow_historical_backfill=allow_historical_backfill,
             )
 
-        if group_by == "sensor":
-            sensor_result: dict[str, list[float | None | str]] = {}
-            for sensor_id in sensor_ids:
-                shaped_list: list[float | None | str] = []
-                for index in range(start_index, end_index + 1):
+        with self._lock:  # one consistent state for the whole read phase
+            if group_by == "sensor":
+                sensor_result: dict[str, list[float | None | str]] = {}
+                for sensor_id in sensor_ids:
+                    shaped_list: list[float | None | str] = []
+                    for index in range(start_index, end_index + 1):
+                        keep, shaped = _shape(self._read(sensor_id, index), on_invalid)
+                        if keep:
+                            shaped_list.append(shaped)
+                    sensor_result[sensor_id] = shaped_list
+                return sensor_result
+
+            slot_result: list[dict[str, float | None | str]] = []
+            for index in range(start_index, end_index + 1):
+                slot_entry: dict[str, float | None | str] = {}
+                for sensor_id in sensor_ids:
                     keep, shaped = _shape(self._read(sensor_id, index), on_invalid)
                     if keep:
-                        shaped_list.append(shaped)
-                sensor_result[sensor_id] = shaped_list
-            return sensor_result
-
-        slot_result: list[dict[str, float | None | str]] = []
-        for index in range(start_index, end_index + 1):
-            slot_entry: dict[str, float | None | str] = {}
-            for sensor_id in sensor_ids:
-                keep, shaped = _shape(self._read(sensor_id, index), on_invalid)
-                if keep:
-                    slot_entry[sensor_id] = shaped
-            slot_result.append(slot_entry)
-        return slot_result
+                        slot_entry[sensor_id] = shaped
+                slot_result.append(slot_entry)
+            return slot_result
 
     def get_regression_pools(
         self,
@@ -859,16 +919,17 @@ class Cache:
                 window_end_index,
                 allow_historical_backfill=True,
             )
-            shadow = self._shadow[sensor_id]
-            list_offset = self._list_offset[sensor_id]
+            with self._lock:  # shadow array and its offset, read together
+                shadow = self._shadow[sensor_id]
+                list_offset = self._list_offset[sensor_id]
 
-            if len(shadow) == 0:
-                gathered = np.full(abs_index.shape, np.nan, dtype=np.float64)
-            else:
-                pos = abs_index - list_offset
-                valid = (pos >= 0) & (pos < len(shadow))
-                clipped = np.clip(pos, 0, len(shadow) - 1)
-                gathered = np.where(valid, shadow[clipped], np.nan)
+                if len(shadow) == 0:
+                    gathered = np.full(abs_index.shape, np.nan, dtype=np.float64)
+                else:
+                    pos = abs_index - list_offset
+                    valid = (pos >= 0) & (pos < len(shadow))
+                    clipped = np.clip(pos, 0, len(shadow) - 1)
+                    gathered = np.where(valid, shadow[clipped], np.nan)
 
             # (slot, day, offset) -> (slot, offset, day) -> (slot, offset*day)
             # so each offset contributes a contiguous window_days-wide
@@ -1054,14 +1115,15 @@ class Cache:
                 )
 
         result: dict[str, list[float | None | str]] = {}
-        for sensor_id in sensor_ids:
-            shaped_list: list[float | None | str] = []
-            for day_offset in range(self.window_days):
-                index = window_start_index + day_offset * SLOTS_PER_DAY + slot_of_day
-                keep, shaped = _shape(self._read(sensor_id, index), on_invalid)
-                if keep:
-                    shaped_list.append(shaped)
-            result[sensor_id] = shaped_list
+        with self._lock:  # one consistent state for the whole read phase
+            for sensor_id in sensor_ids:
+                shaped_list: list[float | None | str] = []
+                for day_offset in range(self.window_days):
+                    index = window_start_index + day_offset * SLOTS_PER_DAY + slot_of_day
+                    keep, shaped = _shape(self._read(sensor_id, index), on_invalid)
+                    if keep:
+                        shaped_list.append(shaped)
+                result[sensor_id] = shaped_list
         return result
 
     # -- diagnostic fit cache (ADR-004 §4, TASK-0015b) ------------------------

@@ -261,9 +261,39 @@ class FakeHttp:
         self.registered_views.append(view)
 
 
+class FakeBus:
+    """Real (non-`Mock`) stand-in for `hass.bus` — only what
+    `coordinator.py` uses: `async_listen` (returns an unsubscribe
+    callable, like HA's) and a synchronous `fire` that invokes every
+    listener registered for that event type directly (deterministic,
+    unlike HA's own thread-safe dispatch). `listener_count` lets a test
+    assert (un)subscription."""
+
+    def __init__(self) -> None:
+        self._listeners: dict[str, list[Any]] = {}
+
+    def async_listen(self, event_type: str, listener: Any, *args: Any, **kwargs: Any) -> Any:
+        self._listeners.setdefault(event_type, []).append(listener)
+
+        def _unsub() -> None:
+            listeners = self._listeners.get(event_type, [])
+            if listener in listeners:
+                listeners.remove(listener)
+
+        return _unsub
+
+    def fire(self, event_type: str, event_data: Any = None) -> None:
+        for listener in list(self._listeners.get(event_type, [])):
+            listener(SimpleNamespace(event_type=event_type, data=event_data or {}))
+
+    def listener_count(self, event_type: str) -> int:
+        return len(self._listeners.get(event_type, []))
+
+
 class FakeHomeAssistant:
     def __init__(self) -> None:
         self.states = FakeStates()
+        self.bus = FakeBus()
         self.statistics: dict[str, dict[datetime, float]] = {}
         self.data: dict[str, Any] = {}
         self._pending_tasks: list[asyncio.Task[Any]] = []
@@ -346,6 +376,13 @@ def _install_ha_stub() -> None:
     ha_recorder_statistics = ModuleType("homeassistant.components.recorder.statistics")
 
     ha_core.callback = _callback  # type: ignore[attr-defined]
+
+    # `coordinator.py` imports the recorder's statistics event name from
+    # `homeassistant.const` (TASK-0041). Value as in HA 2026.3.4.
+    ha_const = ModuleType("homeassistant.const")
+    ha_const.EVENT_RECORDER_5MIN_STATISTICS_GENERATED = (  # type: ignore[attr-defined]
+        "recorder_5min_statistics_generated"
+    )
 
     ha_config_entries.ConfigEntry = FakeConfigEntry  # type: ignore[attr-defined]
     ha_config_entries.ConfigEntryState = ConfigEntryState  # type: ignore[attr-defined]
@@ -434,6 +471,8 @@ def _install_ha_stub() -> None:
     ha.core = ha_core  # type: ignore[attr-defined]
     ha.config_entries = ha_config_entries  # type: ignore[attr-defined]
     ha.helpers = ha_helpers  # type: ignore[attr-defined]
+    ha.const = ha_const  # type: ignore[attr-defined]
+    sys.modules["homeassistant.const"] = ha_const
     ha_helpers.event = ha_helpers_event  # type: ignore[attr-defined]
     ha_helpers.storage = ha_helpers_storage  # type: ignore[attr-defined]
     ha_helpers.device_registry = ha_helpers_device_registry  # type: ignore[attr-defined]
@@ -469,7 +508,7 @@ def _install_sensor_stub() -> None:
     rather than assuming it must build that module from scratch."""
     ha = sys.modules["homeassistant"]
     ha_components = sys.modules["homeassistant.components"]
-    ha_const = ModuleType("homeassistant.const")
+    ha_const = sys.modules.get("homeassistant.const") or ModuleType("homeassistant.const")
     ha_components_sensor = ModuleType("homeassistant.components.sensor")
     ha_http = sys.modules.get("homeassistant.components.http") or ModuleType(
         "homeassistant.components.http"

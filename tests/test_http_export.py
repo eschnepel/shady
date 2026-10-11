@@ -224,10 +224,11 @@ class TestExportRunsOffTheEventLoop:
     that request reach `get()`'s body at all — every earlier request
     had 401'd at HA's own auth middleware first). Guards against
     reintroducing that regression: `get()` must dispatch
-    `mode.export_csv(sensor_id)` via `get_instance(hass).
-    async_add_executor_job`, not call it inline."""
+    `mode.export_csv(sensor_id)` via the coordinator's serialized
+    `async_run_cache_job` (TASK-0041: a lock on the loop around the
+    recorder executor), not call it inline."""
 
-    def test_export_csv_dispatched_through_the_recorder_executor(self) -> None:
+    def test_export_csv_dispatched_through_the_serialized_cache_job(self) -> None:
         coordinator, hass = _make_two_string_setup()
         _activate(coordinator)
         coordinator._diagnostic_modes["sentinel_mode"] = _SentinelMode()
@@ -235,29 +236,19 @@ class TestExportRunsOffTheEventLoop:
         entry_id = _with_entry_in_hass_data(coordinator, hass)
 
         calls: list[tuple[Any, tuple[Any, ...]]] = []
-        real_get_instance = _http_export_mod.get_instance
+        real_run_cache_job = coordinator.async_run_cache_job
 
-        class _RecordingRecorderInstance:
-            """Real (non-`Mock`) stand-in — records what would have run
-            on the recorder's own executor, then actually runs it (so
-            the response is still exercised end-to-end), rather than a
-            bare spy that never calls through."""
+        async def _recording_run_cache_job(fn: Any, *args: Any) -> Any:
+            """Records what is dispatched, then really runs it through
+            the coordinator's own lock and recorder executor (so the
+            response is still exercised end-to-end)."""
+            calls.append((fn, args))
+            return await real_run_cache_job(fn, *args)
 
-            async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
-                calls.append((func, args))
-                return func(*args)
-
-        def _fake_get_instance(passed_hass: Any) -> Any:
-            assert passed_hass is hass
-            return _RecordingRecorderInstance()
-
-        _http_export_mod.get_instance = _fake_get_instance  # type: ignore[attr-defined]
-        try:
-            view = ShadyExportCsvView()
-            request = _FakeRequest(hass, {"sensor_id": "7", "mode": "sentinel_mode"})
-            response = _run(view.get(request, entry_id))
-        finally:
-            _http_export_mod.get_instance = real_get_instance  # type: ignore[attr-defined]
+        coordinator.async_run_cache_job = _recording_run_cache_job
+        view = ShadyExportCsvView()
+        request = _FakeRequest(hass, {"sensor_id": "7", "mode": "sentinel_mode"})
+        response = _run(view.get(request, entry_id))
 
         assert response.status == 200
         assert response.text == "sentinel:7"

@@ -383,11 +383,19 @@ per-string intraday correction, diagnostics refresh) is driven by
 `EVENT_RECORDER_5MIN_STATISTICS_GENERATED` (fired once per recorder 5-minute
 compile, ~10 s after each 5-minute mark, just before the commit), not a
 wall-clock interval. Per event, one *slot job*: probe (recorder executor) until
-the newest complete slot's actual yield is readable — 1 s retries, at most 5 —
-then advance/intraday/diagnostics once, serialized with every other
-cache-touching job; the interval stays as a 6-minute watchdog. Midnight
-recalibration (00:01), energy reset (00:00), Forecast.Solar polls and
-state-change listeners are unchanged.
+the newest complete slot's actual yield is readable — the first probe plus at
+most 5 retries, 1 s apart — then advance/intraday/diagnostics once; the job for
+a slot already started is not repeated, and a newer event cancels a job that is
+still probing. Every cache-touching recorder-executor dispatch (including
+`http_export.py`'s `export_csv`) goes through
+`ShadyCoordinator.async_run_cache_job`, one `asyncio.Lock` on the loop that is
+kept until the executor thread really finished (the recorder executor has
+several workers, so it is not implicitly serialized). The interval stays as a
+6-minute watchdog that starts a job only if none started for 6 minutes. The
+window end of ADR-006 §1a stays `now` (`TASK-0041` D2 deferred to live tests;
+drafted as the gated `TASK-0041-patch-1`). Midnight recalibration (00:01),
+energy reset (00:00), Forecast.Solar polls and state-change listeners are
+unchanged.
 
 **Time-series storage (ADR-007a §1):**
 `values: dict[sensor_id, list[float | None | str]]` — three-state
@@ -417,6 +425,16 @@ re-fetched on the next read instead of frozen (recorder statistics lag a slot's
 end by ~10-15 s); older `None`s and `str` outcomes are final. `Cache` takes an
 injectable `clock` for this (`TASK-0037-patch-5`, ADR-007a §4 Amendment
 2026-10-07).
+
+**Cache threading contract (ADR-007a §4 Amendment 2026-10-09, `TASK-0042`):**
+`Cache` owns a private `threading.RLock` guarding series lists, `_list_offset`,
+shadow arrays and validated ranges, so a loop-thread reader (`sensor.py`) never
+reads a slot's value paired with the wrong offset while an executor job extends
+or trims the series. It is a leaf lock, **never held across `fetch_fn`**; a
+fetch re-checks the then-current validated range and writes only what is still
+unvalidated (stale data never overwrites newer data, `validated` never shrinks).
+The coordinator's `async_run_cache_job` lock is a separate thing (it serializes
+recorder-executor jobs with each other).
 
 **Three accessors, each sized to its one caller (ADR-008 §3):**
 

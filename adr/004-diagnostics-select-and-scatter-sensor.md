@@ -1050,11 +1050,12 @@ exist at that instant.
 **Decision:** Every "5-minute tick" in this ADR now means the **slot trigger**
 defined by ADR-006 §1a's Amendment of the same date: one slot job per
 `EVENT_RECORDER_5MIN_STATISTICS_GENERATED`, which first probes until the newest
-complete slot's actual yield is readable (bounded, 1 s retries), and only then
-does, once, in this order: advance the followed slot (§2g — still *first*, still
-independent of whether a mode is active, still an integer assignment), refresh
-the active mode's fit/compute per its cadences (§2/§4), and publish the result.
-Consequences, all following from "only the with-PV compute exists":
+complete slot's actual yield is readable (bounded: the first probe plus up to 5
+retries, 1 s apart), and only then does, once, in this order: advance the
+followed slot (§2g — still *first*, still independent of whether a mode is
+active, still an integer assignment), refresh the active mode's fit/compute per
+its cadences (§2/§4), and publish the result. Consequences, all following from
+"only the with-PV compute exists":
 
 - The followed slot and the chart it feeds advance together, in the same job, so
   the `datetime` entity's "as of" timestamp always matches the chart. While no
@@ -1073,7 +1074,7 @@ Consequences, all following from "only the with-PV compute exists":
 - §3's "not refreshed on the tick" for the slot-pool series is unchanged.
 
 **Decided by:** human (chosen in chat 2026-10-07); retry/watchdog parameters are
-Lead Agent choices pending human confirmation at Gate 2.
+Lead Agent choices, confirmed by the human at Gate 2 (2026-10-08).
 
 ### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
 

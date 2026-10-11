@@ -1,6 +1,6 @@
 # Task: Recorder-Synchronized Slot Trigger (Replace the 5-Minute Wall-Clock Tick With the Recorder's Statistics Event)
 
-- **Status:** todo
+- **Status:** done
 - **Related ADRs:** \[ADR-006 §1a (Amendment 2026-10-07), ADR-004 §2i (and §2g,
   §4), ADR-007a §4 (Amendment 2026-10-07)\]
 - **Dependencies:** [TASK-0037-patch-5-no-freeze-of-unsettled-tail]
@@ -232,4 +232,82 @@ Parameters `PROBE_INTERVAL` (1 s), `MAX_PROBES` (5), `WATCHDOG` (6 min):
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. -->
+- `custom_components/shady/coordinator.py` →
+  - module constants `PROBE_INTERVAL = timedelta(seconds=1)`, `MAX_PROBES = 5`,
+    `WATCHDOG = timedelta(minutes=6)`;
+    `from homeassistant.const import EVENT_RECORDER_5MIN_STATISTICS_GENERATED`
+  - `ShadyCoordinator.async_run_cache_job(self, fn: Callable[..., _T], *args: Any) -> _T`
+    (public): the one dispatch to `get_instance(hass).async_add_executor_job`;
+    serializes on one `asyncio.Lock` held on the loop, **kept until the executor
+    thread has finished even if the caller is cancelled**. The lock is private
+    (`_cache_job_lock()`, one per running loop) and never reaches `Cache`. Used
+    by `_refit_sync` (`async_refit`), `_backfill_elapsed_today_slots`
+    (`async_startup`), the slot job's probe and body,
+    `_async_recompute_diagnostic_result` and `http_export.py`.
+  - `_register_intraday_schedule(self) -> None` now registers
+    `hass.bus.async_listen(EVENT_RECORDER_5MIN_STATISTICS_GENERATED, self._handle_recorder_statistics)`
+    and
+    `async_track_time_interval(hass, self._handle_slot_watchdog, self._watchdog)`
+    (both unsubscribes in `_unsub`)
+  - `_handle_recorder_statistics(self, _event: Any) -> None` (`@callback`),
+    `_handle_slot_watchdog(self, now: datetime) -> None` (`@callback`),
+    `_start_slot_job(self, now: datetime) -> None`,
+    `async _async_slot_job(self, now: datetime, slot_index: int) -> None`,
+    `_probe_slot_ready_sync(self, slot_index: int) -> bool`
+  - **Removed:** `_handle_intraday_tick`, `_async_intraday_tick`. **Unchanged:**
+    `_intraday_tick_sync`, `_advance_followed_diagnostic_slot`,
+    `_advance_intraday_string`, `_diagnostics_tick_sync`,
+    `_intraday_energy_window`.
+  - `shutdown(self) -> None` additionally cancels the in-flight slot job.
+  - New instance state: `_sleep` (injectable
+    `Callable[[float], Awaitable[None]]`, default `asyncio.sleep`),
+    `_probe_interval`, `_max_probes`, `_watchdog`, `_slot_job_task`,
+    `_slot_job_slot` (dedupe key: newest complete slot index),
+    `_slot_job_probing`, `_last_slot_job_at`, `_cache_job_lock_state`.
+  - Module docstring: the "single-worker executor" claim replaced by
+    `MAX_DB_EXECUTOR_WORKERS = POOL_SIZE - 1` (`POOL_SIZE = 5`, verified against
+    HA 2026.3.4); slot-trigger paragraph added; "5-minute tick" wording swept.
+- `custom_components/shady/http_export.py` → `get()` dispatches
+  `mode.export_csv` via `coordinator.async_run_cache_job`; the `get_instance`
+  import is removed.
+- `custom_components/shady/sensor.py` → comment only (names the slot job).
+- Semantics fixed at implementation: *probe* = one first read plus up to
+  `MAX_PROBES` retries (`PROBE_INTERVAL` apart, `await self._sleep(...)` on the
+  loop, never in an executor job). A job is cancelled by a newer event **only
+  while probing** (it then ends quietly, never running its body); once its body
+  is dispatched it finishes and the newer job queues on the lock. Probe or body
+  exceptions are logged (`ADR-000 §8`) and never wedge the lock. D2 stays as-is
+  (`end=now`), per the human at Gate 2.
+- Tests: new `tests/test_coordinator_slot_trigger.py` (27 tests: event wiring,
+  watchdog, dedupe/supersede, probe/retry, body order and intraday inputs,
+  failure paths, end-to-end phase replay incl. pinned slots, lock behaviour
+  incl. cancellation, AST check of the single dispatch point). Changed:
+  `tests/test_coordinator.py::TestIntradayTickFullDispatchPath` (now fires the
+  event), `tests/test_http_export.py::TestExportRunsOffTheEventLoop` (asserts
+  `async_run_cache_job`), `tests/support_ha.py` (`FakeBus`, `hass.bus`,
+  `homeassistant.const.EVENT_RECORDER_5MIN_STATISTICS_GENERATED`).
+- ADR text: ADR-006 §1a and ADR-004 §2i Amendments updated (parameters
+  confirmed, probe definition, D2 deferred, startup catch-up event note);
+  ADR-015 name references updated; `tasks/adr-summary.md` slot-trigger paragraph
+  updated.
+- External dependencies added: none (`tasks/DEPENDENCIES.md` unchanged; the
+  event constant comes from `homeassistant` itself).
+- **Home Assistant facts re-verified against 2026.3.4** (wheel inspected): event
+  constant in `homeassistant.const`; compile scheduled with
+  `async_track_utc_time_change(..., minute=range(0, 60, 5), second=10)`;
+  `bus.fire(EVENT_RECORDER_5MIN_STATISTICS_GENERATED)` inside
+  `_compile_statistics` before the session commit; `async_block_till_done`
+  returns immediately when the queue is empty with no pending writes (not a
+  barrier); `MAX_DB_EXECUTOR_WORKERS = POOL_SIZE - 1`, `POOL_SIZE = 5`;
+  `async_add_executor_job` returns a `Future` from `run_in_executor`.
+  **Correction to the handover:** the startup catch-up compile *does* fire the
+  event, once, for its last missing period (`fire_events = end >= last_period`);
+  the slot-index dedupe absorbs it.
+- Verification: `pytest` 864 passed (837 + 27 new); `mypy` clean (71 files);
+  `ruff check` / `ruff format --check` clean (211 files); `mdformat --check`
+  clean on every edited `.md`; coverage `coordinator.py` 99 % → 99 % (13 → 13
+  uncovered lines, all pre-existing), `http_export.py` 100 %. Every event-driven
+  test was shown failing against the pre-change coordinator (no listener), and
+  the incident itself was reproduced there: an interval tick at the compile
+  instant published `has_actual=False`, `accuracy={}`. The simulated race is
+  guarded by `test_without_retries_the_first_probe_loses_the_race`.
