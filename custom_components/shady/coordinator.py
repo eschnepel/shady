@@ -1245,6 +1245,30 @@ class ShadyCoordinator:
         # `Store` write itself is scheduled by `async_refit`, back on
         # the event loop, not from here.
         self._accumulate_fc_energy(now)
+        self._trim_cache(now)
+
+    def _trim_cache(self, now: datetime) -> None:
+        """ADR-007a §1 (Amendment 2026-10-10, TASK-0043): the one place
+        production code calls `Cache.trim()` — once per recalibration, as
+        the last step of `_refit_sync`, i.e. inside the same
+        `async_run_cache_job` executor job, after every read the fit and
+        the post-fit recompute make. Never from the slot job (ADR-006
+        §1a) or a baseline update (ADR-002 §2).
+
+        Passes the recalibration's own `now` and the configured smoothing
+        radius: `Cache.trim` keeps whole days back from it, plus the
+        neighbor slots, exactly what `get_regression_pools` reads for the
+        same `now` and radius, so the coordinator needs no knowledge of
+        how that window is anchored.
+
+        Contained like every other step of `_refit_sync`: a trim failure
+        must not stop `async_refit` from persisting the energy state. The
+        cache is merely not shrunk until the next recalibration.
+        """
+        try:
+            self.cache.trim(reference=now, smoothing_radius=self._smoothing_radius)
+        except Exception as exc:
+            _LOGGER.exception("Cache trim failed after recalibration at %s", now, exc_info=exc)
 
     def _fit_string(self, string: _StringConfig, now: datetime) -> FittedModel | None:
         baseline_entity_id = string.baseline_entity_id or self._global_baseline_entity_id

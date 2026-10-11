@@ -5,7 +5,7 @@
 because the concrete storage scheme and accessor API are a separable, and
 independently heavily cross-referenced, concern from the *decision to extract
 `cache.py` as its own module* in the first place. No behavior changed by this
-split. **Last updated:** 2026-10-09
+split. **Last updated:** 2026-10-10
 
 This ADR is kept current in place: §2/§3's hybrid push/query handling for
 provider-backed predictor series (baseline `FC`, temperature), and §5's
@@ -33,7 +33,10 @@ genuine gap rather than a recorder that has not caught up yet — see §4's own 
 (`TASK-0042`), `Cache` also owns a threading contract of its own (a private
 `threading.RLock`, never held across `fetch_fn`) so that a loop-thread reader
 can never see a value paired with the wrong slot while an executor job mutates
-the same series — see §4's own "Threading contract" Amendment.
+the same series — see §4's own "Threading contract" Amendment. As of 2026-10-10
+(`TASK-0043`), §1's retained floor is a whole-day boundary defined once, shared
+with the training pool, and the recalibration trims with its own `now` — see
+§1's own "Trim floor" Amendment.
 
 ______________________________________________________________________
 
@@ -125,6 +128,54 @@ before discarding anything older than the live window, and tying that check to
 one explicit, predictable call — rather than letting it happen implicitly on
 whichever trigger's write is next — is what makes that check a guarantee instead
 of a race. See §6 for exactly how the retained floor is computed.
+
+**Amendment (2026-10-10, `TASK-0043`): the trim floor is a whole-day boundary,
+and the recalibration trims with its own `now`.**
+
+*Reason.* Until `TASK-0043` nothing in production called `cache.trim()` — the
+call this section prescribes was never scheduled — so every series list, offset
+map and shadow array grew by 288 entries per sensor per day and `validated`'s
+lower bound never advanced. Wiring it in exposed that `trim` did not implement
+this section's own wording ("retained floor `today − window_days`", §6
+likewise): it kept a *rolling* `window_days × 288` slots ending at the reference
+slot (`floor = index_for(reference) − window_days × 288 + 1`). The training
+window (`get_regression_pools`, ADR-008 §2) is `window_days` *complete days*
+ending yesterday. The two differ by the reference's position inside its own day:
+at the 00:01 recalibration the rolling floor lands one slot into the oldest
+training day (dropping its slot 0), and a mid-day trigger (the button) would
+drop that day's slots up to the trigger time. A dropped slot is not lost for a
+pulled sensor — the next pool read re-fetches it — but that costs a recorder
+query per sensor per recalibration, and is a `NaN` cell wherever the recorder
+can no longer serve it. There is no reason to retain a part-day.
+
+*Decision.* The floor is a **whole-day boundary**: the first slot of the oldest
+day `get_regression_pools` reads for the same `reference`, less the
+`smoothing_radius` neighbor slots it also reads beyond that boundary (ADR-008 §2
+Amendment 2026-10-10; `trim(reference, smoothing_radius=0)`). `Cache` defines
+that boundary once (`_training_window_start_index(reference)`) and both
+`get_regression_pools` and `trim` use it, so they cannot drift apart: a trim at
+any time of day discards nothing the training pool reads, and the retained size
+no longer depends on the time of day. §6's pinned floor is unchanged in meaning
+(`min(today − window_days, pinned_reference − window_days)`, both whole-day).
+`ShadyCoordinator._refit_sync` calls
+`cache.trim(reference=now, smoothing_radius=<configured radius>)` once, as its
+last step — inside the same `async_run_cache_job` executor job, after the fit
+and the post-fit recompute have read what they need — and needs no knowledge of
+how the window is anchored: `_training_window_start_index` is local midnight of
+`reference`'s local date minus `window_days` (ADR-008 §2 Amendment 2026-10-10,
+`TASK-0044` — the training window is `window_days` complete *local* days), and
+`trim` follows whatever that definition says. The call is contained in a
+`try`/`except` like the fit's other steps: a failing trim is logged and merely
+leaves the cache unshrunk until the next recalibration. The 5-minute tick
+(ADR-006 §1a) and a baseline update (ADR-002 §2) still never trim. Bounded size
+(measured): a pulled training-input series (baseline, actual yield) settles at
+`window_days × 288 + 2 × smoothing_radius` entries (the radius is kept at each
+end); a series Shady pushes itself (the forecast, which also covers today and
+tomorrow) at `(window_days + 2) × 288 + 2 × smoothing_radius`.
+
+**Decided by:** Lead Agent, following the human's observation that nothing
+justifies trimming part of a training day; to be confirmed by the human when
+`TASK-0043` is accepted.
 
 ### 2 — Validated range tracking
 
@@ -326,10 +377,10 @@ the offset second. A reader landing between the two steps pairs the new list
 with the old offset and silently returns *another slot's value*. Reproduced
 deterministically before this amendment
 (`tests/test_cache_core.py::TestThreadingContract`): a prepend made slot 100
-read `None` instead of `1.0`; a trim made slot 102 return slot 104's value.
-`TASK-0041`'s `async_run_cache_job` lock serializes executor jobs with each
-other only; it cannot cover a loop-thread reader, and `cache.py` must not depend
-on a lock owned by the coordinator (§2).
+read `None` instead of `1.0`; a trim made the first retained slot return the
+value of the slot two further on. `TASK-0041`'s `async_run_cache_job` lock
+serializes executor jobs with each other only; it cannot cover a loop-thread
+reader, and `cache.py` must not depend on a lock owned by the coordinator (§2).
 
 *Decision.* `Cache` guards its in-memory state with its own `threading.RLock`,
 private to `cache.py`, never exposed:

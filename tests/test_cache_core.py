@@ -346,9 +346,16 @@ class TestGetTimeRangeGroupByShapes:
 class TestTrimAdvancesOffsetWithoutOffByOne:
     """Given cache.trim() is called after the rolling window has advanced,
     list_offset advances and validated ranges stay meaningful — no
-    off-by-one against the new offset (ADR-007a §1)."""
+    off-by-one against the new offset (ADR-007a §1).
 
-    def test_trim_advances_offset_and_keeps_validated_meaningful(self) -> None:
+    The retained floor is a **whole-day** boundary: `reference`'s day minus
+    `window_days` (ADR-007a §1 Amendment 2026-10-10, TASK-0043) — the first
+    slot of the oldest day `get_regression_pools` reads for that reference.
+    (Until then it was a rolling `window_days * 288` slots ending at the
+    reference slot, which cut one slot too many at the 00:01 recalibration
+    and part of a day when run mid-day.)"""
+
+    def _setup(self) -> tuple[Any, list[tuple[datetime, datetime]], datetime]:
         calls: list[tuple[datetime, datetime]] = []
 
         def fetch_fn(sensor_id: str, start: datetime, end: datetime) -> list[float | None | str]:
@@ -356,37 +363,62 @@ class TestTrimAdvancesOffsetWithoutOffByOne:
             n = round((end - start) / cache_mod.SLOT_DURATION)
             return [1.0] * n
 
-        window_days = 2
-        cache = cache_mod.Cache(window_days=window_days, fetch_fn=fetch_fn)
-        anchor = datetime(2026, 1, 10, tzinfo=UTC)
+        cache = cache_mod.Cache(window_days=2, fetch_fn=fetch_fn)
+        anchor = datetime(2026, 1, 10, tzinfo=UTC)  # a day boundary
+        # Three full days of history: 7th, 8th, 9th.
+        cache.get_time_range(
+            ["pv"], anchor - timedelta(days=3), anchor - cache_mod.SLOT_DURATION, on_invalid="raw"
+        )
+        assert len(calls) == 1
+        return cache, calls, anchor
 
-        cache.get_time_range(["pv"], anchor - timedelta(minutes=5), anchor)
+    def test_trim_advances_offset_and_keeps_validated_meaningful(self) -> None:
+        cache, calls, anchor = self._setup()
         _, to_index = cache.validated_range("pv")
         assert to_index is not None
+        oldest_day_start = cache_mod.Cache.index_for(anchor) - 2 * cache_mod.SLOTS_PER_DAY
 
-        # Advance the reference by exactly 10 slots (50 minutes).
-        new_reference = anchor + timedelta(minutes=50)
-        cache.trim(reference=new_reference)
+        # `reference` 50 minutes into the 10th: keeps the 8th and 9th (and
+        # the 10th), so exactly the 7th is dropped.
+        cache.trim(reference=anchor + timedelta(minutes=50))
 
-        expected_floor = (
-            cache_mod.Cache.index_for(new_reference) - window_days * cache_mod.SLOTS_PER_DAY + 1
-        )
-        assert cache._list_offset["pv"] == expected_floor
-
+        assert cache._list_offset["pv"] == oldest_day_start
         new_from, new_to = cache.validated_range("pv")
-        assert new_from == expected_floor
+        assert new_from == oldest_day_start
         assert new_to == to_index  # unchanged: still well within the window
 
-        # No off-by-one: everything from the new floor through the old
-        # to_index is still correctly readable, with no re-fetch.
+        # No off-by-one: slot 0 of the oldest retained day (the very first
+        # slot of the floor) through the old to_index is readable, with no
+        # re-fetch.
         result = cache.get_time_range(
             ["pv"],
-            cache_mod.Cache.timestamp_for(expected_floor),
+            cache_mod.Cache.timestamp_for(oldest_day_start),
             cache_mod.Cache.timestamp_for(to_index),
             on_invalid="raw",
         )
         assert len(calls) == 1  # trim triggered no new fetch
         assert all(value == 1.0 for value in result["pv"])
+        assert len(result["pv"]) == to_index - oldest_day_start + 1
+
+    def test_the_floor_does_not_move_within_a_day(self) -> None:
+        """Trimming at 00:01, mid-day or 23:55 of the same day keeps the same
+        data — the floor only ever moves on a whole-day boundary."""
+        cache, _calls, anchor = self._setup()
+        cache.trim(reference=anchor + timedelta(minutes=1))
+        floor = cache._list_offset["pv"]
+        length = len(cache._values["pv"])
+        for hour_minutes in (14 * 60 + 37, 23 * 60 + 55):
+            cache.trim(reference=anchor + timedelta(minutes=hour_minutes))
+            assert cache._list_offset["pv"] == floor
+            assert len(cache._values["pv"]) == length
+
+    def test_the_floor_advances_by_exactly_one_day_per_day(self) -> None:
+        cache, _calls, anchor = self._setup()
+        cache.trim(reference=anchor + timedelta(minutes=1))
+        floor = cache._list_offset["pv"]
+        cache.trim(reference=anchor + timedelta(days=1, minutes=1))
+        assert cache._list_offset["pv"] == floor + cache_mod.SLOTS_PER_DAY
+        assert len(cache._shadow["pv"]) == len(cache._values["pv"])
 
 
 class TestInvalidate:
@@ -950,13 +982,28 @@ class TestThreadingContract:
         `trim` yet — ADR-007a §1 says midnight — but it must be safe when
         something does)."""
         cache = cache_mod.Cache(window_days=1, fetch_fn=_never_fetch)
-        cache.push("s", {100: 1.0, 101: 2.0, 102: 3.0, 103: 4.0, 104: 5.0}, 0)
-        # floor = index_for(reference) - 288 + 1 = 102: drops slots 100 and 101.
-        reference = cache_mod.Cache.timestamp_for(102 + 287)
+        boundary = 3 * cache_mod.SLOTS_PER_DAY  # a whole-day boundary (the floor's granularity)
+        cache.push(
+            "s",
+            {
+                boundary - 2: 1.0,
+                boundary - 1: 2.0,
+                boundary: 3.0,
+                boundary + 1: 4.0,
+                boundary + 2: 5.0,
+            },
+            0,
+        )
+        # floor = start of (reference's day - window_days) = `boundary`: drops
+        # the two slots before it.
+        reference = cache_mod.Cache.timestamp_for(boundary + cache_mod.SLOTS_PER_DAY)
         writer, gate = _pause_writer_mid_mutation(cache, "s", lambda: cache.trim(reference))
         reader, done, box = _call_on_thread(
             lambda: cache.get_time_range(
-                ["s"], cache_mod.Cache.timestamp_for(102), cache_mod.Cache.timestamp_for(102), "raw"
+                ["s"],
+                cache_mod.Cache.timestamp_for(boundary),
+                cache_mod.Cache.timestamp_for(boundary),
+                "raw",
             )
         )
         done.wait(0.3)
@@ -964,7 +1011,7 @@ class TestThreadingContract:
         writer.join(5)
         reader.join(5)
 
-        assert box == [{"s": [3.0]}]  # slot 102's own value, never slot 104's
+        assert box == [{"s": [3.0]}]  # the boundary slot's own value, never slot boundary+2's
 
     def test_a_single_slot_read_is_guarded_on_its_own(self) -> None:
         """`_read` is the single-slot primitive every range reader builds

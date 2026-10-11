@@ -453,7 +453,40 @@ class Cache:
     def _window_length(self) -> int:
         return self.window_days * SLOTS_PER_DAY
 
-    @_locked
+    def _training_day_starts(self, reference: datetime) -> list[int]:
+        """Absolute index of local midnight for each day of the training
+        window `get_regression_pools` reads for `reference`, plus the
+        window's end: `[L_0, ..., L_window_days]` — `L_i` starts the `i`-th
+        day (oldest first) and `L_window_days` is local midnight *today*,
+        the exclusive end (ADR-008 §2 Amendment 2026-10-10, `TASK-0044`:
+        the most recent `window_days` complete **local** days).
+
+        "Today" is `reference`'s local calendar date as an *instant*
+        (`_local_date`), not its own tzinfo's date, so the button's `UTC`
+        `now` and the midnight trigger's local `now` give the same window.
+        Local days are not always 288 slots (a DST day has 276 or 300), so
+        these are looked up per day rather than stepped by 288.
+        """
+        today = self._local_date(reference)
+        return [
+            self.index_for(self._local_midnight(today - timedelta(days=self.window_days - i)))
+            for i in range(self.window_days + 1)
+        ]
+
+    def _training_window_start_index(self, reference: datetime) -> int:
+        """Absolute index of slot 0 of the *oldest* day of the training
+        window `get_regression_pools` reads for `reference`, i.e.
+        `_training_day_starts(reference)[0]`.
+
+        The one definition of that window's start: `get_regression_pools`
+        reads from it and `trim` keeps everything from it on, so the two
+        cannot drift apart. It is a **whole-local-day** boundary (ADR-007a
+        §1: the retained floor is `today − window_days`), never a point
+        inside a day.
+        """
+        today = self._local_date(reference)
+        return self.index_for(self._local_midnight(today - timedelta(days=self.window_days)))
+
     def _ensure_sensor(self, sensor_id: str) -> None:
         if sensor_id not in self._values:
             self._values[sensor_id] = []
@@ -696,7 +729,7 @@ class Cache:
     # -- trimming (ADR-007a §1) -----------------------------------------------
 
     @_locked
-    def trim(self, reference: datetime | None = None) -> None:
+    def trim(self, reference: datetime | None = None, smoothing_radius: int = 0) -> None:
         """Drop each sensor's oldest entries once the rolling window has
         advanced past them, advancing `list_offset`. `validated` ranges
         are adjusted in place, not rewritten, so they stay meaningful
@@ -705,10 +738,18 @@ class Cache:
         never drifts out of alignment with the three-state list.
 
         `reference` anchors "today" for the retention floor
-        (`reference - window_days`); defaults to the real current time.
-        Exposed as a parameter (rather than reading the wall clock
-        internally) so this stays testable with zero mocking, the same
-        way `fetch_fn` injection keeps validation testable.
+        (`reference - window_days`, a whole-day boundary: the first slot
+        of the oldest day `get_regression_pools` reads for that same
+        `reference`, `_training_window_start_index`) — so a trim at any
+        time of day, at the recalibration or not, discards nothing the
+        training pool reads. `smoothing_radius` widens that floor by the
+        same number of slots `get_regression_pools` reads beyond the
+        window's start for its neighbor cells (`TASK-0044`), so they too
+        survive — pass the same radius the pool is read with. Defaults to
+        the real current time and a radius of 0. `reference` is exposed as
+        a parameter (rather than reading the wall clock internally) so
+        this stays testable with zero mocking, the same way `fetch_fn`
+        injection keeps validation testable.
 
         ADR-007a §6's "effect on trimming": whenever `pinned_reference`
         is set, the retained floor also covers the pin's own window
@@ -717,10 +758,10 @@ class Cache:
         out from under it while still pinned.
         """
         now = reference if reference is not None else datetime.now(UTC)
-        floor = self.index_for(now) - self._window_length() + 1
+        floor = self._training_window_start_index(now) - smoothing_radius
         if self._pinned_reference is not None:
-            pinned_now = self._local_midnight(self._pinned_reference)
-            floor = min(floor, self.index_for(pinned_now) - self._window_length() + 1)
+            pinned_floor_day = self._pinned_reference - timedelta(days=self.window_days)
+            floor = min(floor, self.index_for(self._local_midnight(pinned_floor_day)))
 
         for sensor_id in list(self._values):
             offset = self._list_offset[sensor_id]
@@ -850,16 +891,26 @@ class Cache:
         per sensor, in a single call — never 864 individual per-slot
         calls (ADR-008 §1's naive-per-slot rejection extends here).
 
-        **Window:** the most recent `window_days` *complete* days,
-        ending yesterday — never today, which recalibration (ADR-002 §1)
-        never trains on. `reference` anchors "today" the same way
-        `trim()`'s own `reference` parameter does: defaults to the real
-        current time, but is exposed as a parameter so this stays
-        testable with zero mocking rather than depending on the wall
-        clock internally. This is an addition to ADR-008 §2's literal
-        `(sensor_ids, smoothing_radius)` signature, not a deviation from
-        it — omitting `reference` reproduces the ADR's real-time
-        behavior exactly.
+        **Window:** the most recent `window_days` *complete* **local**
+        days, ending at local midnight today — never today, which
+        recalibration (ADR-002 §1) never trains on (ADR-008 §2 Amendment
+        2026-10-10, `TASK-0044`; see `_training_day_starts`). `reference`
+        anchors "today" the same way `trim()`'s own `reference` parameter
+        does: defaults to the real current time, but is exposed as a
+        parameter so this stays testable with zero mocking rather than
+        depending on the wall clock internally. This is an addition to
+        ADR-008 §2's literal `(sensor_ids, smoothing_radius)` signature,
+        not a deviation from it — omitting `reference` reproduces the
+        ADR's real-time behavior exactly.
+
+        **Slots are the `UTC` clock, days are local days.** Row `s` is
+        always the `UTC`-clock slot `s` (`index % 288`) — the same slot the
+        fitted model, the forward fill and every prediction path use — and
+        column `i` of a block is the `i`-th local day. So row `s` of local
+        day `i` is the one absolute index in that day congruent to `s`
+        modulo 288: `L_i + ((s − L_i) mod 288)`. On a 23-hour day the `UTC`
+        slots that do not occur in it are `NaN`; on a 25-hour day only the
+        first 288 of its slots are used; no slot is ever read twice.
 
         **Column layout**, matching `regression/base.py`'s `build_pool`
         convention (TASK-0005's own "load-bearing" layout note):
@@ -874,16 +925,20 @@ class Cache:
         "the caller has already applied any 288-slot wraparound" note)
         is resolved via plain absolute-index arithmetic — slot `s` with
         offset `o` on day `d` is simply absolute index
-        `day_start(d) + s + o`, which is already correct whether or not
+        `center(s, d) + o`, which is already correct whether or not
         `s + o` over/underflows `[0, 288)`, with no explicit modulo step
-        needed. When that arithmetic lands *outside* this call's own
-        window (the earliest day's negative-offset neighbors, or the
-        latest/yesterday's positive-offset neighbors reaching into
-        today), the cell is `NaN` — the same pad/invalid sentinel
-        `regression/base.py` already treats as zero weight — rather than
-        fetching one extra day beyond the configured window; in
-        practice these are always near-midnight slots, where `FC ~ 0`
-        makes `magnitude_weight_i` suppress them regardless.
+        needed.
+
+        **Neighbor cells read an extended window** (ADR-008 §2 Amendment
+        2026-10-10, `TASK-0044`): a neighbor of a cell on the window's
+        first or last slot lies up to `smoothing_radius` slots outside it,
+        so the range validated (fetched if missing) is the window widened
+        by `smoothing_radius` slots at each end. Those cells are therefore
+        real values wherever the source has them — not whatever an earlier
+        read happened to leave in the cache, so the pool no longer depends
+        on cache history — and `NaN` only where the source has nothing (e.g.
+        a slot not yet settled at the tail, which `_fetch_and_store` leaves
+        unvalidated). `trim` keeps the same extra slots.
 
         Built via broadcast/gather over the shadow array (ADR-008 §2's
         "strided views/concatenation", not the three-state list) —
@@ -892,31 +947,30 @@ class Cache:
         current before it's read.
         """
         now = reference if reference is not None else datetime.now(UTC)
-        today_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-        yesterday_start = today_start - timedelta(days=1)
-        yesterday_day_index = self.index_for(yesterday_start)
-        window_start_day_index = yesterday_day_index - (self.window_days - 1) * SLOTS_PER_DAY
-        window_end_index = yesterday_day_index + SLOTS_PER_DAY - 1
+        day_starts = np.array(self._training_day_starts(now), dtype=np.int64)
+        window_start_index = int(day_starts[0])
+        window_end_index = int(day_starts[-1]) - 1
 
         offsets = np.arange(-smoothing_radius, smoothing_radius + 1)
         slots = np.arange(SLOTS_PER_DAY)
-        days = np.arange(self.window_days)
+
+        # (SLOTS_PER_DAY, window_days): the absolute index of UTC-clock
+        # slot `s` within local day `i`, and whether the day really has it
+        # (a 23-hour DST day lacks 12 of the 288 UTC slots).
+        local_day_start = day_starts[:-1][None, :]
+        center = local_day_start + (slots[:, None] - local_day_start) % SLOTS_PER_DAY
+        slot_exists = center < day_starts[1:][None, :]
 
         # Broadcasts to shape (SLOTS_PER_DAY, window_days, 2*radius+1) —
         # absolute index for (target slot, day-in-window, neighbor offset).
-        abs_index = (
-            window_start_day_index
-            + days[None, :, None] * SLOTS_PER_DAY
-            + slots[:, None, None]
-            + offsets[None, None, :]
-        )
+        abs_index = center[:, :, None] + offsets[None, None, :]
 
         pools: dict[str, NDArray[np.float64]] = {}
         for sensor_id in sensor_ids:
             self._validate_range(
                 sensor_id,
-                window_start_day_index,
-                window_end_index,
+                window_start_index - smoothing_radius,
+                window_end_index + smoothing_radius,
                 allow_historical_backfill=True,
             )
             with self._lock:  # shadow array and its offset, read together
@@ -927,7 +981,7 @@ class Cache:
                     gathered = np.full(abs_index.shape, np.nan, dtype=np.float64)
                 else:
                     pos = abs_index - list_offset
-                    valid = (pos >= 0) & (pos < len(shadow))
+                    valid = (pos >= 0) & (pos < len(shadow)) & slot_exists[:, :, None]
                     clipped = np.clip(pos, 0, len(shadow) - 1)
                     gathered = np.where(valid, shadow[clipped], np.nan)
 

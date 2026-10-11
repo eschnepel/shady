@@ -1,5 +1,10 @@
 # ADR Summary — Architectural Ground Truth for Shady
 
+**Domain language:** `GLOSSARY.md` (repo root) is authoritative for terminology
+(slots, following/pinned/diagnosed/analysed slot, reference timestamp, day,
+reference day, window, pool). Wording in the ADRs and code that differs from it
+is to be aligned by `TASK-0045-apply-glossary-terminology`.
+
 **Project:** Shady — a Home Assistant custom integration
 (`custom_components/shady`) that adjusts an existing PV yield forecast for local
 shading, learned empirically (no horizon-profile input, no sun-geometry
@@ -270,7 +275,19 @@ base-class shape, never a concrete mode's actual coordinator calls.
   independent. Daily exposed confidence = `FC_i`-weighted average across a day's
   slots.
 - **Rolling training window:** default 28 days (`window_days`, config-flow),
-  re-fit nightly.
+  re-fit nightly. **Local day boundaries, UTC-clock slots (ADR-008 §2 Amendment
+  2026-10-10, `TASK-0044`, human decision):** the window is the most recent
+  `window_days` complete *local* days ending at local midnight today (today =
+  the local date of `reference` as an instant, so the button's UTC `now` and the
+  midnight trigger's local `now` agree), but a model slot stays the
+  **UTC-clock** slot (`index % 288`) — the fitted models, forward fill and every
+  prediction path are unchanged, and the model is solar-time-stable across a DST
+  change. Row `s` of local day `i` is absolute index
+  `L_i + ((s − L_i) mod 288)`; a 23-hour DST day leaves its 12 missing UTC slots
+  `NaN`, a 25-hour day uses its first 288 slots. Known residual: the
+  diagnostics' pinned pool (ADR-007a §6) indexes slots by the *local* clock; its
+  timestamps equal the model's except in a window containing a DST change (open
+  finding in `TASK-0044`).
 - **Recency weighting within the window (ADR-001 §4a):** each training day
   additionally weighted by
   `recency_weight_i = 1 - (day_age_i/(window_days-1)) · recency_decay_max` —
@@ -403,6 +420,25 @@ unchanged.
 Index = absolute position from a fixed epoch (`(timestamp-epoch)//5min`), with a
 `list_offset` map — not re-based to 0 each rollover. `cache.trim()` is one
 explicit call (at recalibration, not implicit).
+
+**Trim floor (ADR-007a §1 Amendment 2026-10-10, `TASK-0043`):** `cache.trim()`'s
+retained floor is a **whole-day** boundary — the first slot of the oldest day
+`get_regression_pools` reads for the same `reference` — defined once in
+`Cache._training_window_start_index` and shared by both, so a trim at any time
+of day discards nothing the training pool reads (the earlier rolling
+`window_days × 288 + 1` floor cut one slot into the oldest day at 00:01 and part
+of a day mid-day), less the `smoothing_radius` neighbor slots the pool also
+reads beyond it (ADR-008 §2 Amendment 2026-10-10: the pool validates the window
+widened by the radius at each end, `trim` takes the same radius). §6's pin floor
+stays `min(today − window_days, pinned − window_days)`.
+`ShadyCoordinator._refit_sync` calls
+`cache.trim(reference=now, smoothing_radius=<configured>)` once per
+recalibration (the button and the midnight trigger share it), as its last step
+inside the same `async_run_cache_job` job, contained in a `try`/`except`. Pulled
+training-input series settle at `window_days × 288 + 2 × smoothing_radius`
+entries, Shady's own pushed forecast series at
+`(window_days + 2) × 288 + 2 × smoothing_radius` (measured). The 5-minute tick
+and a baseline update never trim.
 
 **Validated-range tracking (§2):** `(from_index, to_index)` per sensor.
 `to_index=None` = actively pushed by Shady (e.g. `ShadyForecastSensor`).

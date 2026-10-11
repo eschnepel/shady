@@ -1,12 +1,13 @@
 # Task: Wire `Cache.trim()` Into the Recalibration Trigger (ADR-007a §1)
 
-- **Status:** todo
+- **Status:** review
 - **Related ADRs:** \[ADR-007a §1 (trimming), ADR-007a §6 (pinned floor),
   ADR-002 §1 (recalibration trigger), ADR-008 §2 (training pools)\]
 - **Dependencies:** [TASK-0042-cache-internal-threading-lock]
 
 > **Gate:** discovered by the Lead Agent during `TASK-0042` (2026-10-09), not
 > requested by the human. Do not start until the human has approved this task.
+> **Approved** by the human in chat, 2026-10-10 ("Work on Task 43").
 
 ## Goal
 
@@ -80,4 +81,75 @@ read is discarded**, and prove it.
 
 ## Delivered Artifacts
 
-<!-- Filled by the Worker AFTER implementation. -->
+Reworked 2026-10-10 after the human pointed out that nothing justifies trimming
+part of a training day (the first version compensated for `trim`'s rolling floor
+with a shifted reference in the coordinator; the root cause is now fixed in
+`Cache`). Status is `review`: **not yet accepted by the human.**
+
+- `custom_components/shady/cache.py` →
+  - new `Cache._training_window_start_index(self, reference: datetime) -> int` —
+    absolute index of slot 0 of the oldest day of the training window for
+    `reference`; the one definition of that boundary. As delivered here it
+    anchored on `reference`'s calendar fields read as UTC; `TASK-0044` made it
+    whole *local* days (this record is otherwise unchanged).
+  - `Cache.trim(self, reference: datetime | None = None, smoothing_radius: int = 0) -> None`
+    — `smoothing_radius` added by `TASK-0044` (default 0, so earlier callers are
+    unchanged); the floor is now `_training_window_start_index(reference)`
+    (whole-day, ADR-007a §1's `today - window_days`) instead of the rolling
+    `index_for(reference) - window_days x 288 + 1`; the pin floor is
+    `index_for(local midnight of the pin) - window_days x 288` (was `... + 1`).
+  - `Cache.get_regression_pools(...)` — signature and results unchanged; it now
+    reads its window start from `_training_window_start_index` (same value as
+    before, one definition instead of two).
+- `custom_components/shady/coordinator.py` →
+  - `ShadyCoordinator._refit_sync(self, now: datetime) -> None` — unchanged
+    signature; its last statement is `self._trim_cache(now)`, after
+    `_accumulate_fc_energy(now)`. The only `.trim(` call in production, so it
+    runs inside the existing `async_run_cache_job`, once per recalibration
+    (button and `_handle_midnight` share it).
+  - new `ShadyCoordinator._trim_cache(self, now: datetime) -> None` — calls
+    `self.cache.trim(reference=now, smoothing_radius=self._smoothing_radius)`
+    (radius added by `TASK-0044`); contained in `try`/`except Exception` and
+    logged.
+  - No public signature changes; no new imports.
+- Tests →
+  - `tests/test_coordinator_recalibration_trim.py` (new, 17 tests): once per
+    recalibration (button, midnight, twice, never from the slot job /
+    diagnostics tick / baseline update, single AST call site), inside
+    `_refit_sync`, a raising trim is contained, the coordinator passes `now`,
+    the training pool (UTC, Berlin, New York evening, mid-day) and the pinned
+    pools (explicit pin; auto-tracking UTC / Auckland / New York) survive the
+    trim with zero re-fetches, bounded size over ten days.
+  - `tests/test_cache_regression_pools.py` — new
+    `TestTrimNeverDiscardsTheTrainingPool` (17): for window 1 and 3, smoothing
+    radius 0 and 2, at 00:00 / 00:01 / 14:37 / 23:55, the pool is identical and
+    needs no re-fetch; the floor is exactly the oldest training day's slot 0.
+  - `tests/test_cache_core.py` — **two existing tests restated** because they
+    pinned the rolling floor: `TestTrimAdvancesOffsetWithoutOffByOne`
+    (TASK-0002; same intent, whole-day semantics; plus two new tests: the floor
+    does not move within a day, and advances by exactly 288 per day) and
+    `TestThreadingContract::test_reader_never_sees_a_trim_halfway_through`
+    (TASK-0042; same scenario shape, built around a day boundary).
+- `adr/007a-cache-storage-and-accessor-design.md` → §1 Amendment 2026-10-10
+  ("the trim floor is a whole-day boundary...") plus header pointer;
+  `tasks/adr-summary.md` → "Trim floor" paragraph.
+- External dependencies added: none; `tasks/DEPENDENCIES.md` unchanged.
+- **Behavior change to be aware of:** series now stop growing. Steady state
+  (measured, `window_days=2`): pulled training inputs 576 entries
+  (`window_days x 288`), Shady's pushed forecast series 1152
+  (`(window_days + 2) x 288`); before, +288 per day each, unbounded.
+- **Verification:** `pytest` 906 passed (870 + 36); `mypy` clean (72 files);
+  `ruff check` / `ruff format --check` clean (214 files); `mdformat --check`
+  clean on the edited `.md` files; coverage unchanged (`coordinator.py` 99 %, 13
+  uncovered lines; `cache.py` 97 %, 12 uncovered lines; all pre-existing).
+- **Test-strength checks (mutations, each caught):** old rolling floor `+ 1` (23
+  failures); rolling floor without `+ 1`, not day-aligned (13); training window
+  start one day too early (3) or one slot too late (6); trim ignoring the pin
+  (1); coordinator passing a shifted reference (2) or none (8). The new
+  behavioral tests were also run against the pre-change code first (failing). (A
+  first run of the mutation script silently applied nothing; it was caught from
+  its error output and rerun.)
+- **Local-time training window:** resolved by the human's decision (UTC-clock
+  slots with local day boundaries) and delivered as
+  `TASK-0044-local-day-training-window`, which builds on this task's single
+  window definition. The prediction side did not need to change.

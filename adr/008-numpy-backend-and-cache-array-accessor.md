@@ -202,6 +202,51 @@ per-query locally-weighted average, and no batching problem analogous to §1's
 was demonstrated for it. It can receive the same treatment later if that
 changes; nothing here forecloses it.
 
+**Amendment (2026-10-10, `TASK-0044`): the window is `window_days` complete
+_local_ days; slots stay UTC-clock.**
+
+*Reason.* This section never said which "days" the training window is made of,
+and `get_regression_pools` implemented them as `UTC` days, anchored on `now`'s
+calendar fields read as `UTC` — while everything user-facing (ADR-005 §3, the
+diagnostics, `TASK-0039`) is local time. For a non-`UTC` install the window's
+end therefore sat offset from the real elapsed day by the `UTC` offset (and
+depended on whether the midnight trigger's local `now` or the button's `UTC`
+`now` was used), and for a far-east or far-west install the day boundary fell in
+daylight.
+
+*Decision (human, 2026-10-10).* The window is the most recent `window_days`
+complete **local** days, ending at local midnight today; today is
+`reference.astimezone(local_tz).date()` — a function of the _instant_, not of
+`reference`'s own tzinfo. A model slot `s` remains the **UTC clock** slot `s`
+(`index % 288`): column `i` of a block is one local day and its row `s` is the
+sample at `UTC` slot `s` within that day, i.e. absolute index
+`L_i + ((s − L_i mod 288) mod 288)` where `L_i` is that day's local-midnight
+index. The fitted models, the forward fill and every prediction path are
+therefore unchanged; solar-time stability across a clock change is the reason —
+a local-clock slot would pool days an hour apart in solar time for up to
+`window_days` after each DST change. On a 23-hour day the `UTC` slots that do
+not occur in it read `NaN`; on a 25-hour day only the first 288 slots are used;
+no slot is read twice. Neighbor offsets resolve by absolute-index arithmetic and
+are read from an **extended window** (below). Known residual: the diagnostics'
+pinned pool (ADR-007a §6) indexes slots by the _local_ clock, a different slot
+meaning from the fitted model's — accepted by the human, not changed here.
+
+**Neighbor smoothing reads an extended window (human, 2026-10-10).** A neighbor
+of a cell on the window's first or last slot lies up to `smoothing_radius` slots
+outside it. `get_regression_pools` therefore validates (fetches if missing) the
+window widened by `smoothing_radius` slots at each end, and `cache.trim()` takes
+the same `smoothing_radius` and keeps those slots, so they are not fetched again
+every recalibration. This replaces the earlier "`NaN` rather than fetching
+beyond the window" rule, whose results depended on what the cache happened to
+hold (real values in steady state, `NaN` right after a restart). Those neighbor
+cells are now real values wherever the source has them and `NaN` only where it
+has nothing — e.g. the not-yet-settled tail at the 00:01 recalibration, which
+ADR-007a §4's settled-end rule leaves unvalidated so the next read asks again.
+The fitted values change only for those edge cells (near local midnight, where
+the weighting suppresses them anyway).
+
+**Decided by:** human.
+
 ### 3 — How `cache.py`'s three accessors now divide up
 
 Between this ADR and ADR-007a, `cache.py` ends up with three accessors, each
