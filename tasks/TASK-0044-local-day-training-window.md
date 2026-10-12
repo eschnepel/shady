@@ -1,9 +1,15 @@
 # Task: Training Window on Local Day Boundaries, Slots Stay UTC-Clock (ADR-008 §2)
 
-- **Status:** review
+- **Status:** done
 - **Related ADRs:** \[ADR-008 §2 (training pools), ADR-007a §1 (trim floor),
   ADR-007a §6 (pinned floor), ADR-002 §1 (recalibration trigger)\]
 - **Dependencies:** [TASK-0043-wire-cache-trim-into-recalibration]
+
+> **Accepted 2026-10-11** by the human (grill of `TASK-0045`, G1): `review` →
+> `done`, **superseded in part by `TASK-0045c`**. Still standing: the UTC-clock
+> slot index and the smoothing-radius window extension. Replaced: the local
+> midnight-to-midnight days (23/25-hour DST days) give way to exact 24-hour days
+> counted back from the reference day.
 
 > **Gate:** requested by the human in chat, 2026-10-10 ("All should be in local
 > time ... which includes the training window"); the slot semantics were decided

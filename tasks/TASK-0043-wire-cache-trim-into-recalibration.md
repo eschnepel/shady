@@ -1,9 +1,12 @@
 # Task: Wire `Cache.trim()` Into the Recalibration Trigger (ADR-007a §1)
 
-- **Status:** review
+- **Status:** done
 - **Related ADRs:** \[ADR-007a §1 (trimming), ADR-007a §6 (pinned floor),
   ADR-002 §1 (recalibration trigger), ADR-008 §2 (training pools)\]
 - **Dependencies:** [TASK-0042-cache-internal-threading-lock]
+
+> **Accepted 2026-10-11** by the human (grill of `TASK-0045`, G1): `review` →
+> `done`.
 
 > **Gate:** discovered by the Lead Agent during `TASK-0042` (2026-10-09), not
 > requested by the human. Do not start until the human has approved this task.

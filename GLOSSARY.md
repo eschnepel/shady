@@ -19,17 +19,18 @@ current slot. _Avoid_: Last complete slot
 **Pinned slot**: A slot a person has fixed in order to inspect it, instead of
 following.
 
-**Following**: The state in which the diagnosed slot is always the last
-completed slot, as opposed to pinned. _Avoid_: Auto-tracking
+**Following**: The diagnostics' mode in which the diagnosed slot is always the
+followed slot, as opposed to pinned. _Avoid_: Auto-tracking
 
-**Diagnosed slot**: The slot the diagnostics analyse: the last completed slot
-while following, the pinned slot while pinned.
+**Followed slot**: The slot that following determines: always the last completed
+slot. The forecast sensors and the intraday correction always work from it; the
+diagnostics do so while following. _Avoid_: Analysed slot
 
-**Analysed slot**: The slot the forecast sensors analyse: always the last
-completed slot, because they only ever follow.
+**Diagnosed slot**: The slot the diagnostics analyse: the followed slot while
+following, the pinned slot while pinned.
 
-**Reference timestamp**: The instant a window of days is measured from: the
-analysed slot for the forecast sensors, the diagnosed slot for the diagnostics.
+**Reference timestamp**: The instant a training window is measured from: the
+followed slot for the forecast sensors, the diagnosed slot for the diagnostics.
 
 ### Days and windows
 
@@ -40,11 +41,25 @@ end, regardless of daylight saving time.
 the reference timestamp. The only day placed using the daylight-saving setting
 of the local timezone; every earlier day lies exactly 24 hours before the next.
 
-**Window**: The configured number of days immediately before the reference day.
-The reference day itself is not part of it.
+**Training window**: The configured number of days immediately before the
+reference day. The reference day itself is not part of it. _Avoid_: Rolling
+window, window (unqualified)
 
-**Pool**: For one slot, its samples on each day of the window, together with
-those of its neighbor slots.
+**Intraday window**: The configured number of most recently completed slots,
+ending at the followed slot, over which the intraday correction compares actual
+and forecast. Counted in slots, not days. _Avoid_: Rolling window, window
+(unqualified)
+
+**Pool**: For one slot, its samples on each day of the training window, together
+with those of its neighbor slots.
 
 **Neighbor slot**: A slot a whole number of five-minute steps before or after
 another slot, crossing midnight like any other time.
+
+### Learning and forecasting
+
+**Recalibration**: Re-learning, from the training window, how the shading
+changes the forecast.
+
+**Recompute**: Applying what the last recalibration learned to the baseline
+forecast, producing the corrected forecast.

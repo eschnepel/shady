@@ -3,17 +3,18 @@
 - **Status:** todo
 - **Related ADRs:** \[ADR-006 §1a (window definition; Amendment 2026-10-07),
   ADR-006 §3 (`window_slots`), ADR-007a §4/§5 (`get_time_range`)\]
-- **Dependencies:** [TASK-0041-recorder-synchronized-slot-trigger]
+- **Dependencies:** \[TASK-0041-recorder-synchronized-slot-trigger,
+  TASK-0046-adr-hygiene-collapse-and-split\]
 
-> **Gate: do not start until the human has confirmed D2-b in chat** after
-> testing the finished `TASK-0041` on the live system (Gate 2 outcome,
-> 2026-10-08: "I will decide based on tests with the live system"). On
-> confirmation the Lead Agent first wires the ADR-006 §1a amendment (below) into
-> the ADR text, records the decision in the Decisions block, and presents the
-> task for approval; only then does a worker start. If the human decides to
-> **keep** `end=now` (D2-a), set this task `done` with "withdrawn — D2-a
-> confirmed" in Delivered Artifacts and amend ADR-006 §1a to state that
-> `end=now` is intended, so the question does not resurface.
+> **Gate cleared 2026-10-11** by the human (grill of `TASK-0045`, G5): the
+> intraday window ends at the **followed slot** (= the last completed slot),
+> which settles D2-b. It was decided on glossary/design grounds, not from
+> live-system measurements; the optional check below can still be run.
+> **Terms:** new or changed text and code use the glossary language (_followed
+> slot_, _last completed slot_, _intraday window_) so that no `_Avoid_` term is
+> added. **ADR policy (lean ADRs, G14):** `TASK-0046` collapses ADR-006's
+> amendment into the main text first; this task then rewrites the ADR-006 §1a
+> window definition in the main text (below) — **no** `Amendment` block.
 
 ## Goal
 
@@ -48,7 +49,7 @@ jobs. If the bias exists as described, the ratio sits near
 while the forecast is demonstrably right. Near 1.0 → keep D2-a and withdraw this
 task; persistently ≈ 0.96 → confirm D2-b.
 
-## Proposed ADR-006 §1a amendment (draft, to be written into the ADR on the human's confirmation)
+## ADR-006 §1a text to write into the main text (no `Amendment` block)
 
 Replace "`end=now`" in the window definition by the end of the **last complete
 slot** before `now` (`Cache.timestamp_for(Cache.index_for(now) - 1)`), keep
@@ -57,9 +58,9 @@ inside its slot, makes the window exactly `window_slots` slots when not bounded
 by a reset), and note that a reset inside the in-progress slot gives an empty
 window (`ratio_string = 1`, ADR-006 §1b unchanged). Remove the sentence claiming
 "the window's edge lags behind by more than one slot" as an argument for
-polling, which no longer matches the slot trigger. Record: *Reason* — the
-in-progress slot carries a forecast but never a PV value; *Decision* — end at
-the last complete slot; *Decided by* — human, after live-system tests.
+polling, which no longer matches the slot trigger. State in one short line why:
+the in-progress slot carries a forecast but never a PV value. The decision is
+the human's (grill of 2026-10-11, G5).
 
 ## Acceptance Criteria
 
