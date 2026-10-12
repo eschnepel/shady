@@ -48,7 +48,7 @@ rule.
 | TASK-0043-wire-cache-trim-into-recalibration | Wire `Cache.trim()` Into the Recalibration Trigger (ADR-007a §1) | done | TASK-0042-cache-internal-threading-lock | — |
 | TASK-0044-local-day-training-window | Training Window on Local Day Boundaries, Slots Stay UTC-Clock (ADR-008 §2) | done | TASK-0043-wire-cache-trim-into-recalibration | — |
 | TASK-0045-apply-glossary-terminology | Apply the GLOSSARY.md Language to the ADRs, Code and Tests (and the Semantics It Implies) | superseded (see 2026-10-11 refinement log; slug not reused) | TASK-0043-wire-cache-trim-into-recalibration, TASK-0044-local-day-training-window, TASK-0041-patch-1-intraday-window-ends-at-last-complete-slot | — |
-| TASK-0046-adr-hygiene-collapse-and-split | ADR Hygiene — Collapse Stacked Amendments, Split Oversized ADRs (Text Only) | review | TASK-0043-wire-cache-trim-into-recalibration, TASK-0044-local-day-training-window | — |
+| TASK-0046-adr-hygiene-collapse-and-split | ADR Hygiene — Collapse Stacked Amendments, Split Oversized ADRs (Text Only) | in-progress | TASK-0043-wire-cache-trim-into-recalibration, TASK-0044-local-day-training-window | — |
 | TASK-0045a-wording-alignment | Apply the Glossary Wording to ADRs, Code Comments and Test Names (No Behavior Change) | review | TASK-0046-adr-hygiene-collapse-and-split, TASK-0041-patch-1-intraday-window-ends-at-last-complete-slot | — |
 | TASK-0045b-diagnostics-reference-and-pool | Diagnostics Pool Anchored on the Diagnosed Slot (Reference Day, Timestamp Arithmetic, Neighbor Fix) | review | TASK-0045a-wording-alignment | — |
 | TASK-0045d-scheduled-recalibration-at-0400 | Scheduled Recalibration at 04:00 Local, Followed-Slot Reference for Every Trigger | review | TASK-0045a-wording-alignment | — |

@@ -1,60 +1,11 @@
 # ADR-004 – Diagnostics: Selectable Diagnostic Modes and Scatter-Series Sensors (Per-String and Summed)
 
-**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-10-07 — §2i
-added (`TASK-0041`, recorder-synchronized slot trigger); previously 2026-09-24 —
-§5 cross-references draft ADR-015 (`TASK-0038`, CSV export); also 2026-09-24 —
-§2g added (`TASK-0037-patch-4`, follow-latest-diagnostic-slot toggle);
-previously 2026-09-23
+**Date:** 2026-07-05 **Status:** Accepted **Last updated:** 2026-10-12 —
+amendments collapsed into the main text (`TASK-0046`); history lives in git and
+the task files
 
-This ADR is kept current in place: §1/§1a describe the current
-`ShadyDiagnosticModeSelect` + `DiagnosticMode` design directly (not the single
-boolean switch this ADR originally shipped with), §2b/§5 describe the current
-generic, `sensor_id`-driven sensor.py shape (not the original dedicated
-sum-sensor class), and §4 reflects `compute_cadence()`/`fit_cadence()`-gated
-caching. As of 2026-09-13, §1a/§5 also reflect `DiagnosticMode` depending on a
-structural `ShadyCoordinatorLike` Protocol rather than importing
-`ShadyCoordinator` by name, and
-`RegressionSettings`/`StringComputationConfig`/`DiagnosedSlot` no longer living
-in `coordinator.py` — a CodeQL `py/unsafe-cyclic-import` finding on the prior
-`TYPE_CHECKING`-guarded `ShadyCoordinator` import (runtime-safe, but that query
-does not special-case `TYPE_CHECKING`) prompted the change. As of 2026-09-14,
-those three DTOs and `ShadyCoordinatorLike` itself moved on once more, from
-`diagnostics/base.py` into a new `coordinator_like.py` — separating "what a
-`DiagnosticMode` is and produces" (`base.py`) from "what a `DiagnosticMode`
-consumes from its coordinator" (`coordinator_like.py`), two concerns `base.py`
-had been holding together since the 2026-09-13 change — then, the same day, out
-of `diagnostics/` entirely to `coordinator_like.py` next to `coordinator.py`
-itself: what it describes is `ShadyCoordinator`'s own shape, not anything
-diagnostics-owned, `diagnostics/` being only its one consumer so far rather than
-what it's about. §1a's interface itself, and every concrete mode's behavior, is
-unchanged by any of these moves. As of 2026-09-21, §2/§2b's `series` entries no
-longer carry a `data` key at all — §2c tried an `apexcharts-card`-ready
-`entity`/`name`/`data_generator` shape first, found that card can't render a
-numeric x-axis at all, and §2d (same day) replaced it with a
-`custom:plotly-graph`-ready `entity`/`name`/`type`/`mode`/`x`/`y` shape instead
-— §2's own example above now shows §2d's shape directly; §5 describes the (now
-reverted-to-none) reshaping this briefly required in `sensor.py`. Same day, §2e
-moved the function building that shape (`_xy_series_entry`) off
-`CompareRegressionsMode`'s own module and onto `DiagnosticMode` itself
-(`base.py`) as a shared, inherited `@staticmethod` — the shape §2d/§2c settled
-on is unchanged by this, only which module's code builds it. As of 2026-09-23,
-§2a's `shady.select_diagnostic_slot` service is gone entirely — §2f describes
-its replacement, a `datetime` domain entity plus a companion clear button; every
-other line of §2a's own text (the pin's validation/rounding rules, the
-one-diagnosed-slot-per-config-entry scope) is otherwise unchanged, only *how* a
-person sets/clears it moved. As of 2026-09-24, §2g replaces §2f's companion
-clear *button* with an auto-follow `switch` entity and makes the diagnosed slot
-one always-set value that every diagnostic computation reads unconditionally —
-`datetime.py`'s entity now shows it in both modes instead of `unknown` while
-auto-tracking; `clear_diagnostic_slot()` and `ShadyClearDiagnosticSlotButton`
-are gone. §2a/§5 below are updated to match; §2f is left as written and marked
-superseded in part. As of 2026-10-04, §2h restyles every `series` entry's
-markers (`TASK-0015b-patch-4`) — values rounded to one decimal, slot-pool point
-sizes scaled by fit weight, ADR-011 §2-excluded neighbor series drawn as a
-stroke, `selected ...` series drawn as a cross — by adding one `marker` key to
-§2d's entry shape; §2's example below is updated to match. See ADR-013 for two
-sketched future modes that validate §1a's interface shape against needs beyond
-this ADR's own scope.
+This ADR describes the current design directly. Section numbers are stable; §2c
+no longer exists (see Redirects at the end).
 
 ______________________________________________________________________
 
@@ -76,41 +27,33 @@ ______________________________________________________________________
 
 A single `ShadyDiagnosticModeSelect` entity (one per config entry) gates all
 diagnostic sensors — every per-string `ShadyDiagnosticsSensor` (§2) and the
-config-entry-level `"sum"` entity (§2b, the same `ShadyDiagnosticsSensor` class
-as of the 2026-09-03 Amendment) alike. It defaults to **off**. While off,
-diagnostic sensors exist (so they don't appear/disappear from the entity
-registry, which HA handles awkwardly) but report `state: "disabled"` with no
-`series` attribute, and — importantly — the coordinator does **not** do the
-extra fitting work described in §4 while no mode is active. This keeps the cost
-of diagnostics at zero for the common case of a user who never enables one,
-following the same "no-op when not configured" pattern already established for
-the corrections in ADR-003a §2 / ADR-003b §2.
+config-entry-level `"sum"` entity (§2b, the same `ShadyDiagnosticsSensor` class)
+alike. It defaults to **off**. While off, diagnostic sensors exist (so they
+don't appear/disappear from the entity registry, which HA handles awkwardly) but
+report `state: "disabled"` with no `series` attribute, and — importantly — the
+coordinator does **not** do the extra fitting work described in §4 while no mode
+is active. This keeps the cost of diagnostics at zero for the common case of a
+user who never enables one, following the same "no-op when not configured"
+pattern already established for the corrections in ADR-003a §2 / ADR-003b §2.
 
 Selecting `"compare_regressions"` — the one mode this ADR specifies — activates
-exactly the behavior §2/§2a/§2b/§3/§4 describe below, now implemented as
-`diagnostics/compare_regressions.py`'s `CompareRegressionsMode` (§1a below has
-the base-class shape). Everything below describes that one mode's behavior; "the
-switch" in the historical prose that follows means "this select set to
-`compare_regressions`," and "the switch is off" means "set to `off`" — the
-underlying behavior is identical to what shipped in this ADR's original version,
-only the entity/dispatch mechanism around it changed.
+exactly the behavior §2/§2a/§2b/§3/§4 describe below, implemented as
+`diagnostics/compare_regressions.py`'s `CompareRegressionsMode` (§1a has the
+base-class shape). Everything below describes that one mode's behavior.
 
 ### 1a — The `DiagnosticMode` interface
 
-The actual diagnostic calculation lives behind a shared base class in a new pure
+The actual diagnostic calculation lives behind a shared base class in a pure
 package, `diagnostics/` — mirroring `providers/base.py`'s `Provider` ABC
 (ADR-012 §1): a shared base class with required and optional overridable
 methods, dispatched off a config value, so a new concrete mode is additive
-rather than a rework of the gating mechanism in §1. As of 2026-09-14,
-`coordinator_like.py` (next to `coordinator.py`, not inside `diagnostics/` —
-what it describes is `ShadyCoordinator`'s own shape) holds the input-side
-contract (`ShadyCoordinatorLike` and the DTOs its methods return) and
+rather than a rework of the gating mechanism in §1. `coordinator_like.py` (next
+to `coordinator.py`, not inside `diagnostics/` — what it describes is
+`ShadyCoordinator`'s own shape) holds the input-side contract
+(`ShadyCoordinatorLike` and the DTOs its methods return) and
 `diagnostics/base.py` holds the output side (the `DiagnosticMode` ABC and its
-output dataclasses) — two concerns `base.py` alone had been holding together
-since the 2026-09-13 revision; `diagnostics/compare_regressions.py` holds this
-ADR's one concrete mode, `CompareRegressionsMode`.
-
-`coordinator_like.py`:
+output dataclasses); `diagnostics/compare_regressions.py` holds this ADR's one
+concrete mode, `CompareRegressionsMode`.
 
 ```python
 @dataclass(frozen=True)
@@ -171,7 +114,7 @@ class DiagnosedSlot:
     """Which slot is currently "the diagnosed slot" (§2/§2a) —
     always the coordinator's one stored, currently-configured slot
     (§2g): the pin while pinned, or the last complete slot as of the
-    most recent 5-minute tick while auto-tracking. index is the absolute slot index
+    most recent slot trigger (§2i) while auto-tracking. index is the absolute slot index
     (Cache.index_for convention); slot_of_day is index's 0-287
     time-of-day component (get_pinned_slot_pool's own argument);
     is_elapsed is whether this slot's own actual/PV value can exist
@@ -331,24 +274,26 @@ class DiagnosticMode(ABC):
 coordinator reference has nothing left for a per-call context argument to carry
 that it cannot already reach itself, and a single shared instance per mode name
 (`coordinator.py`'s `_diagnostic_modes`, an instance attribute built in
-`__init__` since construction now needs `self`) resolves every configured entity
-in one `compute()` call rather than needing one instance per entity.
+`__init__` since construction needs `self`) resolves every configured entity in
+one `compute()` call rather than needing one instance per entity.
 `fit_cadence()`/`compute_cadence()` are both required, no default, since how
 often a mode needs to fit/compute is core to what the mode *is*;
-`CompareRegressionsMode` declares both `"slot"` (§4). `"off"` is a reserved key
-in the registry and is never itself registered — the *absence* of an active
-mode, not a `DiagnosticMode` subclass with a no-op body, the same way a provider
-with nothing to push simply never registers a listener (ADR-012 §4).
+`CompareRegressionsMode` declares both `"slot"` (§4). `DiagnosticMode` also
+carries the shared `series`-entry builder `_xy_series_entry` (§2e). `"off"` is a
+reserved key in the registry and is never itself registered — the *absence* of
+an active mode, not a `DiagnosticMode` subclass with a no-op body, the same way
+a provider with nothing to push simply never registers a listener (ADR-012 §4).
 
 `coordinator.py` exposes two generic accessors over this interface, used by
 `sensor.py` (§5) rather than any mode-specific code: `diagnostic_result()` — a
 cached accessor for the active mode's `compute()` output, refreshed once per
-tick per `compute_cadence()`, invalidated on a mode switch or a diagnosed-slot
-pin/clear (§2a) — and `diagnostic_sensor_ids()` — the union of every
-*registered* mode's `sensor_ids()` (not just the active one), so entities stay
-stable across a `select.py` mode switch instead of being added/removed
-dynamically; a `sensor_id` belonging to a currently-inactive mode simply reads
-`"unavailable"` until that mode is selected.
+slot job per `compute_cadence()`, invalidated on a mode change or a change of
+the diagnosed slot — a pin or following (§2a/§2g) — and
+`diagnostic_sensor_ids()` — the union of every *registered* mode's
+`sensor_ids()` (not just the active one), so entities stay stable across a
+`select.py` mode switch instead of being added/removed dynamically; a
+`sensor_id` belonging to a currently-inactive mode simply reads `"unavailable"`
+until that mode is selected.
 
 **Accuracy stays in `aggregation.py`, not `diagnostics/`** — its definition
 (`1 - |predicted - actual| / actual`, clamped to `[0, 1]`) is independent of
@@ -367,28 +312,7 @@ numbers in a form other automations or templates can use directly, without
 parsing a series name string. The state itself is a simple timestamp (last
 computed); all the content is in the attributes.
 
-As of the 2026-09-21 Amendment (§2c), the whole `series` list is meant to be
-dropped into a dashboard card via a single Jinja template — this is the
-canonical way to view it, and the shape below is designed around it working with
-zero manual reshaping:
-
-```yml
-type: custom:plotly-graph
-title: "{{ entity_name('sensor.string_1_diagnostics') }}"
-raw_plotly_config: true
-entities: "{{ state_attr('sensor.string_1_diagnostics', 'series') | string | indent(2, first=False) }}"
-```
-
-`state_attr(...)` hands the whole `series` list to Jinja as a native Python
-object; `| string` renders it with Python's own `repr`-style formatting
-(single-quoted strings, bare numbers) — which is also valid YAML flow-sequence
-syntax, so the templated `entities:` value parses as a normal YAML list with no
-extra work. This is *why* `series` is a plain list of flat dicts rather than
-anything nested or nested-JS-string-shaped (§2c's short-lived `apexcharts-card`
-predecessor `str()`-formats fine too, but the *card* can't use it — see §2c):
-whatever shape round-trips cleanly through `str()` and `plotly-graph`'s own
-`entities:` schema is the whole design constraint here, not any particular
-visual polish.
+The shape of the `series` list and the canonical dashboard template are in §2d.
 
 Each `series` entry is one `plotly-graph` trace:
 
@@ -400,7 +324,7 @@ series:
     mode: markers
     x: [16.4, 21.7, 25.4]
     "y": [5.4, 2, 3]
-    marker: { symbol: circle, size: [2, 3, 4] } # size = fit weight x 4 (§2h)
+    marker: { symbol: circle, size: [2, 3, 4] } # size follows fit weight (§2h)
     # ...one point per day in the rolling window (ADR-001 §4);
     # shown here with 3 instead of window_days points for brevity
   - entity: ""
@@ -454,23 +378,6 @@ series:
     marker: { symbol: x }
 ```
 
-**`"y"` must stay an explicitly-quoted string key, in any YAML rendering of this
-shape — never write it bare as `y:`.** YAML 1.1 (the schema PyYAML's default
-loader uses, and the schema in play wherever the Jinja-rendered `entities:`
-template above actually gets parsed back into structured data) resolves the
-*bare* scalars `y`/`Y`/`yes`/`Yes`/`YES`/`n`/`N`/`no`/`No`/`NO` — not just
-`true`/`false` — to booleans. An unquoted `y:` key is therefore not the string
-key `"y"` at all, but the boolean key `True`, silently breaking `plotly-graph`'s
-own expectation of a `y` field. (Fenced above as ```` ```yml ```` rather than
-```` ```yaml ```` specifically so this ADR's own build tooling — a markdown
-formatter that reflows fenced YAML — doesn't "helpfully" strip the quotes it
-doesn't know are load-bearing here.) On the Python side, `dict` key `"y"` needs
-no special handling — `str()`/`repr()` always quotes a string dict key
-regardless of its content, so `_xy_series_entry` (ADR-004 §2d/§2e,
-`diagnostics/base.py`) is safe by construction; this note exists for any future
-hand-written YAML — in this ADR or a person's own dashboard — representing the
-same shape.
-
 ```js
 // accuracy is a separate, unreshaped attribute on the same entity:
 accuracy: {
@@ -480,14 +387,6 @@ accuracy: {
   kernel: 0.91,
 },
 ```
-
-`entity` is a **constant empty string**, not a self-reference to the sensor —
-every point is supplied directly via `x`/`y`, so nothing needs to be looked up
-from any entity's own state at render time; `plotly-graph`'s schema still wants
-the key present per trace, just with nothing in it. `type`/`mode` are likewise
-constant (`"scatter"`/`"markers"`) on every entry. Because none of `entity`,
-`type`, or `mode` vary per entity or per moment, `diagnostics/` builds the
-complete entry itself — `sensor.py` performs no reshaping at all (§5).
 
 Two kinds of series, both keyed by `name` so `plotly-graph` renders each as its
 own scatter trace/color:
@@ -579,28 +478,17 @@ recent. `coordinator.py`'s `pin_diagnostic_slot(timestamp)` takes a single
   forward-looking `FC` for that slot), but `"selected actual"` is omitted and
   `accuracy` is an empty `{}`, since there is no `PV` yet to compare against —
   see §2 for the exact shape this takes. Returning to auto-tracking "last
-  complete slot" is `set_follow_latest_diagnostic_slot(True)` (§2g), which
-  replaced the original no-parameter `clear_diagnostic_slot()`; pinning
+  complete slot" is `set_follow_latest_diagnostic_slot(True)` (§2g); pinning
   (`pin_diagnostic_slot`) in turn switches auto-tracking off.
-
-**Superseded (mechanism only) — see §2f.** As first written, this section
-described these two coordinator methods called by a single service,
-`shady.select_diagnostic_slot` (omitting its optional `timestamp` parameter was
-that service's own way of calling `clear_diagnostic_slot()`). §2f (2026-09-23)
-replaces that service with a `datetime` domain entity plus a companion clear
-button (itself replaced on 2026-09-24 by §2g's auto-follow `switch`, which also
-retired `clear_diagnostic_slot`) — `pin_diagnostic_slot` itself, and every
-validation/rounding rule above, are unchanged by either amendment; only which
-HA-facing mechanism calls it did.
 
 **There is exactly one diagnosed-slot state per config entry — not one per
 sensor.** Every diagnostic sensor, the per-string `ShadyDiagnosticsSensor`s (§2)
-and the summed `"sum"` entry (§2b, the same class as of the 2026-09-03
-Amendment) alike, shows the *same* moment: whichever slot `coordinator.py`'s one
-stored, currently-configured diagnosed slot names (§2g) — the pin while pinned,
-the last complete slot as of the latest tick while auto-tracking. There is no
-per-sensor "is this one pinned or still auto-tracking" toggle to keep in sync —
-neither `datetime.py`'s `ShadyDiagnosticSlotDateTime` nor `switch.py`'s
+and the summed `"sum"` entry (§2b, the same class) alike, shows the *same*
+moment: whichever slot `coordinator.py`'s one stored, currently-configured
+diagnosed slot names (§2g) — the pin while pinned, the last complete slot as of
+the latest slot trigger (§2i) while auto-tracking. There is no per-sensor "is
+this one pinned or still auto-tracking" toggle to keep in sync — neither
+`datetime.py`'s `ShadyDiagnosticSlotDateTime` nor `switch.py`'s
 `ShadyFollowDiagnosticSlotSwitch` (§2g) is targeted at any diagnostic sensor,
 since there is only ever one thing, config-entry-wide, for it to affect. This is
 also what makes §2b's sum sensor well-defined in the first place: summing
@@ -611,13 +499,13 @@ moment also matches the motivating use case directly — "what did every string
 look like around 14:00 yesterday" is a cross-string comparison at one moment,
 not several strings each frozen at a different, unrelated one.
 
-While pinned, the 5-minute tick (§2's "Refresh cadence") never advances *which*
-slot is diagnosed — the pin, not the clock, decides that. For an already-elapsed
-pinned slot, nothing about its underlying data changes as time passes either, so
-the tick is a true no-op end to end, same as before. A pinned slot that is still
-in the future is the one exception — see "Refresh cadence" below for how that
-slot's own actual value and accuracy eventually appear once real time catches up
-to it, without the pin having to be re-issued.
+While pinned, the slot trigger (§2i) never advances *which* slot is diagnosed —
+the pin, not the clock, decides that. For an already-elapsed pinned slot,
+nothing about its underlying data changes as time passes either, so the trigger
+is a true no-op end to end for it. A pinned slot that is still in the future is
+the one exception — see "Refresh cadence" below for how that slot's own actual
+value and accuracy eventually appear once real time catches up to it, without
+the pin having to be re-issued.
 
 **Every diagnostic sensor's slot-pool series comes from one function,
 `get_pinned_slot_pool` (ADR-007a §6) — whether currently pinned or
@@ -656,406 +544,233 @@ day, same as it would for an auto-tracking sensor whose slot happened to stay
 put.
 
 **Refresh cadence.** Which slot counts as "last complete" changes purely by the
-passage of time — every 5 minutes, independent of any event — so neither ADR-002
-§1's daily recalibration nor §2's irregular, provider-driven baseline-update
-trigger would keep it current on their own (a person could be looking at a
-diagnosed slot up to an hour stale, waiting for the next baseline update to
-happen to fire). Rather than add a third schedule, this reuses the 5-minute
-recorder-poll trigger ADR-006 §1a already introduces
-(`async_track_time_interval(hass, ..., minutes=5)`) — advancing which slot is
-diagnosed, and refreshing `"selected actual"`/`"selected {method}"`/`accuracy`
-(all cheap: one PV/FC lookup plus four model evaluations per string, then a sum
-for §2b's sensor) on every tick, **while auto-tracking**. While pinned (§2a),
-*which* slot is diagnosed never advances on this tick — but
-`"selected actual"`/`accuracy` still get re-evaluated on the same tick if the
-pinned slot has not elapsed yet. An already-elapsed pinned slot has nothing new
-to find (its `PV` was fixed the moment it happened), so the tick is a genuine
-no-op for it, same as before this ADR's change. A future-pinned slot's tick
-keeps checking whether it has elapsed yet, so `"selected actual"`/`accuracy`
-populate — and the series-name accuracy suffix appears — on the first tick after
-it does, without the pin needing to be re-issued. The slot-pool series
-(`"-1"`/`"0"`/`"1"`) do **not** get re-queried on this same tick either way —
-see §3. The four fitted models behind the `"selected {method}"` points are
-unaffected by this faster tick and still only change at ADR-002 §1's cadence,
-exactly as §4 describes; only *which* slot's data is being displayed, and that
-slot's now-available actual value and accuracy, track the 5-minute tick.
+passage of time, so neither ADR-002 §1's daily recalibration nor §2's irregular,
+provider-driven baseline-update trigger would keep it current on their own (a
+person could be looking at a diagnosed slot up to an hour stale, waiting for the
+next baseline update to happen to fire). Rather than add a third schedule, the
+diagnostics run on the slot trigger (§2i): on every slot job, **while
+auto-tracking**, which slot is diagnosed advances and
+`"selected actual"`/`"selected {method}"`/`accuracy` are refreshed (all cheap:
+one PV/FC lookup plus four model evaluations per string, then a sum for §2b's
+sensor). While pinned, *which* slot is diagnosed never advances — but
+`"selected actual"`/`accuracy` still get re-evaluated on each job if the pinned
+slot has not elapsed yet. An already-elapsed pinned slot has nothing new to find
+(its `PV` was fixed the moment it happened), so the job is a genuine no-op for
+it. A future-pinned slot keeps being checked, so `"selected actual"`/`accuracy`
+populate — and the series-name accuracy suffix appears — on the first job after
+it elapses, without the pin needing to be re-issued. The slot-pool series
+(`"-1"`/`"0"`/`"1"`) do **not** get re-queried on the job either way — see §3.
+The four fitted models behind the `"selected {method}"` points are unaffected
+and still only change at ADR-002 §1's cadence, exactly as §4 describes; only
+*which* slot's data is being displayed, and that slot's now-available actual
+value and accuracy, track the slot trigger.
 
 ### 2b — A summed-up diagnostics sensor across all strings
 
 Alongside the per-string sensors (§2), one `sensor_id="sum"` entity (same
-`ShadyDiagnosticsSensor` class, per §5's 2026-09-03 revision — not a dedicated
-`ShadyDiagnosticsSumSensor` class) mirrors ADR-005's `ShadyPvSumSensor`/
-`ShadyFcSumSensor` pattern: the same `series`/`accuracy` shape as §2, but every
-point is the **pointwise sum across strings** at the one shared diagnosed slot
-(§2a) — e.g. the `"0"` series' day-*i* point is `[Σ FC_i, Σ PV_i]` across all
-configured strings for that day, not a concatenation of every string's own
-points into one bigger cloud. This is exactly why §2a makes the diagnosed slot
-config-entry-wide rather than per-sensor: a pointwise sum across strings is only
-meaningful if "day *i*'s point" means the same day and slot for every string
-being summed.
+`ShadyDiagnosticsSensor` class — not a dedicated `ShadyDiagnosticsSumSensor`
+class) mirrors ADR-005's `ShadyPvSumSensor`/ `ShadyFcSumSensor` pattern: the
+same `series`/`accuracy` shape as §2, but every point is the **pointwise sum
+across strings** at the one shared diagnosed slot (§2a) — e.g. the `"0"` series'
+day-*i* point is `[Σ FC_i, Σ PV_i]` across all configured strings for that day,
+not a concatenation of every string's own points into one bigger cloud. This is
+exactly why §2a makes the diagnosed slot config-entry-wide rather than
+per-sensor: a pointwise sum across strings is only meaningful if "day *i*'s
+point" means the same day and slot for every string being summed.
 
 This sensor's `series`/`accuracy` are built by
 `CompareRegressionsMode.compute()` itself, from each contributing string's raw
 pool data — not assembled in `sensor.py` from the per-string sensors' own
-already-computed output, since the original approach here was vulnerable to a
-cross-string day-alignment bug once two strings' historical data had different
-gap patterns. `accuracy` is still computed from *summed* predicted/actual values
+already-computed output, which would be vulnerable to a cross-string
+day-alignment bug once two strings' historical data had different gap patterns.
+`accuracy` is still computed from *summed* predicted/actual values
 (`1 - |Σ predicted_i − Σ PV_selected| / Σ PV_selected`, same clamping as §2),
 not by averaging the per-string accuracy percentages — consistent with deriving
 ratios from sums rather than summing ratios, the same principle ADR-005 applies
-throughout, unchanged by the 2026-09-03 revision. It updates on the same
-triggers as the per-string sensors (§2a's 5-minute tick while auto-tracking; a
-pin update; recalibration for the four fitted-model points), gated by the same
-diagnostic-mode select (§1).
+throughout. It updates on the same triggers as the per-string sensors (the slot
+trigger, §2i, while auto-tracking; a pin update; recalibration for the four
+fitted-model points), gated by the same diagnostic-mode select (§1).
 
-### 2c — Amendment (2026-09-21, `TASK-0015b-patch-1`): `apexcharts-card`-ready `series` entries
+### 2d — Series entry shape and dashboard consumption
 
-**Reason:** §2's original `{"name": ..., "data": [[x, y], ...]}` shape was
-"pre-shaped for direct use as an ApexCharts scatter chart `series` option" —
-true for the raw ApexCharts JS library, but not for `apexcharts-card`, the
-Lovelace card almost every install actually uses to render this attribute. That
-card's own `series` config key is a list of per-entity blocks
-(`entity`/`name`/`data_generator`, the last a JS-code string the card
-evaluates), not a raw ApexCharts series array — so every person consuming this
-sensor was reshaping `data` into a `data_generator` string by hand, in their own
-dashboard YAML, the exact reshaping this attribute was meant to make unnecessary
-in the first place.
+Every `series` entry — both kinds in §2 and §2b's pointwise-summed equivalents —
+is one `custom:plotly-graph` trace:
+`{"entity": "", "name": ..., "type": "scatter", "mode": "markers", "x": [FC_0, FC_1, ...], "y": [PV_0, PV_1, ...], "marker": {...}}`,
+the points as two parallel flat arrays because `plotly-graph` takes literal
+`x`/`y` arrays per trace and needs no templating once they are supplied. This is
+the only format the attribute emits. `custom:plotly-graph` was chosen because
+the more common `apexcharts-card` cannot plot a numeric x-axis, which every
+series here needs (`FC` on x); do not retry it for this chart.
 
-**Decision:** every `series` entry — both kinds, §2's slot-pool/selected-
-prediction/selected-actual series and §2b's pointwise-summed equivalents alike —
-drops `data` and adds `entity`/`data_generator`, replacing the old shape
-outright rather than carrying both (human's explicit choice: one format this
-attribute emits, matching this attribute's one purpose — dashboard consumption —
-not two shapes for two audiences). `data_generator`'s value is always exactly
-`"return " + json.dumps(points)`, `points` being the identical
-`[[FC_i, PV_i], ...]` array `data` used to carry — same values, same point
-count, same NaN/omission rules, only the container changes. `entity` is that
-same sensor's own `entity_id` (a self-reference — every `apexcharts-card` series
-block names *an* entity even when, as here, every block on one sensor names the
-*same* entity and `data_generator` alone is what actually differentiates each
-block's points). This makes `series` directly pasteable as an `apexcharts-card`
-`series:` list with no manual reshaping at all — literally the property this
-attribute was always meant to have.
+`entity` is a **constant empty string**, not a self-reference to the sensor —
+every point is supplied inline, so nothing is looked up from any entity's state
+at render time, but `plotly-graph`'s schema still wants the key per trace.
+`type`/`mode` are likewise constant (`"scatter"`/`"markers"`). Because none of
+`entity`, `type` or `mode` depends on anything `sensor.py` alone knows,
+`diagnostics/` builds the complete entry itself (§2e) and `sensor.py` performs
+no reshaping at all (§5). `marker` and the rounding of the values are §2h.
+`accuracy` stays a separate, plain `{method: 0.0–1.0}` dict, never series-shaped
+(§2).
 
-`accuracy` is untouched by this amendment — it was never series-shaped to begin
-with, and stays a plain `{method: 0.0-1.0}` dict.
+The canonical dashboard consumption pattern is a single `custom:plotly-graph`
+card whose `entities:` key is the *entire* `series` list, handed through Jinja,
+with zero manual reshaping:
 
-**Decided by:** human (confirmed the exact shape against a running instance
-before this amendment was written), Lead Agent (implementation, Phase 6 Scenario
-C — TASK-0015b itself stays `done`, unedited; see
-`tasks/TASK-0015b-patch-1-apexcharts-card-series-format.md`).
+```yml
+type: custom:plotly-graph
+title: "{{ entity_name('sensor.string_1_diagnostics') }}"
+raw_plotly_config: true
+entities: "{{ state_attr('sensor.string_1_diagnostics', 'series') | string | indent(2, first=False) }}"
+```
 
-**Superseded same day — see §2d.** `apexcharts-card` turned out not to accept a
-numeric x-axis at all, the one axis type this chart fundamentally needs (`FC` on
-x); no `data_generator` phrasing could have fixed that, since the card itself
-can't render the result. Kept here rather than deleted: it is a real step this
-project took and rejected, for a reason worth knowing (don't retry
-`apexcharts-card` for a numeric-x scatter chart), not merely a design sketch
-abandoned before anyone tried it (contrast the "removed rather than kept" cases
-noted elsewhere in this ADR's own header amendments).
+`state_attr(...)` hands the whole `series` list to Jinja as a native Python
+object; `| string` renders it with Python's own `repr`-style formatting
+(single-quoted strings, bare numbers) — which is also valid YAML flow-sequence
+syntax, so the templated `entities:` value parses as a normal YAML list with no
+extra work. This is why `series` is a plain list of flat dicts: whatever
+round-trips cleanly through `str()` into valid YAML — strings, numbers, lists
+and mappings, no booleans or `None`, where Python's `repr` and YAML's flow
+syntax would actually diverge — is the design constraint, not any one card's
+quirks. `marker` (§2h) is a nested mapping that satisfies it.
 
-### 2d — Amendment (2026-09-21, `TASK-0015b-patch-2`): `custom:plotly-graph` x/y arrays, superseding §2c
+**`"y"` must stay an explicitly-quoted string key, in any YAML rendering of this
+shape — never write it bare as `y:`.** YAML 1.1 (the schema PyYAML's default
+loader uses, and the schema in play wherever the Jinja-rendered `entities:`
+template in this section actually gets parsed back into structured data)
+resolves the *bare* scalars `y`/`Y`/`yes`/`Yes`/`YES`/`n`/`N`/`no`/`No`/`NO` —
+not just `true`/`false` — to booleans. An unquoted `y:` key is therefore not the
+string key `"y"` at all, but the boolean key `True`, silently breaking
+`plotly-graph`'s own expectation of a `y` field. (Fenced above as
+```` ```yml ```` rather than ```` ```yaml ```` specifically so this ADR's own
+build tooling — a markdown formatter that reflows fenced YAML — doesn't
+"helpfully" strip the quotes it doesn't know are load-bearing here.) On the
+Python side, `dict` key `"y"` needs no special handling — `str()`/`repr()`
+always quotes a string dict key regardless of its content, so `_xy_series_entry`
+(§2e, `diagnostics/base.py`) is safe by construction; this note exists for any
+future hand-written YAML — in this ADR or a person's own dashboard —
+representing the same shape.
 
-**Reason:** §2c's `apexcharts-card` shape does not render at all — that card
-cannot plot a numeric x-axis, which every series here needs (`FC` values on x,
-never a category or timestamp). The human found `custom:plotly-graph` does
-support it, and confirmed a concrete shape live against a running instance.
+### 2e — The shared entry builder: `DiagnosticMode._xy_series_entry`
 
-**Decision:** every `series` entry drops `data_generator` and instead carries
-`type`/`mode`/`x`/`y` directly —
-`{"entity": "", "name": ..., "type": "scatter", "mode": "markers", "x": [FC_0, FC_1, ...], "y": [PV_0, PV_1, ...]}`
-— the same points as before, split into two parallel flat arrays rather than
-paired `[x, y]` tuples or a JS-templated string, because `plotly-graph` takes
-literal `x`/`y` arrays per trace and needs no templating at all once they're
-supplied. `entity` is a **constant empty string** on every entry, not a
-self-reference — nothing needs to be looked up from any entity's own state when
-the points are already inline, but `plotly-graph`'s own schema still expects the
-key present. `type`/`mode` are likewise constant (`"scatter"`/`"markers"`).
-Because none of `entity`, `type`, `mode` depend on anything `sensor.py` alone
-knows (contrast §2c's `entity_id` self-reference), `diagnostics/` now builds the
-*entire* entry itself — §2c's addition to `sensor.py` (injecting `entity`
-post-hoc) is removed outright, restoring the "straight from the matching entry,
-no further shaping" behavior §5 originally described, now true again rather than
-merely restored-in-name. `accuracy` is untouched, as before.
+`_xy_series_entry(name, points)` lives on `DiagnosticMode`
+(`diagnostics/base.py`) as an inherited `@staticmethod`: every concrete mode
+gets it without importing `compare_regressions.py` or anything else
+mode-specific. `series`'s shape (§2d) belongs to `DiagnosticMode` output in
+general, not to comparing regression strategies, and ADR-013 already sketches
+future modes (`compare_providers_daily`, a whole-day snapshot mode) that need
+exactly this shape; a local copy per mode would risk silent drift. It is not an
+`@abstractmethod`: every mode wanting a `plotly-graph`-shaped entry wants the
+identical shape, so there is nothing for a subclass to override; a mode
+producing a different shape, or no `series` attribute at all, simply does not
+call it.
 
-The canonical dashboard consumption pattern (§2's own example above) is a single
-`custom:plotly-graph` card whose `entities:` key is the *entire* `series` list,
-handed through Jinja's `state_attr(...) | string` — this is why the shape is a
-plain flat list of flat dicts with no nested structures or JS-code strings
-anywhere in it: whatever round-trips cleanly through Python's `str()` into valid
-YAML is the actual constraint this shape has to satisfy, not any one card's
-particular config quirks. (`str()` happens to produce valid YAML here because
-YAML's flow-mapping/-sequence syntax and Python's `repr` overlap almost
-completely for the plain strings, numbers, and lists this attribute is made of —
-no booleans or `None`s involved, where the two would actually diverge.)
+### 2f — Setting the diagnosed slot: the `datetime` entity
 
-**Decided by:** human (confirmed the exact shape, and the dashboard template
-above, against a running instance before this amendment was written), Lead Agent
-(implementation, Phase 6 Scenario C — `TASK-0015b-patch-1` stays `done`,
-unedited; see `tasks/TASK-0015b-patch-2-plotly-graph-xy-series-format.md`).
+`datetime.py`'s `ShadyDiagnosticSlotDateTime` (`DateTimeEntity`), one per config
+entry, is how a person pins the diagnosed slot (§2a): `async_set_value` calls
+`coordinator.py`'s `pin_diagnostic_slot()` with the rounding and validation
+rules §2a specifies, raising `HomeAssistantError` for a timestamp beyond the
+forecast horizon. What `native_value` shows is §2g's.
 
-**Where the entry-building code itself lives moved once more, same day — see
-§2e:** this section's own shape is unchanged by that move; only which module
-owns the function building it is.
+It is an entity rather than a service because every other piece of
+config-entry-scoped, person-facing state here (the diagnostic mode, §1; a manual
+recalibration, ADR-002 §1/§5) is a thin HA entity — directly pickable from a
+dashboard or the entity's own more-info dialog — and a service field has no
+date/time picker in Developer Tools. It is entry-scoped: one per config entry,
+following the device grouping every other entity uses (`device.py`), so a person
+with more than one Shady config entry pins each independently. This project
+registers no service of any kind.
 
-### 2e — Amendment (2026-09-21, `TASK-0015b-patch-3`): `_xy_series_entry` moved onto `DiagnosticMode` itself
+### 2g — Following and pinning: the `switch` and the always-set diagnosed slot
 
-**Reason:** §2d's `_xy_series_entry` shipped as a private function local to
-`compare_regressions.py` — reasonable when `CompareRegressionsMode` was the only
-concrete `DiagnosticMode` there was, but §2/§5 have always described `series`'s
-shape as belonging to `DiagnosticMode` output in general, not anything specific
-to comparing regression strategies, and ADR-013 already sketches future modes
-(`compare_providers_daily`, a whole-day snapshot mode) that would need this
-exact same shape for the exact same reason. Left where it was, a second mode
-gets a choice between two bad options: reimplement the same dict shape locally
-(risking silent drift from `CompareRegressionsMode`'s version) or reach across
-modules into `compare_regressions.py` for a function with nothing
-`CompareRegressionsMode`-specific left in it once §2d's `entity`-self-reference
-idea (§2c) was already dropped.
-
-**Decision:** `_xy_series_entry` moves onto `DiagnosticMode` (`base.py`) as an
-inherited `@staticmethod` — every concrete mode gets
-`self. _xy_series_entry(name, points)` for free, with no import of
-`compare_regressions.py` or anything else mode-specific required. Not an
-`@abstractmethod`: every mode wanting a `plotly-graph`-shaped `series` entry
-wants the *identical* shape (§2d already nailed that down for good reasons —
-`entity`/`type`/`mode` constant, `x`/`y` split flat arrays), so there is nothing
-for a subclass to meaningfully override; a mode producing `series` entries in
-some entirely different shape simply wouldn't call this method at all, the same
-way a mode producing no `series` attribute whatsoever already doesn't. Purely a
-relocation, not a reshaping: `CompareRegressionsMode`'s own
-`_pool_series`/`_append_selected_series` now call `self._xy_series_entry(...)`
-in place of the bare function call, and every value they receive back is
-byte-identical to before — no test asserting the *shape* `series` entries take
-needed to change, only the import path for reusing the production builder in
-tests.
-
-**Decided by:** human (identified the shared-base-class need directly), Lead
-Agent (implementation, Phase 6 Scenario C — `TASK-0015b-patch-2` stays `done`,
-unedited; see `tasks/TASK-0015b-patch-3-xy-series-entry-on-base-class.md`).
-
-### 2f — Amendment (2026-09-23): `datetime` domain entity + a companion clear button, superseding the `shady.select_diagnostic_slot` service
-
-**Superseded in part by §2g (2026-09-24).** The `datetime` entity itself, and
-`pin_diagnostic_slot`'s validation/rounding rules, stand. Everything below about
-the clear *button*, `clear_diagnostic_slot()`, `pinned_diagnostic_slot()` and
-`native_value` being `None` while auto-tracking no longer describes the code —
-§2g replaces those. Kept as written, rather than deleted, because the reasoning
-for a `datetime` entity over a service (and for why a `datetime` alone can never
-express "clear") is exactly what §2g builds on.
-
-**Reason:** §2a as first written exposed the diagnosed-slot pin as a single
-service, `shady.select_diagnostic_slot`, called from Developer Tools -> Actions
-(or an automation/script). That does not fit this project's own established
-pattern for per-config-entry, always-present state — every other piece of
-config-entry-scoped, person-facing state (the active diagnostic mode, §1; a
-manual recalibration trigger, ADR-002 §1/§5) is a thin HA *entity* (`select.py`,
-`button.py`), directly pickable from a dashboard or the entity's own more-info
-dialog, not a bespoke service with no entity of its own to represent it. A
-service is also strictly worse UX for the one thing §2a's `timestamp` parameter
-actually is — a date and time to pick — since Developer Tools -> Actions has no
-dedicated date/time picker widget for a service field the way a dashboard does
-for a `datetime` domain entity's own more-info dialog.
-
-**Decision:** `datetime.py`'s new `ShadyDiagnosticSlotDateTime`
-(`DateTimeEntity`), one per config entry, replaces §2a's service for *setting*
-the pin: `native_value` reads `coordinator.py`'s `pinned_diagnostic_slot()`
-(`None` while auto-tracking, the pinned slot's own start timestamp otherwise);
-`async_set_value` pins via the same `pin_diagnostic_slot()` §2a already
-described, rejecting (raising `HomeAssistantError`) exactly the same
-beyond-the-horizon timestamps the service used to reject via
-`ServiceValidationError` — the validation/rounding rules themselves (rounded
-down to the nearest 5-minute boundary, rejected only beyond ADR-002 §3's
-forecast horizon, a past timestamp always accepted) are entirely unchanged, only
-which HA mechanism surfaces the rejection.
-
-Home Assistant's own `datetime` domain has no "clear to unknown" affordance
-anywhere in its frontend, however — its more-info dialog
-(`more-info-datetime.ts`) always constructs a new `Date` from the entity's
-*current* state and feeds that straight to `datetime.set_value`; there is no
-control that ever calls back with "no value" the way omitting §2a's service
-parameter used to. A single `datetime` entity therefore cannot reproduce "omit
-to clear" on its own. `button.py`'s new `ShadyClearDiagnosticSlotButton`, one
-per config entry alongside the existing `ShadyRecalculateButton`, is the clear
-path instead: pressing it calls `coordinator.clear_diagnostic_slot()` directly,
-the same method the old service's no-`timestamp` branch already called. Two
-entities, not one, because Home Assistant's own entity model has no single
-domain that is both "pick a value" and "clear to no value" — splitting the
-concern across a `datetime` and a `button` mirrors how this project already
-splits "pick one of several options" (`select.py`) from "trigger a one-shot
-action" (`button.py`) rather than inventing a third entity domain of its own.
-
-Neither entity is service-broadcast across every loaded config entry the way the
-old domain-wide service was — each is entry-scoped from the start (one
-`ShadyDiagnosticSlotDateTime`/`ShadyClearDiagnosticSlotButton` pair per config
-entry, following the device grouping every other entity already uses,
-`device.py`), so a person with more than one Shady config entry pins/clears each
-one independently by picking the entity for that entry's own device, rather than
-one call silently applying to every entry as the service's own undocumented
-broadcast reading (§5) used to.
-
-`services.yaml` is deleted along with it — this project registers no service of
-any kind any more, and an empty or absent `services.yaml` is equivalent to Home
-Assistant either way, so there is nothing left for it to declare.
-
-**Decided by:** human (identified the service as "not working" and requested a
-`datetime`-based input instead, matching the original pre-ADR intent), AI
-assistant (design + implementation).
-
-### 2g — Amendment (2026-09-24, `TASK-0037-patch-4`): auto-follow `switch` replaces the clear button; the diagnosed slot is always one concrete, always-set value
-
-**Reason:** §2f's clear button modelled the wrong thing. Two problems, both
-found by the human in use: (1) `ShadyDiagnosticSlotDateTime` showed `unknown`
-while auto-tracking — the one state in which a person most wants to know *which*
-slot every diagnostic sensor is currently showing — so a dashboard needed its
-own template logic to work out "last complete slot" and keep it in step with the
-coordinator's separate derivation of the same thing. (2) A button is a one-shot
-action with no state of its own: nothing on a dashboard says whether the
-diagnosed slot is currently pinned or following, and pressing it while already
-auto-tracking is a silent no-op. What was actually being modelled is one
-two-valued piece of state (pinned to a chosen slot / following the newest
-complete one) plus one slot value, and neither `None`-means-following nor a
-button expresses that.
-
-**Decision:**
+A `datetime` entity alone cannot express "stop pinning": Home Assistant's
+frontend always feeds the entity's current state back to `datetime.set_value`,
+and no control ever sends "no value" (§2f). A one-shot clear button was no
+better — it has no state of its own, so nothing on a dashboard says whether the
+slot is pinned or following. What is being modelled is one two-valued piece of
+state (pinned to a chosen slot / following the newest complete one) plus one
+slot value.
 
 - **One always-set value, read unconditionally.** `coordinator.py` holds the
-  diagnosed slot as a single stored index (`_diagnostic_slot_index`, always set)
-  plus a boolean (`_follow_latest_diagnostic_slot`, default `True`).
-  `diagnosed_slot()` — and so every diagnostic computation, `compute()` and
-  `extra_fit()` of every mode — reads that stored index whether pinned or
-  auto-tracking; it no longer derives "last complete slot" from `now` at read
-  time. `is_elapsed` is still computed against `now`.
-- **While following, the value is *set* on every tick, not derived on read.**
-  The same 5-minute tick §2's "Refresh cadence" already uses sets it to
-  `index_for(now) − 1` — first thing in the tick, ahead of any `extra_fit()`/
-  `compute()` that reads it, and whether or not a diagnostic mode is active (one
-  integer assignment, not fitting work, so §1's "no extra cost while off" is
-  unaffected). It is also set once at construction and immediately when
-  following is switched on. The cached `compute()` result is *not* invalidated
-  by the tick's advance itself — the mode's own `compute_cadence()` still
-  decides when it refreshes, as before.
-- **`datetime.py`'s `ShadyDiagnosticSlotDateTime.native_value` returns that
-  value in both modes** (the slot's start timestamp) — never `None`. A dashboard
-  shows the as-of timestamp by displaying the entity, with no template logic.
-  `async_set_value` pins exactly as §2a/§2f describe (same rounding, same
-  beyond-the-horizon rejection) and thereby switches following off.
-- **New `switch.py`, `ShadyFollowDiagnosticSlotSwitch`, one per config entry.**
-  `is_on` ⇔ following. Turning it **on** calls
+  diagnosed slot as a single stored index, always set, plus a following flag
+  (default on). `diagnosed_slot()` — and so every diagnostic computation,
+  `compute()` and `extra_fit()` of every mode — reads that stored index whether
+  pinned or following; it does not derive "last complete slot" from `now` at
+  read time. `is_elapsed` is still computed against `now`.
+- **While following, the value is *set* on every slot trigger, not derived on
+  read.** The slot trigger (§2i) sets it to `index_for(now) − 1` — first thing
+  in the job, ahead of any `extra_fit()`/`compute()` that reads it, and whether
+  or not a diagnostic mode is active (one integer assignment, not fitting work,
+  so §1's "no extra cost while off" is unaffected). It is also set once at
+  construction and immediately when following is switched on. The advance does
+  not invalidate the cached `compute()` result; the mode's own
+  `compute_cadence()` decides when that refreshes.
+- **`ShadyDiagnosticSlotDateTime.native_value` returns that slot's start
+  timestamp in both modes** — never `None` — so a dashboard shows the as-of
+  timestamp by displaying the entity, with no template logic. Setting it pins
+  exactly as §2a/§2f describe and thereby switches following off.
+- **`switch.py`'s `ShadyFollowDiagnosticSlotSwitch`, one per config entry.**
+  `is_on` means following. Turning it **on** calls
   `set_follow_latest_diagnostic_slot(True)`: clears `cache.pinned_reference`,
-  sets the slot to the newest complete one immediately, invalidates the cached
-  `compute()` result. Turning it **off** calls
-  `set_follow_latest_diagnostic_slot(False)`: pins the slot *as currently shown*
-  (not a re-derivation from `now`), sets `cache.pinned_reference` to that slot's
-  date, invalidates the cached result — so switching off never moves anything.
+  sets the newest complete slot immediately, invalidates the cached `compute()`
+  result. Turning it **off** calls `set_follow_latest_diagnostic_slot(False)`:
+  pins the slot *as currently shown* (not a re-derivation from `now`), sets
+  `cache.pinned_reference` to that slot's date, invalidates the cached result —
+  so switching off never moves anything. The coordinator's other accessors are
+  `is_following_latest_diagnostic_slot()` and `diagnostic_slot_timestamp()`.
 - **`cache.py`'s `pinned_reference` (ADR-007a §6) is deliberately not set while
-  following**, even though the stored slot is: `get_pinned_slot_pool`'s cap
-  (ADR-007a §6, 2026-09-22) keys off "genuinely pinned" vs. not, and its
-  auto-tracking cap `index_for(reference) − 1` is only ever a ceiling on the
-  stored slot (`reference` is never earlier than the tick that set it), so
+  following**, even though the stored slot is: `get_pinned_slot_pool`'s cap keys
+  off "genuinely pinned" versus not, and its auto-tracking cap
+  `index_for(reference) − 1` is only ever a ceiling on the stored slot, so
   nothing about that cap changes.
-- **Removed outright:** `button.py`'s `ShadyClearDiagnosticSlotButton`, and
-  `coordinator.py`'s `clear_diagnostic_slot()` and `pinned_diagnostic_slot()`
-  (replaced by `set_follow_latest_diagnostic_slot(bool)`,
-  `is_following_latest_diagnostic_slot()` and `diagnostic_slot_timestamp()`).
-  `ShadyRecalculateButton` is untouched. An installation that already registered
-  the clear button is left with a stale, unavailable registry entry, deletable
-  by hand — no migration (one installation exists, same reasoning as ADR-010's).
 - **Polling, not push** — like every other entity here (`sensor.py`'s own scope
-  note), both new/changed entities use Home Assistant's default polling; no
-  coordinator-to-entity push mechanism is added. The as-of timestamp can lag a
+  note), the datetime and the switch use Home Assistant's default polling; no
+  coordinator-to-entity push mechanism exists. The as-of timestamp can lag a
   diagnostic sensor's own attributes by up to one polling interval, exactly as
   two sensors already can.
-- **Not persisted across restarts** (unchanged: the pin never was) — a restart
-  returns to following the newest complete slot.
+- **Not persisted across restarts** (the pin never was): a restart returns to
+  following the newest complete slot.
 
-**Decided by:** human (rejected the clear button as unhelpful; specified the
-follow/pin toggle, the set-on-every-cadence behaviour, and that diagnostics
-always read the configured slot regardless of mode), Lead Agent (details: switch
-on/off semantics, setting the datetime while following pins, the tick-first
-ordering, `pinned_reference` left unset while following — flagged for the
-human's confirmation in the session summary; implementation, Phase 6 Scenario C
-— `TASK-0037-patch-3` stays `done`, unedited; see
-`tasks/TASK-0037-patch-4-follow-latest-diagnostic-slot-toggle.md`).
+### 2h — Chart marker styling
 
-### 2h — Amendment (2026-10-04, `TASK-0015b-patch-4`): chart marker styling — one-decimal values, weight-sized points, stroke for excluded neighbors, cross for selected
+Each `series` entry (§2d) carries one more key, `marker`, and its `x`/`y` values
+are rounded for display; the example in §2 shows the result.
 
-**Reason:** every trace in §2d's shape was drawn identically — same marker, same
-size, full float precision in the hover labels. A person looking at the chart
-could not tell how much each training point actually counts in the fit (ADR-001
-§2/§4a, ADR-011 §1), which neighbor series ADR-011 §2 threw out of the pool
-altogether, or which points are the diagnosed slot's predictions rather than
-training data.
-
-**Decision:** each `series` entry gains exactly one new key, `marker`, and its
-`x`/`y` values are rounded; nothing else about §2d's shape changes.
-
-- **Values: at most one decimal.** Every `x`/`y` value is rounded to one decimal
-  place (`round(v, 1)`, normalising a resulting `-0.0` to `0.0`) in
-  `DiagnosticMode._xy_series_entry` (§2e), so every mode and every series —
-  slot-pool and `selected ...` alike — gets it. Display-only: `accuracy` (§2),
-  the CSV export (ADR-015) and everything fitted keep full precision.
-- **Slot-pool points: size follows weight.** `marker.size` is a per-point list,
-  `round(4 × weight)` as an integer, i.e. weight `1.0` → size `4` and no decimal
-  sizes. `weight` is `regression.base.build_pool`'s own per-point weight
-  (`magnitude_weight × time_weight × recency_weight × is_valid`, a value in
-  `[0, 1]` — ADR-001 §2, §4a, ADR-011 §1), taken from its `WeightBreakdown`
-  (ADR-015 §6) so the chart can never drift from what the fit actually used.
-  Sizes have a **floor of 1**: a literal `round(4 × weight)` is `0` for any
-  weight below `0.125`, and a size-`0` marker is not drawn — which would make
-  low-weight points, the very thing this chart exists to show, vanish.
-- **Excluded neighbor series: a stroke.** A neighbor offset ADR-011 §2 excludes
-  from the pool (`neighbor_excluded`) is drawn with `marker.symbol` `line-ns`
-  instead of `circle`. Its pool weight is `0` by construction, so its sizes use
-  the weight it *would* have had without the exclusion
-  (`magnitude × time × recency × is_valid`; identical to the real weight for
-  every series that is not excluded) — otherwise every stroke would be size `0`
-  and invisible. `circle` is stated explicitly on all other pool series rather
-  than left to Plotly's default. With `neighbor_fitting_cutoff = -1%` (ADR-011
-  §3, rescale instead of exclude) nothing is ever excluded, so no stroke
-  appears.
-- **Selected series: a cross.** `selected {method}` and `selected actual` use
-  `marker.symbol` `x`, no `size` (Plotly's default applies).
-- **The `"sum"` entry (§2b)** follows the identical rules, computed from the
-  same pointwise-summed pool its points already come from — weights and
-  exclusion are evaluated on the summed arrays, exactly as if the sum were one
+- **Values: at most one decimal**, applied in `DiagnosticMode._xy_series_entry`
+  (§2e) so every mode and every series — slot-pool and `selected ...` alike —
+  gets it. Display-only: `accuracy` (§2), the CSV export (ADR-015) and
+  everything fitted keep full precision.
+- **Slot-pool points: size follows weight.** A point's marker size scales with
+  the weight it has in the fit — the per-point weight from
+  `regression.base.build_pool`, taken from its `WeightBreakdown` (ADR-015 §6;
+  ADR-001 §2/§4a, ADR-011 §1) so the chart can never drift from what the fit
+  actually used. Sizes are whole numbers with a minimum of 1: a low-weight point
+  must stay visible, since showing such points is what this chart is for.
+- **Excluded neighbor series: a stroke.** A neighbor offset that ADR-011 §2
+  excludes from the pool is drawn as a stroke instead of a circle, sized by the
+  weight it *would* have had without the exclusion (its pool weight is `0` by
+  construction, which would make every stroke invisible). All other pool series
+  state `circle` explicitly rather than rely on a default. With
+  `neighbor_fitting_cutoff = -1%` (ADR-011 §3, rescale instead of exclude)
+  nothing is excluded, so no stroke appears.
+- **Selected series: a cross**, at the default size.
+- **The `"sum"` entry (§2b)** follows the same rules, evaluated on the same
+  pointwise-summed pool its points come from, exactly as if the sum were one
   more string.
-- **Consumption pattern unchanged.** `marker` is a nested mapping holding a
-  list, which §2's "flat dicts" guidance did not anticipate; it still
-  round-trips through `str()` into valid YAML flow syntax (strings, numbers,
-  lists and mappings only — no booleans or `None`, §2d), so the
-  `entities: "{{ ... | string }}"` template works unmodified.
 
-**Decided by:** human (the four requested changes: one-decimal values, weight-
-sized points with weight `1` → size `4` and no decimals, a stroke for invalid
-neighbor series, a cross for selected series), Lead Agent (details — flagged for
-the human's confirmation in the session summary: Plotly symbols `line-ns` for
-the stroke and `x` for the cross; the size floor of `1`; pre-exclusion weight
-sizing for excluded series; the sum entry weighting from its summed pool;
-implementation, Phase 6 Scenario C — `TASK-0015b-patch-3` stays `done`,
-unedited; see `tasks/TASK-0015b-patch-4-diagnostic-chart-marker-styling.md`).
+### 2i — The slot trigger
 
-### 2i — Amendment (2026-10-07, `TASK-0041`): "the 5-minute tick" is the recorder-synchronized slot trigger
-
-**Reason:** This ADR repeatedly refers to "the 5-minute tick" (§2's refresh
-cadence, §2a, §2b, §2g's tick-first advance, §3, §4). That tick was a wall-clock
-interval at an arbitrary phase, so while following it could read the just-ended
-slot before the recorder had compiled its statistic: the followed slot's
-"selected actual" and every accuracy value were missing, for a whole run, on a
-real system (ADR-007a §4 Amendment 2026-10-07; both a followed and a pinned CSV
-export showed no PV for any of today's pool rows). Option C in the cache stops
-that becoming permanent; it cannot make a tick display a value that does not
-exist at that instant.
-
-**Decision:** Every "5-minute tick" in this ADR now means the **slot trigger**
-defined by ADR-006 §1a's Amendment of the same date: one slot job per
-`EVENT_RECORDER_5MIN_STATISTICS_GENERATED`, which first probes until the newest
-complete slot's actual yield is readable (bounded: the first probe plus up to 5
-retries, 1 s apart), and only then does, once, in this order: advance the
-followed slot (§2g — still *first*, still independent of whether a mode is
-active, still an integer assignment), refresh the active mode's fit/compute per
-its cadences (§2/§4), and publish the result. Consequences, all following from
-"only the with-PV compute exists":
+Every refresh in this ADR runs on the **slot trigger** defined by ADR-006 §1a:
+one slot job per `EVENT_RECORDER_5MIN_STATISTICS_GENERATED`. A wall-clock
+interval at an arbitrary phase could read the just-ended slot before the
+recorder had compiled its statistic, so the followed slot's `"selected actual"`
+and every accuracy value went missing for a whole run (ADR-007a §4). The job
+first probes until the newest complete slot's actual yield is readable (bounded:
+the first probe plus up to 5 retries, 1 s apart), and only then does, once, in
+this order: advance the followed slot (§2g — still *first*, still independent of
+whether a mode is active, still an integer assignment), refresh the active
+mode's fit/compute per its cadences (§2/§4), and publish the result.
+Consequences, all following from "only the with-PV compute exists":
 
 - The followed slot and the chart it feeds advance together, in the same job, so
   the `datetime` entity's "as of" timestamp always matches the chart. While no
@@ -1068,19 +783,16 @@ its cadences (§2/§4), and publish the result. Consequences, all following from
 - Pinned slots keep their existing semantics (§2a): the job still runs every
   slot, so a future-pinned or in-progress slot's prediction and a just-elapsed
   slot's actual and accuracy appear on the first job after they exist.
-- The wall-clock interval remains registered as a watchdog (ADR-006 §1a
-  Amendment); it runs the same job only when no event-driven job ran for six
-  minutes.
-- §3's "not refreshed on the tick" for the slot-pool series is unchanged.
+- The wall-clock interval remains registered as a watchdog (ADR-006 §1a); it
+  runs the same job only when no event-driven job ran for six minutes.
+- §3's "not refreshed on every slot job" rule for the slot-pool series is
+  unchanged.
 
-**Decided by:** human (chosen in chat 2026-10-07); retry/watchdog parameters are
-Lead Agent choices, confirmed by the human at Gate 2 (2026-10-08).
-
-### 3 — Caching the historical pool: refresh at midnight/system start, not every tick
+### 3 — Caching the historical pool: refresh at midnight/system start, not on every slot job
 
 Re-querying the recorder for a slot's full rolling-window history (`window_days`
 samples, ADR-001 §4, times up to `2·smoothing_radius + 1` slots, ADR-011 §1) on
-every 5-minute tick — just to redraw the same `"-1"`/`"0"`/`"1"` series with one
+every slot job — just to redraw the same `"-1"`/`"0"`/`"1"` series with one
 slot's worth of difference — would be wasteful: that data only meaningfully
 changes once a day, when the rolling window advances by one calendar day.
 
@@ -1088,19 +800,19 @@ This does not need a second recorder-reading mechanism, because the data
 required is **exactly what `cache.py`'s cache already holds** — the same
 per-slot historical pool `coordinator.py` reads for every one of the 288 slots
 during recalibration (ADR-002 §1), since fitting all 288 slot models necessarily
-means reading all 288 pools first. When the diagnostics switch (§1) is on, every
-per-string sensor's `"-1"`/`"0"`/`"1"` series are populated by calling
-`get_pinned_slot_pool` (ADR-007a §6) for the diagnosed slot (and its neighbors)
-— the **same** call whether currently pinned or auto-tracking (§2a); there is no
-separate today-only accessor diagnostics falls back to. While auto-tracking,
-that call's internally-resolved window happens to be exactly what recalibration
-already fetched moments earlier, so it costs nothing extra: no new recorder
-query, just a read of already-validated cache entries. While pinned to a date
-outside the live window, the same call's resolved window is typically *not*
-already cached, so it is not free the same way — see §2a for what that costs.
-§2b's sum entry adds no third fetch of its own — as of the 2026-09-03 Amendment,
-it's built from the same `_gather_pool` call `compute()` already makes for each
-contributing string's own per-string entry, not a separate read.
+means reading all 288 pools first. When the mode select (§1) is on
+`compare_regressions`, every per-string sensor's `"-1"`/`"0"`/`"1"` series are
+populated by calling `get_pinned_slot_pool` (ADR-007a §6) for the diagnosed slot
+(and its neighbors) — the **same** call whether currently pinned or
+auto-tracking (§2a); there is no separate today-only accessor diagnostics falls
+back to. While auto-tracking, that call's internally-resolved window happens to
+be exactly what recalibration already fetched moments earlier, so it costs
+nothing extra: no new recorder query, just a read of already-validated cache
+entries. While pinned to a date outside the live window, the same call's
+resolved window is typically *not* already cached, so it is not free the same
+way — see §2a for what that costs. §2b's sum entry adds no third fetch of its
+own — it is built from the same `_gather_pool` call `compute()` already makes
+for each contributing string's own per-string entry, not a separate read.
 
 The cache refreshes on exactly the same triggers as the recalibration that
 produces it — **midnight or button** (ADR-002 §1) — plus **once at system
@@ -1109,12 +821,12 @@ until the first one runs; a restart also invalidates `cache.py`'s validated
 ranges (ADR-007a §2) for these sensors, so the first `get_pinned_slot_pool` call
 after one naturally triggers the full-history fetch path (ADR-007a §4) rather
 than assuming stale in-memory state survived. While **auto-tracking**, the
-slot-pool series are **not** refreshed on the 5-minute tick from §2, nor on
-ADR-002 §2's baseline-update trigger — only recalibration (or a restart priming
-it for the first time) changes what they show for the rest of the day. Turning
-the diagnostics switch on *between* two recalibrations means
-`get_pinned_slot_pool` may return mostly-invalidated data until the next of
-those triggers fires; the slot-pool series show nothing new until then, while
+slot-pool series are **not** refreshed on the slot trigger (§2i), nor on ADR-002
+§2's baseline-update trigger — only recalibration (or a restart priming it for
+the first time) changes what they show for the rest of the day. Selecting a mode
+*between* two recalibrations means `get_pinned_slot_pool` may return
+mostly-invalidated data until the next of those triggers fires; the slot-pool
+series show nothing new until then, while
 `"selected {method}"`/`"selected actual"`/`accuracy` keep working immediately,
 since those only need the diagnosed slot's own live `FC`/`PV` values, not the
 historical pool. While **pinned**, none of this staleness applies — see §2a.
@@ -1124,15 +836,15 @@ historical pool. While **pinned**, none of this staleness applies — see §2a.
 Producing the four `"selected {method}"` points requires fitting all four
 strategies for the diagnosed slot, not just the one configured default — extra
 work beyond what ADR-002 §1's normal recalibration does. This only happens while
-the select (§1) is set to `compare_regressions` — as of the 2026-08-30
-amendment, `CompareRegressionsMode.extra_fit()` — and only for the one diagnosed
-slot per string (not all 288), keeping the added cost bounded and opt-in: the
-three non-default methods are fitted alongside the active one at the same
+the select (§1) is set to `compare_regressions` —
+`CompareRegressionsMode.extra_fit()` — and only for the one diagnosed slot per
+string (not all 288), keeping the added cost bounded and opt-in: the three
+non-default methods are fitted alongside the active one at the same
 recalibration trigger (midnight or button, ADR-002 §1). All four are then
-queried on the same 5-minute trigger that advances which slot is diagnosed
-(ADR-006 §1a, per §2 above) — not ADR-002 §2's irregular baseline-update trigger
-— so the four predictions always match whichever slot's pool and actual value
-are currently being displayed, rather than momentarily lagging behind it.
+queried on the slot trigger (§2i) that advances which slot is diagnosed — not
+ADR-002 §2's irregular baseline-update trigger — so the four predictions always
+match whichever slot's pool and actual value are currently being displayed,
+rather than momentarily lagging behind it.
 
 ### 5 — Module responsibility
 
@@ -1141,37 +853,29 @@ are currently being displayed, rather than momentarily lagging behind it.
 `DIAGNOSTIC_MODES` option list and persisting the chosen option for
 `coordinator.py` to read — the same "thin entity glue" philosophy `button.py`'s
 `EffyRecalculateButton`-style pattern (ADR-002 §1) already established, just for
-a multi-value control instead of a single-purpose trigger. **Amendment
-(2026-09-24, draft ADR-015):** a raw-data CSV export of a diagnosed slot's
-training inputs is a sibling concern to this section's own thin-glue framing —
-it reads the same `CompareRegressionsMode`-gathered data this ADR's sensors
-already expose, generalized from "thin entity glue" to "thin HA glue" more
-broadly — but is delivered via a registered HTTP view rather than an entity, and
-lives in `diagnostics/export.py`, not as a method on `CompareRegressionsMode`;
-see ADR-015 for the full decision, not repeated here. The actual diagnostic
-calculation lives in the new pure package `diagnostics/` (§1a has the full
-`DiagnosticMode` shape): `diagnostics/base.py` holds the shared `DiagnosticMode`
-ABC; `diagnostics/ compare_regressions.py` holds this ADR's one concrete mode,
-`CompareRegressionsMode`. `coordinator.py` holds `_diagnostic_modes` (a
-per-instance registry as of the 2026-09-01 amendment — mirroring its existing
-`REGRESSION_STRATEGIES` lookup in shape) and calls the active mode's
+a multi-value control instead of a single-purpose trigger. A raw-data CSV export
+of a diagnosed slot's training inputs is a sibling concern, delivered through an
+HTTP view rather than an entity; see ADR-015.
+
+The actual diagnostic calculation lives in the pure package `diagnostics/` (§1a
+has the full `DiagnosticMode` shape): `diagnostics/base.py` holds the shared
+`DiagnosticMode` ABC; `diagnostics/compare_regressions.py` holds this ADR's one
+concrete mode, `CompareRegressionsMode`. `coordinator.py` holds
+`_diagnostic_modes`, a per-instance registry mirroring its
+`REGRESSION_STRATEGIES` lookup in shape, and calls the active mode's
 `extra_fit()` generically at the recalibration trigger, exactly as it already
-runs one generic loop over `forward()`-implementing providers (ADR-012 §4) —
-same "one dispatch site, not one branch per concrete case" shape. As of
-2026-09-01, that call takes no arguments — `extra_fit()` resolves whatever it
-needs itself through the `ShadyCoordinatorLike` reference it was constructed
-with (§1a), rather than `coordinator.py` assembling anything for it first.
+runs one generic loop over `forward()`-implementing providers (ADR-012 §4) — the
+same "one dispatch site, not one branch per concrete case" shape. That call
+takes no arguments: `extra_fit()` resolves whatever it needs itself through the
+`ShadyCoordinatorLike` reference it was constructed with (§1a).
 `RegressionSettings`/`StringComputationConfig`/`DiagnosedSlot` (§1a) — the
-read-only DTOs `ShadyCoordinator`'s own
-`regression_settings()`/`string_ computation_config()`/`diagnosed_slot()`
-methods return to satisfy `ShadyCoordinatorLike` — live in `coordinator_like.py`
-alongside that Protocol (next to `coordinator.py` as of 2026-09-14; nested
-inside `diagnostics/` briefly before that, `diagnostics/base.py` before that),
-not in `coordinator.py`: none of the three is actually used by
-`string_ computation.py`'s own functions (ADR-014 keeps those decoupled from any
+read-only DTOs `ShadyCoordinator`'s
+`regression_settings()`/`string_computation_config()`/`diagnosed_slot()` methods
+return to satisfy `ShadyCoordinatorLike` — live in `coordinator_like.py`
+alongside that Protocol, not in `coordinator.py`: none of the three is used by
+`string_computation.py`'s own functions (ADR-014 keeps those decoupled from any
 coordinator-owned type, explicit scalar parameters only), so their only real
-purpose is crossing the `DiagnosticMode` boundary, which is
-`diagnostics/ base.py`'s job to own.
+purpose is crossing the `DiagnosticMode` boundary.
 
 The retained per-slot pool cache from §3 lives in `cache.py` (ADR-007),
 populated by `coordinator.py` as a side effect of recalibration — not owned by
@@ -1183,52 +887,40 @@ per-string knowledge needed, and is therefore reusable by any future
 `DiagnosticMode` unchanged (see ADR-013 for two sketched future modes that call
 this same function); §2b's pointwise sum-then-accuracy calculation is a second,
 equally pure function alongside it, taking each string's already-computed
-numbers in rather than reaching back into `regression/` itself. As of
-2026-09-01, each `DiagnosticMode` calls into `aggregation.py` itself, from
-within its own `compute()`, having first resolved the predicted/actual values it
-needs via its coordinator reference — `aggregation.py`'s functions themselves
-are untouched by this amendment.
+numbers in rather than reaching back into `regression/` itself. Each
+`DiagnosticMode` calls into `aggregation.py` itself, from within its own
+`compute()`, having first resolved the predicted/actual values it needs via its
+coordinator reference.
 
-`sensor.py` adds `ShadyDiagnosticsSensor` — as of 2026-09-03, one generic
-instance per `(sensor_id, name)` pair from `coordinator.diagnostic_sensor_ids()`
-(§2's per-string ids and §2b's `"sum"` id alike, no dedicated
+`sensor.py` adds `ShadyDiagnosticsSensor`: one generic instance per
+`(sensor_id, name)` pair from `coordinator.diagnostic_sensor_ids()` (§2's
+per-string ids and §2b's `"sum"` id alike, no dedicated
 `ShadyDiagnosticsSumSensor` class), following the six `ShadyPvSumSensor`-style
 sensors' placement in `sensor.py` per ADR-005's "Module: a new pure aggregation
-layer" section — staying thin like every other sensor in this design. **As of
-2026-09-01, this got thinner still, and as of 2026-09-03, thinner again:** each
+layer" section — staying thin like every other sensor in this design. Each
 instance looks up its own `sensor_id` in `coordinator.diagnostic_result()` — a
 cached accessor over the active mode's `.compute()` output, not a direct call —
 and sets `state`/`attributes` straight from the matching entry (the `"sum"`
-entry included: built by the mode itself now, not reassembled here from sibling
+entry included: built by the mode itself, not reassembled here from sibling
 sensors' output); if no mode is active, it reports `disabled` as §1 specifies.
 `sensor.py` performs **no reshaping of any kind** on what `diagnostics/` returns
-— every `series` entry's `entity`/`name`/`type`/`mode`/`x`/`y`/`marker`
-(§2c/§2d/§2h) comes straight from `compute()` unchanged. (**2026-09-21,
-briefly:** between `TASK-0015b-patch-1` and `TASK-0015b-patch-2`, the same day,
-`sensor.py` did add one narrow reshaping step — injecting its own `entity_id`
-into each `series` entry, since `entity` was then meant as a self-reference and
-`compute()` has no notion of the HA entity registry at all (§1a's whole point).
-`TASK-0015b-patch-2` made `entity` a constant empty string instead (§2d),
-removing any reason for `sensor.py` to touch `series` at all, and the injection
-was removed along with it — mentioned here only because it happened and because
-it explains why "no reshaping of any kind" is worth stating explicitly rather
-than assumed.) `sensor.py` otherwise no longer assembles anything for the mode
-to consume, nor knows how many entities a mode produces or what any of them
-represent beyond a `(sensor_id, name)` pair — resolving which slot is being
-diagnosed (reading `coordinator.diagnosed_slot()`, the one stored,
-currently-configured slot — pinned or auto-tracked alike, §2a/§2g), fetching
-that slot's pool/predicted/actual values, and deciding what aggregate entities
-(if any) to produce alongside the per-string ones are all the mode's own job,
-done inside `compute()`/`extra_fit()`/`sensor_ids()` via the coordinator
-reference each was constructed with. This shaping is pure presentation and does
-not belong in `regression/` or `forecast_adjust.py`. As of 2026-09-23 (§2f) and
-2026-09-24 (§2g), `datetime.py`'s `ShadyDiagnosticSlotDateTime` and
-`switch.py`'s `ShadyFollowDiagnosticSlotSwitch` — both entity-scoped to their
-own config entry, unlike the domain-wide service they replace (§2f: no more
-undocumented broadcast-across-every-loaded-entry reading) — are the only callers
-of `coordinator.py`'s `pin_diagnostic_slot`/
-`set_follow_latest_diagnostic_slot`; `__init__.py` registers no service of any
-kind any more, and `cache.py` is still only ever reached through
+— every `series` entry (§2d, §2h) comes straight from `compute()` unchanged. It
+otherwise assembles nothing for the mode to consume, and knows neither how many
+entities a mode produces nor what any of them represent beyond a
+`(sensor_id, name)` pair: resolving which slot is being diagnosed (reading
+`coordinator.diagnosed_slot()`, the one stored, currently-configured slot —
+pinned or following alike, §2a/§2g), fetching that slot's pool/predicted/actual
+values, and deciding what aggregate entities (if any) to produce alongside the
+per-string ones are all the mode's own job, done inside
+`compute()`/`extra_fit()`/`sensor_ids()` via the coordinator reference each was
+constructed with. This shaping is pure presentation and does not belong in
+`regression/` or `forecast_adjust.py`.
+
+`datetime.py`'s `ShadyDiagnosticSlotDateTime` (§2f) and `switch.py`'s
+`ShadyFollowDiagnosticSlotSwitch` (§2g), both entity-scoped to their own config
+entry, are the only callers of `coordinator.py`'s
+`pin_diagnostic_slot`/`set_follow_latest_diagnostic_slot`; `__init__.py`
+registers no service of any kind, and `cache.py` is only ever reached through
 `coordinator.py` (ADR-007 §2), the same as every other caller.
 
 ______________________________________________________________________
@@ -1297,8 +989,8 @@ ______________________________________________________________________
 - **Con:** The `series` attribute's shape is a public contract once dashboards
   are built against it, and embedding accuracy in the name
   (`"selected wls2 (96%)"`) makes this sharper than a plain `"selected wls2"`
-  would have been: the percentage changes on every 5-minute tick for
-  auto-tracking sensors (§2), so a dashboard cannot match against an exact
+  would have been: the percentage changes on every slot trigger for
+  auto-tracking sensors (§2i), so a dashboard cannot match against an exact
   series name at all — it must match by prefix (`"selected wls2"`) or, better,
   ignore `series` names for programmatic use and read the plain `accuracy`
   attribute instead, which exists precisely to give a stable, unformatted
@@ -1330,19 +1022,18 @@ ______________________________________________________________________
   `DiagnosticMode`'s shared machinery, never a concrete mode's actual
   coordinator calls, a minimal hand-written stand-in duck-typed against
   `ShadyCoordinatorLike` is enough there.
-- **Con:** As of 2026-09-13, `DiagnosticMode` depends on `ShadyCoordinatorLike`
-  (§1a) — a structural `Protocol` declaring exactly the members a mode may call
-  — rather than importing `ShadyCoordinator` by name. This is a real improvement
-  over the prior "convention only" state (mypy now flags a call to any
-  `ShadyCoordinator` public method absent from `ShadyCoordinatorLike` as a type
-  error at every call site, not just at review time), but it is still not
-  airtight: nothing at *runtime* stops a mode from calling a method that happens
-  to exist on whatever concrete object was passed in, and a `# type: ignore` can
-  always bypass the check, the same category of "runtime-not-enforced contract"
-  ADR-012 §1 already accepts for `forward()`'s optionality. Extending
-  `ShadyCoordinatorLike` itself remains a deliberate, reviewed step (§1a) — the
-  Protocol changes how a boundary violation is *caught*, not who decides where
-  the boundary sits.
+- **Con:** `DiagnosticMode` depends on `ShadyCoordinatorLike` (§1a) — a
+  structural `Protocol` declaring exactly the members a mode may call — rather
+  than importing `ShadyCoordinator` by name. This is a real improvement over a
+  convention-only boundary (mypy flags a call to any `ShadyCoordinator` public
+  method absent from `ShadyCoordinatorLike` as a type error at every call site,
+  not just at review time), but it is still not airtight: nothing at *runtime*
+  stops a mode from calling a method that happens to exist on whatever concrete
+  object was passed in, and a `# type: ignore` can always bypass the check, the
+  same category of "runtime-not-enforced contract" ADR-012 §1 already accepts
+  for `forward()`'s optionality. Extending `ShadyCoordinatorLike` itself remains
+  a deliberate, reviewed step (§1a) — the Protocol changes how a boundary
+  violation is *caught*, not who decides where the boundary sits.
 - **Pro:** A mode holding its own coordinator reference (§1a) means there is
   exactly one path to a mode's inputs, with nothing to keep in sync between a
   constructor-time reference and a separate per-call DTO — and no need to keep
@@ -1352,3 +1043,48 @@ ______________________________________________________________________
   generic, declared answer to "how often does this mode need to run," directly
   useful for ADR-013's sketched whole-day modes' unresolved cadence question
   without committing to scheduling them now.
+
+______________________________________________________________________
+
+## Redirects
+
+Sections that no longer exist as headings. A reference to one resolves here
+(`python utils/adr_refs.py`, ADR-000 §10).
+
+| Old | Now |
+| -- | -- |
+| §2c | §2d |
+
+## Citations by amendment name
+
+Some code comments, tests and task files cite former amendments of this ADR by
+name, for example "§5, second Amendment". Such a citation is a double hop: it
+has to be looked up here to find the real target. **Whenever a text carrying one
+is edited for any other reason, replace the citation with the real target
+section at the same time.** `utils/adr_refs.py` only checks section references;
+these named ones need a search for `Amendment`.
+
+| Cited as | Date | What it changed | Now in |
+| -- | -- | -- | -- |
+| ADR-004's 2026-08-30 amendment | 2026-08-30 | boolean switch became the mode select plus the `DiagnosticMode` base class | §1, §1a |
+| §5 second Amendment | 2026-09-01 | a mode is constructed with its coordinator reference; zero-argument `compute()`/`extra_fit()`; per-call context DTOs removed | §1a, §5 |
+| §5 third Amendment | 2026-09-02 | outputs briefly keyed by string index; replaced the same day | not kept |
+| §5 fourth Amendment | 2026-09-02 | flat, self-identifying `DiagnosticResult`/`DiagnosticFitResult` | §1a |
+| §5 fifth Amendment, "2026-09-03 Amendment" | 2026-09-03 | `sensor_ids()`; one generic sensor per declared id; the `"sum"` entry built by the mode | §1a, §2b, §5 |
+| §5 "2026-09-21 Amendment" | 2026-09-21 | `sensor.py` briefly injected `entity` into each entry | not kept; §2d and §5 say `sensor.py` reshapes nothing |
+| §2d to §2i Amendments | 2026-09-21 to 2026-10-07 | the sections of that number | the section of that number (§2c: see Redirects) |
+
+## Decision record
+
+Human decisions that shaped the sections above. Details and rationale are in git
+and the task files.
+
+| Date | Decision | Section | Task |
+| -- | -- | -- | -- |
+| 2026-09-21 | `series` shape and dashboard template confirmed against a running instance | §2d | `TASK-0015b-patch-2` |
+| 2026-09-21 | the entry builder belongs on `DiagnosticMode` | §2e | `TASK-0015b-patch-3` |
+| 2026-09-23 | a `datetime` entity instead of a service | §2f | — |
+| 2026-09-24 | follow/pin switch instead of a clear button; the slot is set on every trigger; diagnostics read the configured slot | §2g | `TASK-0037-patch-4` |
+| 2026-10-04 | marker styling: one-decimal values, weight-sized points, stroke for excluded neighbors, cross for selected | §2h | `TASK-0015b-patch-4` |
+| 2026-10-07 | the recorder-synchronized slot trigger; retry and watchdog parameters confirmed at Gate 2 on 2026-10-08 | §2i | `TASK-0041` |
+| 2026-10-12 | the Lead-Agent details of §2g and §2h confirmed; implementation detail kept out of the ADR | §2g, §2h | `TASK-0046` |

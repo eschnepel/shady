@@ -1,6 +1,7 @@
 # ADR-000 – Code Quality Standards, Programming Style & Core Concepts
 
-**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-09-29 — §3's
+**Date:** 2026-07-04 **Status:** Accepted **Last updated:** 2026-10-12 — new §10
+(`utils/` dev scripts, `TASK-0046`); before that, 2026-09-29 — §3's
 `http_export.py` bullet revised again (dispatches `export_csv` via
 `get_instance(hass).async_add_executor_job`, ADR-015 §9 — a blocking-call fix);
 before that, 2026-09-26 — §3's `http_export.py` bullet revised (no standalone
@@ -58,7 +59,7 @@ a separate hand-written `ci.yml` — the workflow installs dependencies, then ru
 | -- | -- | -- |
 | `ruff format` | Code formatting (replaces black) | `.pre-commit-config.yaml`'s `ruff-format` hook (`astral-sh/ruff-pre-commit`) |
 | `ruff check` | Linting (replaces flake8/isort/pyupgrade) | `.pre-commit-config.yaml`'s `ruff` hook, `args: [--fix, --exit-non-zero-on-fix]` |
-| `mypy --strict` | Static type checking | `.pre-commit-config.yaml`'s local `mypy` hook: `uv run mypy custom_components/shady tests` (config read from `mypy.ini`, not passed as an explicit `--config-file` flag) |
+| `mypy --strict` | Static type checking | `.pre-commit-config.yaml`'s local `mypy` hook: `uv run mypy custom_components/shady tests utils` (config read from `mypy.ini`, not passed as an explicit `--config-file` flag) |
 | `pytest` | Unit tests | `uv run pytest`, a separate `code_checker.yml` step — not run through `pre-commit` |
 
 All four must pass with zero errors before a change is considered complete.
@@ -565,6 +566,28 @@ code fences remain the right tool for what they were always for: formulas (e.g.
 sketches (e.g. `dict[sensor_id: str, list[float | None | str]]`), and short
 illustrative data/config examples — none of these are themselves diagrams or
 tables, so this rule does not apply to them.
+
+### 10 — Dev utilities: `utils/`
+
+`utils/` at the repository root holds small developer scripts that are not part
+of the integration: they live outside `custom_components/`, are not shipped in
+the HACS zip, and import nothing from `shady`. The rules, deliberately few:
+
+- **Standard library only.** A utility never adds a dependency (nothing goes
+  into `pyproject.toml` or `tasks/DEPENDENCIES.md`).
+- **One self-contained script per concern**, run by hand from the repository
+  root as `python utils/<name>.py`, with its usage in the module docstring — no
+  README and no ADR per script.
+- **Same static gates as everything else (§1):** `ruff` over the whole tree and
+  `mypy --strict` through the hook, which covers `utils/`. There is no pytest
+  tier: a utility is a developer aid, not a CI gate. If one ever gates CI, it
+  gets tests first.
+
+Current utilities:
+
+| Script | Purpose |
+| -- | -- |
+| `utils/adr_refs.py` | Checks every `ADR-nnn §x` reference in `*.md` and `*.py` against the headings in `adr/`. A section that moved or was removed is listed in the target ADR's `## Redirects` table (two columns: old section, new location); a reference that only resolves through that table is a *double hop*. `--rewrite` removes double hops by find/replace. Run it after any structural change to an ADR: it must report 0 unresolved references to the ADRs touched |
 
 ______________________________________________________________________
 
