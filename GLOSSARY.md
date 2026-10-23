@@ -63,3 +63,30 @@ changes the forecast.
 
 **Recompute**: Applying what the last recalibration learned to the baseline
 forecast, producing the corrected forecast.
+
+### Strings and Effy
+
+**String**: One PV string of the roof: the unit Shady learns a shading
+correction for, identified by the entity that reports what it really produced.
+Effy calls the same thing a _PV input_ and publishes its _effective series_.
+_Avoid_: Array, input
+
+**Recalculated-from sensor**: Effy's `sensor.effy_recalculated_from`, which
+publishes Effy's configuration as attributes and is updated by Effy's closing
+step. A person may pick it in Shady's config flow. _Avoid_: Effy source, Effy
+link
+
+**Effy's closing step**: The last write of an Effy recalculation: it updates the
+recalculated-from sensor once Effy's statistics and states for that run are
+final. Always written with Effy's possessive, because the term is Effy's own.
+
+**Effy mode**: A config entry's state while a recalculated-from sensor is
+picked. The strings and the training window come from that sensor, and Effy's
+closing step starts Shady's slot job. _Avoid_: following (taken, see
+**Following**), Effy sync, live mode
+
+**Slot recalculation**: After Effy's closing step, Shady re-runs its pipeline
+for every slot from the recalculated-from sensor's timestamp on and writes the
+results to its cache and to the recorder statistics: together up to 6 slots, one
+chunk per local day beyond. _Avoid_: replay, actuals refresh, recalculate
+without "slot" (Effy's own verb for what Effy does)
