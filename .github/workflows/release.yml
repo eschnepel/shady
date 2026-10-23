@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout shady
+        uses: actions/checkout@v7
+        with:
+          path: shady
+
+      - name: Update manifest.json version and requirements
+        run: |
+          SHADY_VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$SHADY_VERSION"\
+            '.version = $v' \
+            shady/custom_components/shady/manifest.json \
+            > /tmp/manifest.json
+          mv /tmp/manifest.json \
+            shady/custom_components/shady/manifest.json
+
+      - name: Generate strings.json from translations/en.json
+        run: |
+          cp shady/custom_components/shady/translations/en.json \
+            shady/custom_components/shady/strings.json
+
+      - name: Build release ZIP
+        run: |
+          cd shady/custom_components/shady
+          zip -r ../../../shady.zip .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: shady.zip
+          generate_release_notes: true
